@@ -1,0 +1,31 @@
+# fly.toml app configuration file generated for testatlas-dhanush on 2026-09-08T21:02:24+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'testatlas-dhanush'
+primary_region = 'iad'
+
+[build]
+[env]
+  BASE_PATH = '/testatlas'
+  PORT = '8000'
+  DATA_ROOT = '/app/persist'
+
+# Fly Machines only support one volume per machine -- data/ and workspace/ both
+# live under this single mount (see server/db.py's DATA_ROOT handling).
+[[mounts]]
+  source = 'testatlas_persist'
+  destination = '/app/persist'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512

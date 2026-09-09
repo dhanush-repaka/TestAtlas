@@ -1,0 +1,75 @@
+"""LLM semantic-enrichment layer, applied on top of the mechanical dev-code
+graph (kg/dev_graph_builder.py, kg/python_ast_parser.py).
+
+Deliberately NOT a live API call from the always-running backend -- per the
+project's own cost constraint, the "LLM" here is Claude Code itself (this
+session, or a subagent it spawns), reading the actual source files and
+writing purpose summaries. That makes this a two-step, human-in-the-loop-free
+but backend-cost-free pipeline:
+
+  1. `enrichment_targets(g)` -- ask the graph what still needs a summary
+     (file path + id for every Module/Class lacking one). An agent reads
+     those files and writes back {node_id: {"purpose": "...", "tags": [...]}}
+  2. `apply_enrichment(g, entries)` -- merge that dict onto the graph's node
+     attributes in place. Purely additive: no structural node/edge changes,
+     so re-running the mechanical analysis later won't conflict with it,
+     though it WILL wipe purposes for a repo, since it's a fresh graph --
+     enrichment is stored per-run, not "sticky" across runs (see server/app.py).
+
+Scoped to Module and Class nodes, not every Function -- a 20-file repo already
+has 100+ functions, more than a single review pass usefully summarizes,
+whereas module/class purpose is exactly the "what does this piece of the
+system do" signal the module-score feature is missing.
+"""
+from __future__ import annotations
+
+import networkx as nx
+
+_ENRICHABLE_TYPES = ("Module", "Class")
+
+
+def enrichment_targets(g: nx.MultiDiGraph) -> list[dict]:
+    """Nodes worth a purpose summary that don't have one yet."""
+    targets = []
+    for n, data in g.nodes(data=True):
+        if data.get("type") not in _ENRICHABLE_TYPES:
+            continue
+        if data.get("purpose"):
+            continue
+        targets.append({
+            "node_id": n,
+            "type": data["type"],
+            "label": data.get("label", n),
+            "file": data.get("file"),
+        })
+    targets.sort(key=lambda t: (t["file"] or "", t["type"], t["label"]))
+    return targets
+
+
+def enrichment_coverage(g: nx.MultiDiGraph) -> dict:
+    total = sum(1 for _, d in g.nodes(data=True) if d.get("type") in _ENRICHABLE_TYPES)
+    enriched = sum(
+        1 for _, d in g.nodes(data=True) if d.get("type") in _ENRICHABLE_TYPES and d.get("purpose")
+    )
+    return {"total": total, "enriched": enriched}
+
+
+def apply_enrichment(g: nx.MultiDiGraph, entries: dict[str, dict]) -> int:
+    """entries: {node_id: {"purpose": str, "tags": [str, ...]?}}.
+    Silently skips unknown node ids or nodes of a non-enrichable type --
+    an enrichment payload from a stale graph shouldn't crash the merge."""
+    applied = 0
+    for node_id, fields in entries.items():
+        if not g.has_node(node_id):
+            continue
+        if g.nodes[node_id].get("type") not in _ENRICHABLE_TYPES:
+            continue
+        purpose = (fields or {}).get("purpose")
+        if not purpose:
+            continue
+        g.nodes[node_id]["purpose"] = purpose
+        tags = fields.get("tags")
+        if tags:
+            g.nodes[node_id]["tags"] = tags
+        applied += 1
+    return applied

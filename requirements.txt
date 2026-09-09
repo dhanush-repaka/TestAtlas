@@ -1,0 +1,11 @@
+networkx>=3.2
+numpy>=1.26
+scipy>=1.11
+pyvis>=0.3.2
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+cryptography>=42.0
+requests>=2.31
+python-multipart>=0.0.9
+neo4j>=5.0

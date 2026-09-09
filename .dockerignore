@@ -1,0 +1,9 @@
+.venv/
+data/
+workspace/
+output/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+README.md
