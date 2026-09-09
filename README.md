@@ -313,11 +313,23 @@ request after idle time.
   idea — needs an Azure AD app registration.
 - **LLM-generated test cases**: built (see "Test Cases" above) as structured
   QA records covering the codebase broadly, prioritized by what the docs call
-  out as important. Not yet built: prioritizing specifically by (high
-  PageRank/criticality) × (no existing test references it) -- the graph does
-  parse test files today, but nothing yet links a test back to the function
-  it exercises to compute "no existing test references it" -- and generating
-  actual runnable pytest stubs instead of QA-style records.
+  out as important, and works from code alone when there are no documents.
+  Not yet built:
+  - Prioritizing specifically by (high PageRank/criticality) × (no existing
+    test references it) -- the graph does parse test files today, but
+    nothing yet links a test back to the function it exercises to compute
+    "no existing test references it".
+  - Generating actual runnable pytest stubs instead of QA-style records.
+  - Surfacing doc-vs-code mismatches *as test cases* (e.g. "the document
+    claims X, no matching code was found, so this can't be tested as
+    written" -- a distinct category rather than silently skipping it, which
+    is what happens today per the prompt's "must be traceable to something
+    real" rule). This is deliberately NOT the same thing as a negative test
+    case (invalid-input handling, already covered under `error_handling`) --
+    it's a documentation-implementation gap, and today that's Gap Analysis's
+    job exclusively (its `missing_implementation` category), kept separate
+    from Test Cases on purpose rather than duplicated. Revisit if that
+    separation turns out to be more friction than clarity in practice.
 - **Automating the enrichment loop**: today a person (or an agent on their
   behalf) calls the enrichment API by hand. A "Generate purpose summaries"
   button that kicks off a background job doing the same thing would make
