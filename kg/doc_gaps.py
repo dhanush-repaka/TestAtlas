@@ -1,6 +1,12 @@
 """LLM gap-analysis layer: compares a project document's claims against what
-its linked business module actually contains (kg/dev_graph_builder.py's
-`domain` rollup), producing structured findings.
+the whole codebase actually contains, producing structured findings.
+
+Documents describe the system overall -- a process/architecture doc covering
+multiple flows -- not one module each, so the comparison always runs against
+the entire graph rather than a single business module's contents. (An
+earlier version scoped this per-module; that added a linking step for no
+real benefit, since a genuinely high-level doc usually touches several
+modules at once anyway.)
 
 Same non-live-API-call pattern as kg/enrichment.py: this module only builds
 the comparison context -- the actual comparison is done by an agent (Claude
@@ -18,31 +24,18 @@ ALLOWED_GAP_CATEGORIES = {"missing_implementation", "undocumented_capability", "
 
 
 def gap_analysis_context(g: nx.MultiDiGraph, doc: dict) -> dict:
-    """Everything an agent needs to compare `doc` against its linked module's
-    real contents: every file in that domain, with its purpose summary (if
-    enriched) and the actual class/function names AST found in it. Returns
-    {"ok": False, "message": ...} instead of raising when the doc isn't
-    linked yet or its domain doesn't exist in this run -- both are normal,
-    actionable states, not errors."""
-    domain = doc.get("domain")
-    if not domain:
-        return {
-            "ok": False,
-            "message": "This document isn't linked to a module yet -- set its `domain` field first "
-            "(see the repo's Module scores for available names).",
-        }
-
-    file_nodes = [n for n, d in g.nodes(data=True) if d.get("type") == "File" and d.get("domain") == domain]
+    """Everything an agent needs to compare `doc` against the codebase's real,
+    complete contents: every module (business-domain grouping, see
+    kg/dev_graph_builder.py), each with its purpose summary (if enriched) and
+    the actual class/function names AST found in each of its files."""
+    file_nodes = [n for n, d in g.nodes(data=True) if d.get("type") == "File"]
     if not file_nodes:
-        available = sorted({d["domain"] for _, d in g.nodes(data=True) if d.get("type") == "File" and d.get("domain")})
-        return {
-            "ok": False,
-            "message": f"No module named '{domain}' in this run. Available: {', '.join(available)}",
-        }
+        return {"ok": False, "message": "This run's graph has no files to compare against."}
 
-    files = []
+    by_domain: dict[str, list[dict]] = {}
     for file_id in sorted(file_nodes):
         data = g.nodes[file_id]
+        domain = data.get("domain") or "(ungrouped)"
         classes = [
             g.nodes[v]["label"] for _, v, ed in g.out_edges(file_id, data=True)
             if ed.get("relation") == "DEFINES" and g.nodes[v].get("type") == "Class"
@@ -51,15 +44,17 @@ def gap_analysis_context(g: nx.MultiDiGraph, doc: dict) -> dict:
             g.nodes[v]["label"] for _, v, ed in g.out_edges(file_id, data=True)
             if ed.get("relation") == "DEFINES" and g.nodes[v].get("type") == "Function"
         ]
-        files.append({
+        by_domain.setdefault(domain, []).append({
             "file": data["label"],
             "purpose": data.get("purpose"),
             "classes": sorted(classes),
             "functions": sorted(functions),
         })
 
+    modules = [{"module": domain, "files": files} for domain, files in sorted(by_domain.items())]
+
     return {
         "ok": True,
         "document": {"id": doc["id"], "name": doc["name"], "content": doc["content"]},
-        "module": {"name": domain, "files": files},
+        "modules": modules,
     }

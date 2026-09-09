@@ -667,7 +667,7 @@ function renderDocCard(doc) {
   return `
     <div class="doc-card" data-doc-id="${doc.id}">
       <div class="doc-card-head">
-        <h4>${escapeHtml(doc.name)}${doc.domain ? ` <span class="finding-cat cat-dead_locator">${escapeHtml(doc.domain)}</span>` : ` <span class="finding-cat cat-isolated_file">not linked</span>`}</h4>
+        <h4>${escapeHtml(doc.name)}</h4>
         <div class="doc-card-actions">
           <button type="button" class="btn" data-action="edit-doc">Edit</button>
           <button type="button" class="btn btn-danger" data-action="delete-doc">Delete</button>
@@ -676,7 +676,7 @@ function renderDocCard(doc) {
       <div class="doc-card-content">${escapeHtml(preview)}</div>
       <details>
         <summary class="small muted" style="cursor:pointer;">Gap analysis</summary>
-        <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the module's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
+        <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
         <button type="button" class="btn" data-action="get-context">Get analysis context</button>
         <div class="doc-gap-context is-hidden" data-role="context"></div>
         <label class="small">Paste findings JSON
@@ -710,16 +710,9 @@ function openDocModal(doc = null) {
   $("#docModalTitle").textContent = doc ? "Edit document" : "Add document";
   $("#docSubmitBtn").textContent = doc ? "Save changes" : "Save document";
 
-  const domainSelect = $("#docDomainInput");
-  const latest = activeRuns.find((r) => r.status === "success");
-  const domains = latest?.stats?.module_scores?.map((m) => m.module) || [];
-  domainSelect.innerHTML =
-    `<option value="">Not linked yet</option>` + domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
-
   if (doc) {
     $("#docNameInput").value = doc.name;
     $("#docContentInput").value = doc.content;
-    domainSelect.value = doc.domain || "";
   }
   $("#docModalBackdrop").hidden = false;
 }
@@ -733,7 +726,6 @@ async function submitDocForm(ev) {
   const payload = {
     name: fd.get("name"),
     content: fd.get("content"),
-    domain: fd.get("domain") || null,
   };
   try {
     if (editingDocId) await api(`/documents/${editingDocId}`, { method: "PUT", body: JSON.stringify(payload) });

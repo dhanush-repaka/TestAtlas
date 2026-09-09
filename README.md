@@ -15,8 +15,8 @@ Python via the stdlib `ast` module today), then layers two things on top:
   reading the actual files and posting summaries back through the API. This
   deliberately isn't a live API call baked into the backend, so running this adds
   no metered LLM cost of its own.
-- **Doc-vs-code gap detection** — link a project doc to a module and compare
-  its claims against what that module actually contains, surfacing real
+- **Doc-vs-code gap detection** — upload a high-level process doc and compare
+  its claims against the whole codebase's real contents, surfacing real
   development gaps (a documented capability with no code behind it, or the
   reverse). Same non-live-API pattern as purpose summaries.
 
@@ -61,14 +61,15 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Insights** — module scores (instant, local, no Neo4j needed) plus, if
   Neo4j is configured, the most-critical-nodes/bottleneck rankings and a
   direct link into Neo4j's own Browser.
-- **Docs** — paste or upload a project doc (README, design note) and link it
-  to a business module. "Get analysis context" bundles the doc's content with
-  that module's real files/classes/functions/purpose summaries; hand that to
-  an LLM session and ask it to compare the two, then paste the resulting
-  findings back. Surfaces real development gaps — a documented capability
-  with no corresponding code, or code with no matching documentation. This
-  can't fully self-drive for an anonymous visitor (same reason enrichment
-  can't): the comparison needs an LLM actually reading both sides.
+- **Docs** — paste or upload a high-level process/architecture doc covering
+  the system overall (not one per module). "Get analysis context" bundles the
+  doc's content with *every* module's real files/classes/functions/purpose
+  summaries; hand that to an LLM session and ask it to compare the two, then
+  paste the resulting findings back. Surfaces real development gaps — a
+  documented capability with no corresponding code, or code with no matching
+  documentation. This can't fully self-drive for an anonymous visitor (same
+  reason enrichment can't): the comparison needs an LLM actually reading both
+  sides.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
@@ -117,7 +118,7 @@ kg/
   dev_queries.py         findings over that graph
   enrichment.py          LLM semantic layer: what needs a purpose summary
                           (and optionally a domain override), merged back onto the graph
-  doc_gaps.py            LLM gap-analysis layer: bundles a doc + its linked
+  doc_gaps.py            LLM gap-analysis layer: bundles a doc + every
                           module's real contents for an agent to compare
   graph_io.py            shared load/save for a run's persisted graph.json
   visualize.py           pyvis interactive HTML (physics layout, domain-colored) + exports

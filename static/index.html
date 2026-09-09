@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=20" />
+<link rel="stylesheet" href="static/styles.css?v=21" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -126,7 +126,7 @@
         <div class="findings-toolbar">
           <button class="btn btn-primary" id="addDocBtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>Add document</button>
         </div>
-        <p class="muted small">Link a doc (README, design note) to a business module, then compare its claims against what that module actually contains. Analysis needs an LLM session (Claude Code or similar) reading both sides — see the "Get analysis context" step on each document.</p>
+        <p class="muted small">Upload a high-level process/architecture doc covering the system overall, then compare its claims against the whole codebase's real contents. Analysis needs an LLM session (Claude Code or similar) reading both sides — see the "Get analysis context" step on each document.</p>
         <div id="docsList"></div>
       </section>
 
@@ -208,15 +208,9 @@
     <div class="modal">
       <h2 id="docModalTitle">Add document</h2>
       <form id="docForm">
-        <label>Name<input name="name" id="docNameInput" required placeholder="e.g. Payments design doc" /></label>
-        <label>Module (business domain this doc describes)
-          <select name="domain" id="docDomainInput">
-            <option value="">Not linked yet</option>
-          </select>
-          <span class="hint">From the repo's latest run. Re-run analysis first if the module you want isn't listed.</span>
-        </label>
+        <label>Name<input name="name" id="docNameInput" required placeholder="e.g. Checkout flow overview" /></label>
         <label>Content
-          <textarea name="content" id="docContentInput" required rows="10" placeholder="Paste the doc's text here (Markdown or plain text)."></textarea>
+          <textarea name="content" id="docContentInput" required rows="10" placeholder="Paste a high-level process/architecture doc here (Markdown or plain text) -- describe the system's flows overall, not just one module."></textarea>
         </label>
         <div class="modal-actions">
           <button type="button" class="btn" id="cancelDocBtn">Cancel</button>
@@ -228,6 +222,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=20"></script>
+  <script src="static/app.js?v=21"></script>
 </body>
 </html>

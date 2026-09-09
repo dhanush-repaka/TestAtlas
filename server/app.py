@@ -414,14 +414,13 @@ def api_apply_enrichment(run_id: str, payload: EnrichmentIn):
 
 class DocumentIn(BaseModel):
     name: str
-    content: str
-    domain: Optional[str] = None  # business module this doc describes -- see kg/dev_graph_builder.py
+    content: str  # a high-level process/architecture doc covering the system overall,
+                  # not scoped to one module -- gap analysis compares it against the whole graph
 
 
 class DocumentUpdate(BaseModel):
     name: Optional[str] = None
     content: Optional[str] = None
-    domain: Optional[str] = None
 
 
 class GapFinding(BaseModel):
@@ -466,8 +465,8 @@ def api_delete_document(doc_id: str):
 @api.get("/documents/{doc_id}/gap-analysis-context")
 def api_gap_analysis_context(doc_id: str):
     """What an LLM pass (Claude Code itself, or a subagent -- see
-    kg/doc_gaps.py) needs to compare this document's claims against what its
-    linked module actually contains: the doc's content plus the module's real
+    kg/doc_gaps.py) needs to compare this document's claims against the whole
+    codebase's real contents: the doc's content plus every module's real
     files/classes/functions/purpose summaries, from the repo's latest
     successful run."""
     doc = db.get_document(doc_id)
