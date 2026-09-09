@@ -52,6 +52,37 @@ CREATE TABLE IF NOT EXISTS runs (
     html_path TEXT,
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
+
+-- Project docs (READMEs, design notes, ...) -- repo-level, independent of any
+-- one run: a design doc doesn't change every time the code gets re-analyzed.
+-- Each doc is linked to the business module (domain) it describes, which is
+-- what makes gap analysis possible (kg/dev_graph_builder.py's `domain`
+-- rollup gives us "what does this module actually contain" to compare against).
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    domain TEXT,                      -- business module this doc describes, e.g. "kg" or "app.payments"
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+
+-- Gap findings from comparing a document's claims against what its linked
+-- module's own contents (files/classes/functions/purposes) actually show.
+-- Produced by an LLM pass (see kg/doc_gaps.py) reading both sides -- not
+-- computed here, this table just stores the result of that comparison.
+CREATE TABLE IF NOT EXISTS doc_gap_findings (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    repo_id TEXT NOT NULL,
+    run_id TEXT,                      -- which run's graph was used as the comparison baseline
+    category TEXT NOT NULL,           -- 'missing_implementation' | 'undocumented_capability' | 'mismatch'
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (document_id) REFERENCES documents(id)
+);
 """
 
 
@@ -188,6 +219,11 @@ def list_repos() -> list[dict]:
 
 def delete_repo(repo_id: str) -> None:
     with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM doc_gap_findings WHERE document_id IN (SELECT id FROM documents WHERE repo_id = ?)",
+            (repo_id,),
+        )
+        conn.execute("DELETE FROM documents WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM runs WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
 
@@ -257,3 +293,87 @@ def list_runs(repo_id: str) -> list[dict]:
         d["finding_count"] = len(findings) if findings else 0
         out.append(d)
     return out
+
+
+def get_latest_successful_run(repo_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM runs WHERE repo_id = ? AND status = 'success' ORDER BY started_at DESC LIMIT 1",
+            (repo_id,),
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["stats"] = json.loads(d.pop("stats_json")) if d.get("stats_json") else None
+    d["findings"] = json.loads(d.pop("findings_json")) if d.get("findings_json") else None
+    return d
+
+
+# --------------------------------------------------------------------------- documents
+
+def create_document(repo_id: str, payload: dict) -> dict:
+    doc_id = str(uuid.uuid4())
+    ts = now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO documents (id, repo_id, name, content, domain, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (doc_id, repo_id, payload["name"], payload["content"], payload.get("domain"), ts, ts),
+        )
+    return get_document(doc_id)
+
+
+def update_document(doc_id: str, payload: dict) -> dict | None:
+    if not get_document(doc_id):
+        return None
+    fields = ["name", "content", "domain"]
+    updates = {f: payload[f] for f in fields if f in payload}
+    if not updates:
+        return get_document(doc_id)
+    updates["updated_at"] = now()
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE documents SET {set_clause} WHERE id = ?", (*updates.values(), doc_id))
+    return get_document(doc_id)
+
+
+def get_document(doc_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_documents(repo_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE repo_id = ? ORDER BY created_at DESC", (repo_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_document(doc_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM doc_gap_findings WHERE document_id = ?", (doc_id,))
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+
+
+# --------------------------------------------------------------------------- doc gap findings
+
+def replace_doc_gap_findings(document_id: str, repo_id: str, run_id: str | None, findings: list[dict]) -> None:
+    """Idempotent: drops this document's previous gap findings and stores the new set --
+    a fresh comparison pass supersedes the last one rather than accumulating stale results."""
+    ts = now()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM doc_gap_findings WHERE document_id = ?", (document_id,))
+        for f in findings:
+            conn.execute(
+                "INSERT INTO doc_gap_findings (id, document_id, repo_id, run_id, category, description, created_at) VALUES (?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), document_id, repo_id, run_id, f["category"], f["description"], ts),
+            )
+
+
+def list_doc_gap_findings(document_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM doc_gap_findings WHERE document_id = ? ORDER BY created_at DESC", (document_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from ado import client as ado_client
 from github import client as github_client
 from kg import neo4j_sync
+from kg.doc_gaps import ALLOWED_GAP_CATEGORIES, gap_analysis_context
 from kg.enrichment import apply_enrichment, enrichment_coverage, enrichment_targets
 from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
@@ -379,7 +380,7 @@ class EnrichmentIn(BaseModel):
 @api.get("/runs/{run_id}/enrichment")
 def api_get_enrichment_targets(run_id: str):
     """What an LLM pass (Claude Code itself, or a subagent -- see
-    kg/enrichment.py) should read and summarize next: every Module/Class in
+    kg/enrichment.py) should read and summarize next: every File/Class in
     this run's graph that doesn't have a `purpose` yet."""
     run = db.get_run(run_id)
     if not run or not run.get("graph_path"):
@@ -407,6 +408,100 @@ def api_apply_enrichment(run_id: str, payload: EnrichmentIn):
         stats["module_scores"] = score_modules(g)
     db.update_run_stats(run_id, stats)
     return {"applied": applied, **stats["enrichment"]}
+
+
+# --------------------------------------------------------------------------- documents & gap analysis
+
+class DocumentIn(BaseModel):
+    name: str
+    content: str
+    domain: Optional[str] = None  # business module this doc describes -- see kg/dev_graph_builder.py
+
+
+class DocumentUpdate(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
+    domain: Optional[str] = None
+
+
+class GapFinding(BaseModel):
+    category: str
+    description: str
+
+
+class GapFindingsIn(BaseModel):
+    findings: list[GapFinding]
+
+
+@api.get("/repos/{repo_id}/documents")
+def api_list_documents(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    return db.list_documents(repo_id)
+
+
+@api.post("/repos/{repo_id}/documents")
+def api_create_document(repo_id: str, payload: DocumentIn):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    return db.create_document(repo_id, payload.model_dump())
+
+
+@api.put("/documents/{doc_id}")
+def api_update_document(doc_id: str, payload: DocumentUpdate):
+    updated = db.update_document(doc_id, {k: v for k, v in payload.model_dump().items() if v is not None})
+    if not updated:
+        raise HTTPException(404, "document not found")
+    return updated
+
+
+@api.delete("/documents/{doc_id}")
+def api_delete_document(doc_id: str):
+    if not db.get_document(doc_id):
+        raise HTTPException(404, "document not found")
+    db.delete_document(doc_id)
+    return {"ok": True}
+
+
+@api.get("/documents/{doc_id}/gap-analysis-context")
+def api_gap_analysis_context(doc_id: str):
+    """What an LLM pass (Claude Code itself, or a subagent -- see
+    kg/doc_gaps.py) needs to compare this document's claims against what its
+    linked module actually contains: the doc's content plus the module's real
+    files/classes/functions/purpose summaries, from the repo's latest
+    successful run."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(404, "document not found")
+    run = db.get_latest_successful_run(doc["repo_id"])
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    context = gap_analysis_context(g, doc)
+    context["run_id"] = run["id"]
+    return context
+
+
+@api.post("/documents/{doc_id}/gap-findings")
+def api_post_gap_findings(doc_id: str, payload: GapFindingsIn):
+    """Stores the result of a gap-analysis comparison -- replaces this
+    document's previous findings, since a fresh pass supersedes the last one."""
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(404, "document not found")
+    for f in payload.findings:
+        if f.category not in ALLOWED_GAP_CATEGORIES:
+            raise HTTPException(400, f"invalid category '{f.category}' -- must be one of {sorted(ALLOWED_GAP_CATEGORIES)}")
+    run = db.get_latest_successful_run(doc["repo_id"])
+    db.replace_doc_gap_findings(doc_id, doc["repo_id"], run["id"] if run else None, [f.model_dump() for f in payload.findings])
+    return {"stored": len(payload.findings)}
+
+
+@api.get("/documents/{doc_id}/gap-findings")
+def api_get_gap_findings(doc_id: str):
+    if not db.get_document(doc_id):
+        raise HTTPException(404, "document not found")
+    return db.list_doc_gap_findings(doc_id)
 
 
 app.include_router(api)

@@ -185,6 +185,7 @@ async function showRepoDetail(id) {
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
   await loadRuns();
+  await loadDocsPanel();
 }
 
 async function loadRuns() {
@@ -637,6 +638,166 @@ function toggleTheme() {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
 }
 
+// --------------------------------------------------------------------------- documents & gap analysis
+
+let activeDocuments = [];
+let editingDocId = null;
+
+async function loadDocsPanel() {
+  activeDocuments = await api(`/repos/${activeRepoId}/documents`).catch(() => []);
+  renderDocsList();
+}
+
+function renderDocsList() {
+  const el = $("#docsList");
+  if (!activeDocuments.length) {
+    el.innerHTML = `<p class="muted small">No documents yet — add a README or design note and link it to a module.</p>`;
+    return;
+  }
+  el.innerHTML = activeDocuments.map(renderDocCard).join("");
+  activeDocuments.forEach((doc) => {
+    api(`/documents/${doc.id}/gap-findings`)
+      .then((findings) => renderGapFindings(doc.id, findings))
+      .catch(() => {});
+  });
+}
+
+function renderDocCard(doc) {
+  const preview = doc.content.length > 600 ? doc.content.slice(0, 600) + "…" : doc.content;
+  return `
+    <div class="doc-card" data-doc-id="${doc.id}">
+      <div class="doc-card-head">
+        <h4>${escapeHtml(doc.name)}${doc.domain ? ` <span class="finding-cat cat-dead_locator">${escapeHtml(doc.domain)}</span>` : ` <span class="finding-cat cat-isolated_file">not linked</span>`}</h4>
+        <div class="doc-card-actions">
+          <button type="button" class="btn" data-action="edit-doc">Edit</button>
+          <button type="button" class="btn btn-danger" data-action="delete-doc">Delete</button>
+        </div>
+      </div>
+      <div class="doc-card-content">${escapeHtml(preview)}</div>
+      <details>
+        <summary class="small muted" style="cursor:pointer;">Gap analysis</summary>
+        <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the module's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
+        <button type="button" class="btn" data-action="get-context">Get analysis context</button>
+        <div class="doc-gap-context is-hidden" data-role="context"></div>
+        <label class="small">Paste findings JSON
+          <textarea data-role="findings-input" rows="4" placeholder='[{"category":"missing_implementation","description":"..."}]'></textarea>
+        </label>
+        <button type="button" class="btn btn-primary" data-action="submit-findings">Submit findings</button>
+        <div data-role="findings-list"></div>
+      </details>
+    </div>`;
+}
+
+function renderGapFindings(docId, findings) {
+  const card = $(`.doc-card[data-doc-id="${docId}"]`);
+  if (!card) return;
+  const el = card.querySelector('[data-role="findings-list"]');
+  if (!findings.length) { el.innerHTML = `<p class="muted small">No findings yet.</p>`; return; }
+  el.innerHTML = findings
+    .map(
+      (f) => `
+      <div class="doc-gap-finding">
+        <span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span>
+        <p>${escapeHtml(f.description)}</p>
+      </div>`
+    )
+    .join("");
+}
+
+function openDocModal(doc = null) {
+  $("#docForm").reset();
+  editingDocId = doc ? doc.id : null;
+  $("#docModalTitle").textContent = doc ? "Edit document" : "Add document";
+  $("#docSubmitBtn").textContent = doc ? "Save changes" : "Save document";
+
+  const domainSelect = $("#docDomainInput");
+  const latest = activeRuns.find((r) => r.status === "success");
+  const domains = latest?.stats?.module_scores?.map((m) => m.module) || [];
+  domainSelect.innerHTML =
+    `<option value="">Not linked yet</option>` + domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+
+  if (doc) {
+    $("#docNameInput").value = doc.name;
+    $("#docContentInput").value = doc.content;
+    domainSelect.value = doc.domain || "";
+  }
+  $("#docModalBackdrop").hidden = false;
+}
+function closeDocModal() {
+  $("#docModalBackdrop").hidden = true;
+}
+
+async function submitDocForm(ev) {
+  ev.preventDefault();
+  const fd = new FormData(ev.target);
+  const payload = {
+    name: fd.get("name"),
+    content: fd.get("content"),
+    domain: fd.get("domain") || null,
+  };
+  try {
+    if (editingDocId) await api(`/documents/${editingDocId}`, { method: "PUT", body: JSON.stringify(payload) });
+    else await api(`/repos/${activeRepoId}/documents`, { method: "POST", body: JSON.stringify(payload) });
+    closeDocModal();
+    await loadDocsPanel();
+    toast(editingDocId ? "Document saved" : "Document added", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function deleteDoc(docId) {
+  if (!confirm("Delete this document and its gap findings?")) return;
+  await api(`/documents/${docId}`, { method: "DELETE" });
+  await loadDocsPanel();
+}
+
+async function getGapContext(docId, card) {
+  const el = card.querySelector('[data-role="context"]');
+  el.classList.remove("is-hidden");
+  el.textContent = "Loading…";
+  try {
+    const ctx = await api(`/documents/${docId}/gap-analysis-context`);
+    el.textContent = JSON.stringify(ctx, null, 2);
+  } catch (e) {
+    el.textContent = "Error: " + e.message;
+  }
+}
+
+async function submitGapFindings(docId, card) {
+  const raw = card.querySelector('[data-role="findings-input"]').value.trim();
+  if (!raw) { toast("Paste the findings JSON first", "error"); return; }
+  let findings;
+  try {
+    findings = JSON.parse(raw);
+  } catch (e) {
+    toast("That's not valid JSON: " + e.message, "error");
+    return;
+  }
+  try {
+    await api(`/documents/${docId}/gap-findings`, { method: "POST", body: JSON.stringify({ findings }) });
+    const stored = await api(`/documents/${docId}/gap-findings`);
+    renderGapFindings(docId, stored);
+    toast("Findings saved", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+function wireDocsList() {
+  $("#docsList").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-action]");
+    if (!btn) return;
+    const card = ev.target.closest(".doc-card");
+    const docId = card.dataset.docId;
+    const action = btn.dataset.action;
+    if (action === "edit-doc") openDocModal(activeDocuments.find((d) => d.id === docId));
+    else if (action === "delete-doc") deleteDoc(docId);
+    else if (action === "get-context") getGapContext(docId, card);
+    else if (action === "submit-findings") submitGapFindings(docId, card);
+  });
+}
+
 // --------------------------------------------------------------------------- wire up
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -665,4 +826,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $all("#graphSourceSegmented .seg-btn").forEach((b) => b.addEventListener("click", () => setGraphSource(b.dataset.value)));
   $("#insightsRunSelect").addEventListener("change", loadInsightsPanel);
   $("#compareRunBtn").addEventListener("click", runCompare);
+
+  $("#addDocBtn").addEventListener("click", () => openDocModal());
+  $("#cancelDocBtn").addEventListener("click", closeDocModal);
+  $("#docModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "docModalBackdrop") closeDocModal(); });
+  $("#docForm").addEventListener("submit", submitDocForm);
+  wireDocsList();
 });

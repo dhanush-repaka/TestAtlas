@@ -15,6 +15,10 @@ Python via the stdlib `ast` module today), then layers two things on top:
   reading the actual files and posting summaries back through the API. This
   deliberately isn't a live API call baked into the backend, so running this adds
   no metered LLM cost of its own.
+- **Doc-vs-code gap detection** — link a project doc to a module and compare
+  its claims against what that module actually contains, surfacing real
+  development gaps (a documented capability with no code behind it, or the
+  reverse). Same non-live-API pattern as purpose summaries.
 
 Everything is local: a FastAPI backend + SQLite, and a small dashboard UI. An
 optional free Neo4j AuraDB instance can hold a browsable/queryable copy of each
@@ -57,6 +61,14 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Insights** — module scores (instant, local, no Neo4j needed) plus, if
   Neo4j is configured, the most-critical-nodes/bottleneck rankings and a
   direct link into Neo4j's own Browser.
+- **Docs** — paste or upload a project doc (README, design note) and link it
+  to a business module. "Get analysis context" bundles the doc's content with
+  that module's real files/classes/functions/purpose summaries; hand that to
+  an LLM session and ask it to compare the two, then paste the resulting
+  findings back. Surfaces real development gaps — a documented capability
+  with no corresponding code, or code with no matching documentation. This
+  can't fully self-drive for an anonymous visitor (same reason enrichment
+  can't): the comparison needs an LLM actually reading both sides.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
@@ -105,6 +117,8 @@ kg/
   dev_queries.py         findings over that graph
   enrichment.py          LLM semantic layer: what needs a purpose summary
                           (and optionally a domain override), merged back onto the graph
+  doc_gaps.py            LLM gap-analysis layer: bundles a doc + its linked
+                          module's real contents for an agent to compare
   graph_io.py            shared load/save for a run's persisted graph.json
   visualize.py           pyvis interactive HTML (physics layout, domain-colored) + exports
   neo4j_sync.py          optional: syncs a run's graph into Neo4j, batched via UNWIND
@@ -219,10 +233,10 @@ request after idle time.
   node ids), and can miss/hallucinate exactly the mechanical details that
   matter (aliased imports, indirect calls). The LLM's job here is strictly
   the semantic layer (`kg/enrichment.py`), on top of a mechanically exact graph.
-- **Project docs into the knowledge base**: not built yet. Manual upload/paste
-  of READMEs/design docs as a new node type, linked into the graph so purpose
-  summaries can cite them, is the natural next step (SharePoint auto-ingest
-  is the harder version — needs an Azure AD app registration).
+- **SharePoint auto-ingest for docs**: the **Docs** tab (see below) takes
+  manual paste/upload today, which gets most of the value for near-zero
+  effort. Auto-pulling from SharePoint is the harder version of the same
+  idea — needs an Azure AD app registration.
 - **LLM-generated test cases**: not built yet. The idea is to prioritize by
   (high PageRank/criticality) × (no existing test references it), then have
   an LLM draft real test stubs for the highest-priority gaps.
