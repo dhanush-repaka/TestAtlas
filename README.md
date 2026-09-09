@@ -87,9 +87,10 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     a "Run automatic analysis" button appears above the manual flow and makes
     one live call to OpenAI (`gpt-4o-mini`, `server/llm_gap_analysis.py`) to
     do the same combined comparison itself, replacing the repo's stored
-    findings with the result. This is the one part of TestAtlas with a real,
-    metered per-use cost, entirely opt-in — with no key configured it's a
-    no-op and the free manual flow above still works exactly as before.
+    findings with the result. This is one of two parts of TestAtlas with a
+    real, metered per-use cost (see "Test Cases" below for the other), both
+    entirely opt-in — with no key configured this one's a no-op and the free
+    manual flow above still works exactly as before.
     **Verified against production** (real API call, real response, findings
     stored correctly) — but the LLM's accuracy is not perfect: in testing it
     both invented a false "missing" finding for a class that was clearly
@@ -97,6 +98,19 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     planted false requirement in the test document. Treat its findings as a
     fast first pass to review, not a substitute for the manual flow's
     human-in-the-loop check.
+- **Test Cases** — a "Generate test cases" button (also gated on
+  `OPENAI_API_KEY`, `server/llm_test_generation.py`) makes one live OpenAI
+  call over the same graph+docs context gap analysis uses, and designs up to
+  40 structured, QA-style test cases: title, preconditions, ordered steps,
+  expected result, and which specific edge case it targets. Classified as
+  `happy_path`, `edge_case` (boundary values, invalid input, timing/expiry),
+  or `error_handling`, shown as summary stat cards plus a filterable list.
+  These are reviewable records, not runnable code, and the model only ever
+  sees names/purpose summaries (never real function bodies, which the graph
+  doesn't carry) — treat them as a first draft to adapt, not a QA suite
+  ready to run as-is. Unlike gap analysis, this has **no free manual
+  fallback** today: with no `OPENAI_API_KEY` configured, the button simply
+  doesn't appear.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
@@ -132,7 +146,9 @@ server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
   llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
-                          call (OPENAI_API_KEY) -- the one metered feature here
+                          call (OPENAI_API_KEY) -- one of two metered features here
+  llm_test_generation.py optional: designs test cases via a live OpenAI API
+                          call (OPENAI_API_KEY, same key) -- the other metered feature
   db.py                 SQLite: repos + runs
   crypto.py             Fernet encryption for stored PATs (data/secret.key, gitignored)
   auth.py                optional single-password gate (TESTATLAS_PASSWORD)
@@ -270,9 +286,13 @@ request after idle time.
   manual paste/upload today, which gets most of the value for near-zero
   effort. Auto-pulling from SharePoint is the harder version of the same
   idea — needs an Azure AD app registration.
-- **LLM-generated test cases**: not built yet. The idea is to prioritize by
-  (high PageRank/criticality) × (no existing test references it), then have
-  an LLM draft real test stubs for the highest-priority gaps.
+- **LLM-generated test cases**: built (see "Test Cases" above) as structured
+  QA records covering the codebase broadly, prioritized by what the docs call
+  out as important. Not yet built: prioritizing specifically by (high
+  PageRank/criticality) × (no existing test references it) -- the graph does
+  parse test files today, but nothing yet links a test back to the function
+  it exercises to compute "no existing test references it" -- and generating
+  actual runnable pytest stubs instead of QA-style records.
 - **Automating the enrichment loop**: today a person (or an agent on their
   behalf) calls the enrichment API by hand. A "Generate purpose summaries"
   button that kicks off a background job doing the same thing would make

@@ -1,12 +1,13 @@
 """Automatic gap analysis via a live OpenAI API call.
 
-This is deliberately the ONE part of TestAtlas that costs money per use --
-by explicit user choice. Every other LLM-shaped feature in this project
-(purpose-summary enrichment, the manual gap-analysis flow) avoids a metered
-API call on principle; this endpoint is the sole, opt-in exception, gated
-entirely behind OPENAI_API_KEY being set. With no key configured, this
-module is a no-op and the manual "Get analysis context" + paste-findings
-flow (kg/doc_gaps.py) still works exactly as before, for free.
+This is deliberately one of the few parts of TestAtlas that costs money per
+use -- by explicit user choice. Every other LLM-shaped feature in this
+project (purpose-summary enrichment, the manual gap-analysis flow) avoids a
+metered API call on principle; this endpoint and server/llm_test_generation.py
+are the opt-in exceptions, both gated entirely behind OPENAI_API_KEY being
+set. With no key configured, this module is a no-op and the manual "Get
+analysis context" + paste-findings flow (kg/doc_gaps.py) still works exactly
+as before, for free.
 """
 from __future__ import annotations
 

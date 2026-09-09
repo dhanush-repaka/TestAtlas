@@ -76,6 +76,7 @@
         <button class="tab" data-tab="insights"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>Insights</button>
         <button class="tab" data-tab="docs"><svg class="ic" viewBox="0 0 24 24"><path d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12h6M9 16h6M9 8h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Docs</button>
         <button class="tab" data-tab="gaps"><svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="12" r="6" stroke="currentColor" stroke-width="1.6"/><circle cx="15" cy="12" r="6" stroke="currentColor" stroke-width="1.6"/></svg>Gap Analysis</button>
+        <button class="tab" data-tab="tests"><svg class="ic" viewBox="0 0 24 24"><path d="M9 3h6v4l4 12a1.5 1.5 0 01-1.4 2H6.4A1.5 1.5 0 015 19L9 7V3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 15h8M9 3h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Test Cases</button>
         <button class="tab" data-tab="compare"><svg class="ic" viewBox="0 0 24 24"><path d="M8 4v13M8 17l-3-3M8 17l3-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 20V7M16 7l-3 3M16 7l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Compare runs</button>
       </div>
 
@@ -167,6 +168,34 @@
           </label>
         </div>
         <div id="gapFindingsListAll"></div>
+      </section>
+
+      <section class="tab-panel" id="panel-tests" hidden>
+        <div class="card-grid" id="testCaseSummaryCards"></div>
+
+        <div class="result-block">
+          <h3>Generate test cases</h3>
+          <p class="muted small">Uses an LLM (OpenAI) to design test cases — happy paths plus realistic edge cases (boundary values, invalid input, error/expiry conditions) — from this repo's documents and the codebase's real structure. Structured, reviewable records, not runnable code; treat them as a first draft.</p>
+          <p class="muted small" id="testCaseDocsIncluded"></p>
+          <div class="findings-toolbar">
+            <button type="button" class="btn btn-primary is-hidden" id="runTestGenBtn">Generate test cases</button>
+          </div>
+          <p class="muted small is-hidden" id="testGenHint">Calls OpenAI directly — this is metered, same as automatic gap analysis.</p>
+          <p class="muted small is-hidden" id="testGenUnavailableHint">Not configured on this deployment (no <code>OPENAI_API_KEY</code>) — there's no free manual fallback for this feature yet.</p>
+        </div>
+
+        <h3 class="section-title">Test cases</h3>
+        <div class="findings-toolbar">
+          <label class="field-inline">Category
+            <select id="testCaseFilterCategorySelect">
+              <option value="">All categories</option>
+              <option value="happy_path">Happy path</option>
+              <option value="edge_case">Edge case</option>
+              <option value="error_handling">Error handling</option>
+            </select>
+          </label>
+        </div>
+        <div id="testCaseListAll"></div>
       </section>
 
       <section class="tab-panel" id="panel-compare" hidden>
@@ -266,6 +295,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=26"></script>
+  <script src="static/app.js?v=27"></script>
 </body>
 </html>

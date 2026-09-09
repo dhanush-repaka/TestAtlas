@@ -96,6 +96,25 @@ CREATE TABLE IF NOT EXISTS doc_gap_findings (
     created_at TEXT NOT NULL,
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );
+
+-- LLM-generated test cases -- structured QA-style records (not runnable code),
+-- produced by one live OpenAI call per repo from the same graph+docs context
+-- gap analysis uses (see server/llm_test_generation.py). Replaced wholesale on
+-- each run, same "fresh pass supersedes the last one" rule as gap findings.
+CREATE TABLE IF NOT EXISTS test_cases (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    run_id TEXT,                      -- which run's graph was used to generate these
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,           -- 'happy_path' | 'edge_case' | 'error_handling'
+    target TEXT,                      -- the function/class/flow this case exercises, if identifiable
+    preconditions TEXT,
+    steps TEXT NOT NULL,              -- JSON-encoded list of ordered step strings
+    expected_result TEXT NOT NULL,
+    edge_case_description TEXT,       -- what specific edge condition this targets (blank for happy_path)
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
 """
 
 
@@ -237,6 +256,7 @@ def delete_repo(repo_id: str) -> None:
             (repo_id,),
         )
         conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM test_cases WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM documents WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM runs WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
@@ -395,3 +415,38 @@ def list_repo_gap_findings(repo_id: str) -> list[dict]:
             "SELECT * FROM repo_gap_findings WHERE repo_id = ? ORDER BY created_at DESC", (repo_id,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- test cases
+
+def replace_test_cases(repo_id: str, run_id: str | None, cases: list[dict]) -> None:
+    """Idempotent: drops this repo's previously generated test cases and stores the
+    new set -- a fresh generation pass supersedes the last one rather than
+    accumulating stale results."""
+    ts = now()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM test_cases WHERE repo_id = ?", (repo_id,))
+        for c in cases:
+            conn.execute(
+                """INSERT INTO test_cases
+                   (id, repo_id, run_id, title, category, target, preconditions, steps, expected_result, edge_case_description, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()), repo_id, run_id, c["title"], c["category"], c.get("target"),
+                    c.get("preconditions"), json.dumps(c["steps"]), c["expected_result"],
+                    c.get("edge_case_description"), ts,
+                ),
+            )
+
+
+def list_test_cases(repo_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM test_cases WHERE repo_id = ? ORDER BY created_at DESC", (repo_id,)
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["steps"] = json.loads(d["steps"]) if d["steps"] else []
+        out.append(d)
+    return out

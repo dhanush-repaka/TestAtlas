@@ -21,7 +21,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, llm_gap_analysis
+from . import auth, db, doc_extract, llm_gap_analysis, llm_test_generation
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -583,6 +583,49 @@ def api_gap_analysis_config():
     """Lets the UI know whether the automatic (paid) analysis button should
     show at all -- it's opt-in per deployment, off unless OPENAI_API_KEY is set."""
     return {"automatic_available": llm_gap_analysis.is_configured()}
+
+
+# --------------------------------------------------------------------------- LLM test case generation
+
+@api.post("/repos/{repo_id}/test-cases/run")
+def api_run_test_generation(repo_id: str):
+    """Generates test cases via a live OpenAI API call, from the same
+    graph+docs context gap analysis uses (see server/llm_test_generation.py).
+    Unlike gap analysis this has no free manual fallback -- gated entirely on
+    OPENAI_API_KEY, same as automatic gap analysis. Replaces this repo's
+    stored test cases with the result."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    docs = db.list_documents(repo_id)
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    context = gap_analysis_context(g, docs)
+    if not context["ok"]:
+        raise HTTPException(400, context["message"])
+    try:
+        cases = llm_test_generation.run_test_generation(context)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.replace_test_cases(repo_id, run["id"], cases)
+    return {"applied": len(cases), "test_cases": cases}
+
+
+@api.get("/repos/{repo_id}/test-cases")
+def api_list_test_cases(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    return db.list_test_cases(repo_id)
+
+
+@api.get("/test-generation/config")
+def api_test_generation_config():
+    """Lets the UI know whether the "Generate test cases" button should show
+    at all -- opt-in per deployment, off unless OPENAI_API_KEY is set."""
+    return {"automatic_available": llm_test_generation.is_configured()}
 
 
 app.include_router(api)

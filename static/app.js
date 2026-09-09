@@ -187,6 +187,7 @@ async function showRepoDetail(id) {
   await loadRuns();
   await loadDocsPanel();
   await loadGapsPanel();
+  await loadTestCasesPanel();
 }
 
 async function loadRuns() {
@@ -794,6 +795,102 @@ async function submitGapFindingsForSelected() {
   }
 }
 
+// --------------------------------------------------------------------------- LLM test case generation
+
+let activeTestCases = [];
+let testGenAvailable = null; // null = not checked yet
+
+async function loadTestCasesPanel() {
+  const repoId = activeRepoId;
+  if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  renderTestCaseDocsIncluded();
+
+  if (testGenAvailable === null) {
+    testGenAvailable = await api("/test-generation/config")
+      .then((c) => c.automatic_available)
+      .catch(() => false);
+    if (repoId !== activeRepoId) return;
+    $("#runTestGenBtn").classList.toggle("is-hidden", !testGenAvailable);
+    $("#testGenHint").classList.toggle("is-hidden", !testGenAvailable);
+    $("#testGenUnavailableHint").classList.toggle("is-hidden", testGenAvailable);
+  }
+
+  const cases = await api(`/repos/${repoId}/test-cases`).catch(() => []);
+  if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
+  activeTestCases = cases;
+  renderTestCaseSummary();
+  renderTestCaseList();
+}
+
+async function runTestGeneration() {
+  if (!activeDocuments.length) { toast("Add at least one document first", "error"); return; }
+  const btn = $("#runTestGenBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Generating…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/test-cases/run`, { method: "POST" });
+    await loadTestCasesPanel();
+    toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+function renderTestCaseDocsIncluded() {
+  const el = $("#testCaseDocsIncluded");
+  if (!activeDocuments.length) {
+    el.textContent = "Add at least one document (in the Docs tab) before generating test cases.";
+    return;
+  }
+  const names = activeDocuments.map((d) => d.name).join(", ");
+  el.textContent = `Based on all ${activeDocuments.length} document${activeDocuments.length === 1 ? "" : "s"} and the full codebase structure: ${names}`;
+}
+
+function renderTestCaseSummary() {
+  const total = activeTestCases.length;
+  const byCat = {};
+  for (const c of activeTestCases) byCat[c.category] = (byCat[c.category] || 0) + 1;
+  $("#testCaseSummaryCards").innerHTML = [
+    statCard(total, "Total test cases"),
+    statCard(byCat.happy_path || 0, "Happy path"),
+    statCard(byCat.edge_case || 0, "Edge case"),
+    statCard(byCat.error_handling || 0, "Error handling"),
+  ].join("");
+}
+
+function renderTestCaseList() {
+  const catFilter = $("#testCaseFilterCategorySelect").value;
+  const rows = activeTestCases.filter((c) => !catFilter || c.category === catFilter);
+  const el = $("#testCaseListAll");
+  if (!rows.length) {
+    el.innerHTML = `<p class="muted small">${activeTestCases.length ? "No test cases match this filter." : "No test cases yet — generate some above."}</p>`;
+    return;
+  }
+  el.innerHTML = rows.map(renderTestCaseCard).join("");
+}
+
+function renderTestCaseCard(c) {
+  return `
+    <div class="test-case-card">
+      <div class="test-case-head">
+        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
+        <h4>${escapeHtml(c.title)}</h4>
+        ${c.target ? `<span class="test-case-target">${escapeHtml(c.target)}</span>` : ""}
+      </div>
+      <dl>
+        ${c.preconditions ? `<dt>Preconditions</dt><dd>${escapeHtml(c.preconditions)}</dd>` : ""}
+        <dt>Steps</dt><dd><ol>${c.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol></dd>
+        <dt>Expected result</dt><dd>${escapeHtml(c.expected_result)}</dd>
+        ${c.edge_case_description ? `<dt>Edge case</dt><dd>${escapeHtml(c.edge_case_description)}</dd>` : ""}
+      </dl>
+    </div>`;
+}
+
 function renderDocsList() {
   const el = $("#docsList");
   if (!activeDocuments.length) {
@@ -954,4 +1051,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#getGapContextBtn").addEventListener("click", getGapContextForSelected);
   $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
   $("#gapFilterCategorySelect").addEventListener("change", renderGapFindingsList);
+
+  $("#runTestGenBtn").addEventListener("click", runTestGeneration);
+  $("#testCaseFilterCategorySelect").addEventListener("change", renderTestCaseList);
 });
