@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import networkx as nx
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +21,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db
+from . import auth, db, doc_extract
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -452,6 +452,44 @@ def api_update_document(doc_id: str, payload: DocumentUpdate):
     if not updated:
         raise HTTPException(404, "document not found")
     return updated
+
+
+@api.post("/repos/{repo_id}/documents/upload")
+async def api_upload_document(repo_id: str, file: UploadFile = File(...), name: Optional[str] = Form(None)):
+    """Accepts an actual document file -- .docx, .pptx, .xlsx, .pdf, .md, or
+    .txt -- and stores its extracted text as a new document. Extraction is
+    local/pure-Python (kg/doc_extract... see server/doc_extract.py), no
+    external service involved."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "file too large (max 20MB)")
+    try:
+        content = doc_extract.extract_text(file.filename or "", data)
+    except doc_extract.UnsupportedDocumentError as e:
+        raise HTTPException(400, str(e))
+    doc_name = name or (file.filename.rsplit(".", 1)[0] if file.filename else "Untitled document")
+    return db.create_document(repo_id, {"name": doc_name, "content": content})
+
+
+@api.put("/documents/{doc_id}/upload")
+async def api_upload_document_replace(doc_id: str, file: UploadFile = File(...), name: Optional[str] = Form(None)):
+    """Same as creating from a file, but replaces an existing document's
+    content -- used when editing a document by re-uploading a new file."""
+    if not db.get_document(doc_id):
+        raise HTTPException(404, "document not found")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "file too large (max 20MB)")
+    try:
+        content = doc_extract.extract_text(file.filename or "", data)
+    except doc_extract.UnsupportedDocumentError as e:
+        raise HTTPException(400, str(e))
+    updates = {"content": content}
+    if name:
+        updates["name"] = name
+    return db.update_document(doc_id, updates)
 
 
 @api.delete("/documents/{doc_id}")

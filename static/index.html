@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=22" />
+<link rel="stylesheet" href="static/styles.css?v=23" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -244,12 +244,13 @@
       <form id="docForm">
         <label>Name<input name="name" id="docNameInput" required placeholder="e.g. Checkout flow overview" /></label>
         <label>Upload a file (optional)
-          <input type="file" id="docFileInput" accept=".md,.markdown,.txt" />
-          <span class="hint">.md or .txt only — loads the file's text into Content below (nothing is uploaded until you save). For PDF/Word docs, paste the text directly instead.</span>
+          <input type="file" id="docFileInput" accept=".md,.markdown,.txt,.docx,.pptx,.xlsx,.pdf" />
+          <span class="hint">.docx, .pptx, .xlsx, .pdf, .md, or .txt. Text is extracted automatically on save — nothing leaves this server.</span>
         </label>
-        <label>Content
-          <textarea name="content" id="docContentInput" required rows="10" placeholder="Paste a high-level process/architecture doc here (Markdown or plain text) -- describe the system's flows overall, not just one module."></textarea>
+        <label id="docContentLabel">Content
+          <textarea name="content" id="docContentInput" rows="10" placeholder="Paste a high-level process/architecture doc here (Markdown or plain text) -- describe the system's flows overall, not just one module."></textarea>
         </label>
+        <p class="muted small is-hidden" id="docFileSelectedNote"></p>
         <div class="modal-actions">
           <button type="button" class="btn" id="cancelDocBtn">Cancel</button>
           <button type="submit" class="btn btn-primary" id="docSubmitBtn">Save document</button>
@@ -260,6 +261,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=22"></script>
+  <script src="static/app.js?v=23"></script>
 </body>
 </html>

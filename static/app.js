@@ -790,11 +790,17 @@ function renderDocCard(doc) {
     </div>`;
 }
 
+const _TEXT_FILE_RE = /\.(md|markdown|txt)$/i;
+let pendingUploadFile = null; // a non-text file (docx/pptx/xlsx/pdf) awaiting server-side extraction on submit
+
 function openDocModal(doc = null) {
   $("#docForm").reset();
   editingDocId = doc ? doc.id : null;
+  pendingUploadFile = null;
   $("#docModalTitle").textContent = doc ? "Edit document" : "Add document";
   $("#docSubmitBtn").textContent = doc ? "Save changes" : "Save document";
+  $("#docContentLabel").hidden = false;
+  $("#docFileSelectedNote").classList.add("is-hidden");
 
   if (doc) {
     $("#docNameInput").value = doc.name;
@@ -809,25 +815,49 @@ function closeDocModal() {
 function handleDocFileInput(ev) {
   const file = ev.target.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    $("#docContentInput").value = reader.result;
-    if (!$("#docNameInput").value) $("#docNameInput").value = file.name.replace(/\.(md|markdown|txt)$/i, "");
-  };
-  reader.onerror = () => toast("Couldn't read that file", "error");
-  reader.readAsText(file);
+
+  if (_TEXT_FILE_RE.test(file.name)) {
+    // Plain text/Markdown: read client-side, no server round-trip needed.
+    pendingUploadFile = null;
+    $("#docContentLabel").hidden = false;
+    $("#docFileSelectedNote").classList.add("is-hidden");
+    const reader = new FileReader();
+    reader.onload = () => {
+      $("#docContentInput").value = reader.result;
+      if (!$("#docNameInput").value) $("#docNameInput").value = file.name.replace(_TEXT_FILE_RE, "");
+    };
+    reader.onerror = () => toast("Couldn't read that file", "error");
+    reader.readAsText(file);
+  } else {
+    // .docx/.pptx/.xlsx/.pdf: can't be read as text in the browser -- the
+    // server extracts it on save (server/doc_extract.py).
+    pendingUploadFile = file;
+    $("#docContentInput").value = "";
+    $("#docContentLabel").hidden = true;
+    const note = $("#docFileSelectedNote");
+    note.textContent = `Text will be extracted from "${file.name}" when you save.`;
+    note.classList.remove("is-hidden");
+    if (!$("#docNameInput").value) $("#docNameInput").value = file.name.replace(/\.[^.]+$/, "");
+  }
 }
 
 async function submitDocForm(ev) {
   ev.preventDefault();
-  const fd = new FormData(ev.target);
-  const payload = {
-    name: fd.get("name"),
-    content: fd.get("content"),
-  };
+  const name = $("#docNameInput").value.trim();
   try {
-    if (editingDocId) await api(`/documents/${editingDocId}`, { method: "PUT", body: JSON.stringify(payload) });
-    else await api(`/repos/${activeRepoId}/documents`, { method: "POST", body: JSON.stringify(payload) });
+    if (pendingUploadFile) {
+      const fd = new FormData();
+      fd.append("file", pendingUploadFile);
+      if (name) fd.append("name", name);
+      if (editingDocId) await api(`/documents/${editingDocId}/upload`, { method: "PUT", body: fd, headers: {} });
+      else await api(`/repos/${activeRepoId}/documents/upload`, { method: "POST", body: fd, headers: {} });
+    } else {
+      const content = $("#docContentInput").value.trim();
+      if (!content) { toast("Paste some content or choose a file first", "error"); return; }
+      const payload = { name, content };
+      if (editingDocId) await api(`/documents/${editingDocId}`, { method: "PUT", body: JSON.stringify(payload) });
+      else await api(`/repos/${activeRepoId}/documents`, { method: "POST", body: JSON.stringify(payload) });
+    }
     closeDocModal();
     await loadDocsPanel();
     await loadGapsPanel();

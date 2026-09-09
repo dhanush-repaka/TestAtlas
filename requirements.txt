@@ -9,3 +9,7 @@ cryptography>=42.0
 requests>=2.31
 python-multipart>=0.0.9
 neo4j>=5.0
+python-docx>=1.1
+python-pptx>=1.0
+openpyxl>=3.1
+pypdf>=4.0

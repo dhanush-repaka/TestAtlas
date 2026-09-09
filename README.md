@@ -61,14 +61,19 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Insights** — module scores (instant, local, no Neo4j needed) plus, if
   Neo4j is configured, the most-critical-nodes/bottleneck rankings and a
   direct link into Neo4j's own Browser.
-- **Docs** — paste or upload a high-level process/architecture doc covering
-  the system overall (not one per module). "Get analysis context" bundles the
-  doc's content with *every* module's real files/classes/functions/purpose
-  summaries; hand that to an LLM session and ask it to compare the two, then
-  paste the resulting findings back. Surfaces real development gaps — a
-  documented capability with no corresponding code, or code with no matching
-  documentation. This can't fully self-drive for an anonymous visitor (same
-  reason enrichment can't): the comparison needs an LLM actually reading both
+- **Docs** — paste text, or upload an actual document (`.docx`, `.pptx`,
+  `.xlsx`, `.pdf`, `.md`, `.txt`) — a high-level process/architecture doc
+  covering the system overall (not one per module). Non-text formats are
+  extracted server-side (`server/doc_extract.py`, pure-Python libraries, no
+  external service) into plain text on upload. In the **Gap Analysis** tab,
+  "Get analysis context" bundles the doc's content with *every* module's real
+  files/classes/functions/purpose summaries; hand that to an LLM session and
+  ask it to compare the two, then paste the resulting findings back — shown
+  there as summary stat cards, a per-category breakdown, and a filterable
+  findings list. Surfaces real development gaps — a documented capability
+  with no corresponding code, or code with no matching documentation. This
+  can't fully self-drive for an anonymous visitor (same reason enrichment
+  can't): the comparison needs an LLM actually reading both
   sides.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
@@ -103,6 +108,7 @@ synced to Neo4j.
 static/                vanilla HTML/JS/CSS dashboard (no build step)
 server/
   app.py                FastAPI routes
+  doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
   db.py                 SQLite: repos + runs
   crypto.py             Fernet encryption for stored PATs (data/secret.key, gitignored)
   auth.py                optional single-password gate (TESTATLAS_PASSWORD)
