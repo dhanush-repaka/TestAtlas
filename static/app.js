@@ -665,7 +665,7 @@ async function loadGapsPanel() {
   const repoId = activeRepoId;
   if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
   if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
-  populateGapDocSelectors();
+  renderGapDocsIncluded();
 
   if (autoGapAnalysisAvailable === null) {
     autoGapAnalysisAvailable = await api("/gap-analysis/config")
@@ -676,32 +676,21 @@ async function loadGapsPanel() {
     $("#autoGapHint").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
   }
 
-  // Snapshot the doc list for *this* repo -- activeDocuments could otherwise be
-  // reassigned (by a newer loadDocsPanel call for a different repo) while this
-  // Promise.all is still in flight.
-  const docsForThisRepo = activeDocuments;
-  const perDoc = await Promise.all(
-    docsForThisRepo.map((doc) =>
-      api(`/documents/${doc.id}/gap-findings`)
-        .then((findings) => findings.map((f) => ({ ...f, doc_name: doc.name })))
-        .catch(() => [])
-    )
-  );
+  const findings = await api(`/repos/${repoId}/gap-findings`).catch(() => []);
   if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
-  activeGapFindings = perDoc.flat();
+  activeGapFindings = findings;
   renderGapSummary();
   renderGapFindingsList();
 }
 
 async function runAutoGapAnalysis() {
-  const docId = $("#gapDocSelect").value;
-  if (!docId) { toast("Add a document first", "error"); return; }
+  if (!activeDocuments.length) { toast("Add at least one document first", "error"); return; }
   const btn = $("#runAutoGapBtn");
   btn.disabled = true;
   const originalLabel = btn.textContent;
   btn.textContent = "Analyzing…";
   try {
-    const result = await api(`/documents/${docId}/gap-analysis/run`, { method: "POST" });
+    const result = await api(`/repos/${activeRepoId}/gap-analysis/run`, { method: "POST" });
     await loadGapsPanel();
     toast(`Found ${result.applied} finding${result.applied === 1 ? "" : "s"}`, "ok");
   } catch (e) {
@@ -712,13 +701,14 @@ async function runAutoGapAnalysis() {
   }
 }
 
-function populateGapDocSelectors() {
-  const opts = activeDocuments.map((d) => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join("");
-  $("#gapDocSelect").innerHTML = opts || `<option value="">Add a document first</option>`;
-  const filterSel = $("#gapFilterDocSelect");
-  const prev = filterSel.value;
-  filterSel.innerHTML = `<option value="">All documents</option>` + opts;
-  filterSel.value = prev;
+function renderGapDocsIncluded() {
+  const el = $("#gapDocsIncluded");
+  if (!activeDocuments.length) {
+    el.textContent = "Add at least one document (in the Docs tab) before running a comparison.";
+    return;
+  }
+  const names = activeDocuments.map((d) => d.name).join(", ");
+  el.textContent = `Comparing all ${activeDocuments.length} document${activeDocuments.length === 1 ? "" : "s"} together, as one corpus: ${names}`;
 }
 
 function renderGapSummary() {
@@ -752,11 +742,8 @@ function renderGapSummary() {
 }
 
 function renderGapFindingsList() {
-  const docFilter = $("#gapFilterDocSelect").value;
   const catFilter = $("#gapFilterCategorySelect").value;
-  const rows = activeGapFindings.filter(
-    (f) => (!docFilter || f.document_id === docFilter) && (!catFilter || f.category === catFilter)
-  );
+  const rows = activeGapFindings.filter((f) => !catFilter || f.category === catFilter);
   const el = $("#gapFindingsListAll");
   if (!rows.length) {
     el.innerHTML = `<p class="muted small">${activeGapFindings.length ? "No findings match this filter." : "No findings yet — run a comparison above."}</p>`;
@@ -767,7 +754,6 @@ function renderGapFindingsList() {
       (f) => `
       <div class="doc-gap-finding">
         <span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span>
-        <span class="small muted" style="margin-left:8px;">${escapeHtml(f.doc_name)}</span>
         <p>${escapeHtml(f.description)}</p>
       </div>`
     )
@@ -775,13 +761,12 @@ function renderGapFindingsList() {
 }
 
 async function getGapContextForSelected() {
-  const docId = $("#gapDocSelect").value;
-  if (!docId) { toast("Add a document first", "error"); return; }
+  if (!activeDocuments.length) { toast("Add at least one document first", "error"); return; }
   const el = $("#gapContextOutput");
   el.classList.remove("is-hidden");
   el.textContent = "Loading…";
   try {
-    const ctx = await api(`/documents/${docId}/gap-analysis-context`);
+    const ctx = await api(`/repos/${activeRepoId}/gap-analysis-context`);
     el.textContent = JSON.stringify(ctx, null, 2);
   } catch (e) {
     el.textContent = "Error: " + e.message;
@@ -789,8 +774,7 @@ async function getGapContextForSelected() {
 }
 
 async function submitGapFindingsForSelected() {
-  const docId = $("#gapDocSelect").value;
-  if (!docId) { toast("Pick a document first", "error"); return; }
+  if (!activeDocuments.length) { toast("Add at least one document first", "error"); return; }
   const raw = $("#gapFindingsInput").value.trim();
   if (!raw) { toast("Paste the findings JSON first", "error"); return; }
   let findings;
@@ -801,7 +785,7 @@ async function submitGapFindingsForSelected() {
     return;
   }
   try {
-    await api(`/documents/${docId}/gap-findings`, { method: "POST", body: JSON.stringify({ findings }) });
+    await api(`/repos/${activeRepoId}/gap-findings`, { method: "POST", body: JSON.stringify({ findings }) });
     $("#gapFindingsInput").value = "";
     await loadGapsPanel();
     toast("Findings saved", "ok");
@@ -969,6 +953,5 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#runAutoGapBtn").addEventListener("click", runAutoGapAnalysis);
   $("#getGapContextBtn").addEventListener("click", getGapContextForSelected);
   $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
-  $("#gapFilterDocSelect").addEventListener("change", renderGapFindingsList);
   $("#gapFilterCategorySelect").addEventListener("change", renderGapFindingsList);
 });

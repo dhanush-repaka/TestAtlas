@@ -24,22 +24,22 @@ def is_configured() -> bool:
 
 def _build_prompt(context: dict) -> str:
     modules_json = json.dumps(context["modules"], indent=2)
-    return f"""You compare a project document against the ACTUAL contents of a codebase to find genuine, concrete gaps -- not writing-style feedback.
+    docs_block = "\n\n".join(
+        f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"]
+    )
+    return f"""You compare a repo's project documents -- ALL of them together, as one corpus -- against the ACTUAL contents of a codebase to find genuine, concrete gaps -- not writing-style feedback.
 
-DOCUMENT ("{context['document']['name']}"):
----
-{context['document']['content']}
----
+{docs_block}
 
 ACTUAL CODEBASE CONTENTS -- every module, its files, and each file's real classes/functions (this is ground truth, derived directly from the source via AST parsing, not a summary):
 ---
 {modules_json}
 ---
 
-Compare the document's claims against what the codebase actually contains. Only report a finding when you have concrete evidence for it in the data above -- do not speculate or invent function/class names that aren't listed. For each real gap, classify it as exactly one of:
-- "missing_implementation": the document claims a capability that does not appear anywhere in the listed code
-- "undocumented_capability": the code contains significant functionality (a whole module, a notable class/function) that the document never mentions
-- "mismatch": both the document and the code address the same thing, but disagree on a concrete detail (scope, behavior, naming)
+Compare the documents' claims -- taken together, since one document may cover what another leaves out -- against what the codebase actually contains. Only report a finding when you have concrete evidence for it in the data above -- do not speculate or invent function/class names that aren't listed. A capability documented in ANY one of the documents above counts as documented; only flag it "undocumented_capability" if it appears in none of them. For each real gap, classify it as exactly one of:
+- "missing_implementation": the documents claim a capability that does not appear anywhere in the listed code
+- "undocumented_capability": the code contains significant functionality (a whole module, a notable class/function) that none of the documents mention
+- "mismatch": both a document and the code address the same thing, but disagree on a concrete detail (scope, behavior, naming)
 
 Respond with ONLY a JSON object of this exact shape, no other text:
 {{"findings": [{{"category": "missing_implementation", "description": "..."}}, ...]}}

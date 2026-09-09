@@ -65,26 +65,31 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Insights** — module scores (instant, local, no Neo4j needed) plus, if
   Neo4j is configured, the most-critical-nodes/bottleneck rankings and a
   direct link into Neo4j's own Browser.
-- **Docs** — paste text, or upload an actual document (`.docx`, `.pptx`,
-  `.xlsx`, `.pdf`, `.md`, `.txt`) — a high-level process/architecture doc
-  covering the system overall (not one per module). Non-text formats are
-  extracted server-side (`server/doc_extract.py`, pure-Python libraries, no
-  external service) into plain text on upload. In the **Gap Analysis** tab,
-  "Get analysis context" bundles the doc's content with *every* module's real
-  files/classes/functions/purpose summaries; hand that to an LLM session and
-  ask it to compare the two, then paste the resulting findings back — shown
-  there as summary stat cards, a per-category breakdown, and a filterable
-  findings list. Surfaces real development gaps — a documented capability
-  with no corresponding code, or code with no matching documentation. This
-  can't fully self-drive for an anonymous visitor (same reason enrichment
-  can't): the comparison needs an LLM actually reading both sides.
+- **Docs** — paste text, or upload as many actual documents as you want
+  (`.docx`, `.pptx`, `.xlsx`, `.pdf`, `.md`, `.txt`) — high-level
+  process/architecture docs covering the system overall (not one per
+  module). Non-text formats are extracted server-side
+  (`server/doc_extract.py`, pure-Python libraries, no external service) into
+  plain text on upload. In the **Gap Analysis** tab, "Get analysis context"
+  bundles *every* one of the repo's documents together — as one corpus, not
+  one at a time — with *every* module's real files/classes/functions/purpose
+  summaries; hand that to an LLM session and ask it to compare the two, then
+  paste the resulting findings back — shown there as summary stat cards, a
+  per-category breakdown, and a filterable findings list. Surfaces real
+  development gaps — a documented capability with no corresponding code, or
+  code with no matching documentation. Comparing documents individually would
+  miss that one doc covers what looks, in isolation, like a gap in another,
+  so a repo's findings always come from a single combined pass over all of
+  its documents. This can't fully self-drive for an anonymous visitor (same
+  reason enrichment can't): the comparison needs an LLM actually reading both
+  sides.
   - **Optional automatic mode**: if the deployment has `OPENAI_API_KEY` set,
     a "Run automatic analysis" button appears above the manual flow and makes
     one live call to OpenAI (`gpt-4o-mini`, `server/llm_gap_analysis.py`) to
-    do the same comparison itself, replacing the doc's stored findings with
-    the result. This is the one part of TestAtlas with a real, metered
-    per-use cost, entirely opt-in — with no key configured it's a no-op and
-    the free manual flow above still works exactly as before.
+    do the same combined comparison itself, replacing the repo's stored
+    findings with the result. This is the one part of TestAtlas with a real,
+    metered per-use cost, entirely opt-in — with no key configured it's a
+    no-op and the free manual flow above still works exactly as before.
     **Verified against production** (real API call, real response, findings
     stored correctly) — but the LLM's accuracy is not perfect: in testing it
     both invented a false "missing" finding for a class that was clearly

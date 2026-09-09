@@ -69,16 +69,29 @@ CREATE TABLE IF NOT EXISTS documents (
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
 
--- Gap findings from comparing a document's claims against what its linked
--- module's own contents (files/classes/functions/purposes) actually show.
+-- Gap findings from comparing a repo's documents -- ALL of them together, as
+-- one corpus, not one at a time -- against what the codebase actually shows.
 -- Produced by an LLM pass (see kg/doc_gaps.py) reading both sides -- not
 -- computed here, this table just stores the result of that comparison.
+-- (Superseded the earlier per-document doc_gap_findings table below, which
+-- an existing production DB may still carry rows in but nothing reads anymore.)
+CREATE TABLE IF NOT EXISTS repo_gap_findings (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    run_id TEXT,                      -- which run's graph was used as the comparison baseline
+    category TEXT NOT NULL,           -- 'missing_implementation' | 'undocumented_capability' | 'mismatch'
+    description TEXT NOT NULL,
+    source_docs TEXT,                 -- comma-joined names of the documents compared in this pass
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+
 CREATE TABLE IF NOT EXISTS doc_gap_findings (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
     repo_id TEXT NOT NULL,
-    run_id TEXT,                      -- which run's graph was used as the comparison baseline
-    category TEXT NOT NULL,           -- 'missing_implementation' | 'undocumented_capability' | 'mismatch'
+    run_id TEXT,
+    category TEXT NOT NULL,
     description TEXT NOT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY (document_id) REFERENCES documents(id)
@@ -223,6 +236,7 @@ def delete_repo(repo_id: str) -> None:
             "DELETE FROM doc_gap_findings WHERE document_id IN (SELECT id FROM documents WHERE repo_id = ?)",
             (repo_id,),
         )
+        conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM documents WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM runs WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
@@ -356,24 +370,28 @@ def delete_document(doc_id: str) -> None:
         conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
 
 
-# --------------------------------------------------------------------------- doc gap findings
+# --------------------------------------------------------------------------- repo gap findings
 
-def replace_doc_gap_findings(document_id: str, repo_id: str, run_id: str | None, findings: list[dict]) -> None:
-    """Idempotent: drops this document's previous gap findings and stores the new set --
-    a fresh comparison pass supersedes the last one rather than accumulating stale results."""
+def replace_repo_gap_findings(
+    repo_id: str, run_id: str | None, source_docs: list[str], findings: list[dict]
+) -> None:
+    """Idempotent: drops this repo's previous gap findings and stores the new set --
+    a fresh comparison pass (over ALL of the repo's documents combined) supersedes
+    the last one rather than accumulating stale results."""
     ts = now()
+    joined_docs = ", ".join(source_docs)
     with get_conn() as conn:
-        conn.execute("DELETE FROM doc_gap_findings WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
         for f in findings:
             conn.execute(
-                "INSERT INTO doc_gap_findings (id, document_id, repo_id, run_id, category, description, created_at) VALUES (?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), document_id, repo_id, run_id, f["category"], f["description"], ts),
+                "INSERT INTO repo_gap_findings (id, repo_id, run_id, category, description, source_docs, created_at) VALUES (?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), repo_id, run_id, f["category"], f["description"], joined_docs, ts),
             )
 
 
-def list_doc_gap_findings(document_id: str) -> list[dict]:
+def list_repo_gap_findings(repo_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM doc_gap_findings WHERE document_id = ? ORDER BY created_at DESC", (document_id,)
+            "SELECT * FROM repo_gap_findings WHERE repo_id = ? ORDER BY created_at DESC", (repo_id,)
         ).fetchall()
     return [dict(r) for r in rows]

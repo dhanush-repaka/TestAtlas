@@ -137,15 +137,15 @@
 
         <div class="result-block">
           <h3>Run a comparison</h3>
+          <p class="muted small" id="gapDocsIncluded"></p>
           <div class="findings-toolbar">
-            <label class="field-inline">Document<select id="gapDocSelect"></select></label>
             <button type="button" class="btn btn-primary is-hidden" id="runAutoGapBtn">Run automatic analysis</button>
           </div>
           <p class="muted small is-hidden" id="autoGapHint">Calls OpenAI directly — this is the one part of TestAtlas with a real, metered cost per click.</p>
 
           <details style="margin-top:10px;">
             <summary class="small muted" style="cursor:pointer;">Or do it manually with any LLM session (free)</summary>
-            <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
+            <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare all of the repo's documents -- combined, not one at a time -- against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
             <button type="button" class="btn" id="getGapContextBtn">Get analysis context</button>
             <div class="doc-gap-context is-hidden" id="gapContextOutput"></div>
             <label class="small">Paste findings JSON
@@ -157,7 +157,6 @@
 
         <h3 class="section-title">Findings</h3>
         <div class="findings-toolbar">
-          <label class="field-inline">Document<select id="gapFilterDocSelect"><option value="">All documents</option></select></label>
           <label class="field-inline">Category
             <select id="gapFilterCategorySelect">
               <option value="">All categories</option>
@@ -267,6 +266,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=25"></script>
+  <script src="static/app.js?v=26"></script>
 </body>
 </html>
