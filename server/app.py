@@ -591,8 +591,11 @@ def api_gap_analysis_config():
 def api_run_test_generation(repo_id: str):
     """Generates test cases via a live OpenAI API call, from the same
     graph+docs context gap analysis uses (see server/llm_test_generation.py).
-    Unlike gap analysis this has no free manual fallback -- gated entirely on
-    OPENAI_API_KEY, same as automatic gap analysis. Replaces this repo's
+    Unlike gap analysis, documents are optional here -- code structure alone
+    is enough to generate test cases; documents (if any) just add richer
+    grounding for what's "critical" and what the intended behavior is. Also
+    unlike gap analysis, this has no free manual fallback -- gated entirely
+    on OPENAI_API_KEY, same as automatic gap analysis. Replaces this repo's
     stored test cases with the result."""
     if not llm_test_generation.is_configured():
         raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
@@ -603,7 +606,7 @@ def api_run_test_generation(repo_id: str):
     if not run or not run.get("graph_path"):
         raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
     g = load_graph(run["graph_path"])
-    context = gap_analysis_context(g, docs)
+    context = gap_analysis_context(g, docs, require_docs=False)
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:

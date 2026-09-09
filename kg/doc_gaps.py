@@ -1,6 +1,7 @@
-"""LLM gap-analysis layer: compares a repo's project documents, taken
-together, against what the whole codebase actually contains, producing
-structured findings.
+"""Shared graph+docs context builder, and the LLM gap-analysis layer built
+on top of it, which compares a repo's project documents, taken together,
+against what the whole codebase actually contains, producing structured
+findings.
 
 Documents describe the system overall -- a process/architecture doc covering
 multiple flows -- not one module each, so the comparison always runs against
@@ -22,6 +23,14 @@ through the API, or by server/llm_gap_analysis.py's opt-in live call. There's
 no mechanical way to compute "is this documented capability actually
 implemented" -- it's a judgment call over natural language, same reasoning
 as why enrichment's purpose summaries aren't AST-derived either.
+
+server/llm_test_generation.py also reuses gap_analysis_context() -- the
+graph-derived "modules" half of the context (files/classes/functions/purpose
+summaries) is exactly what test-case generation needs too, and unlike gap
+analysis (which is meaningless without documents to compare against), test
+generation only NEEDS the code -- documents just add extra grounding when
+present. Hence `require_docs`, defaulting to True to keep gap analysis's
+existing behavior.
 """
 from __future__ import annotations
 
@@ -30,13 +39,15 @@ import networkx as nx
 ALLOWED_GAP_CATEGORIES = {"missing_implementation", "undocumented_capability", "mismatch"}
 
 
-def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict]) -> dict:
+def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: bool = True) -> dict:
     """Everything an agent needs to compare a repo's documents -- combined,
     not one at a time -- against the codebase's real, complete contents:
     every module (business-domain grouping, see kg/dev_graph_builder.py),
     each with its purpose summary (if enriched) and the actual class/function
-    names AST found in each of its files."""
-    if not docs:
+    names AST found in each of its files. Pass require_docs=False (test
+    generation does) to build the same context with zero documents -- the
+    "documents" list in the result is just empty in that case."""
+    if require_docs and not docs:
         return {"ok": False, "message": "This repo has no documents yet -- add at least one first."}
 
     file_nodes = [n for n, d in g.nodes(data=True) if d.get("type") == "File"]

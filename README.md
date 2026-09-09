@@ -55,7 +55,10 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Run analysis** — clones/pulls (ADO/GitHub) or reads (local) the repo,
   parses every `.py` file, builds the graph, scores modules, computes findings,
   and stores a timestamped **run**. Syncs to Neo4j automatically if configured.
-- **Overview** — node/edge/module/file counts and full run history.
+- **Overview** — node/edge/module/file counts, the actual module list (name,
+  file/class/function counts, PageRank score — same data as Insights' module
+  scores, surfaced here too so "Modules: 4" isn't just a bare number you have
+  to go find the detail for elsewhere), and full run history.
 - **Findings** — functions no static call reaches, files with no import
   edges, empty classes, unparsed files — filterable by category.
 - **Graph** — an interactive, physics-based visualization for any past run.
@@ -103,7 +106,16 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Test Cases** — a "Generate test cases" button (also gated on
   `OPENAI_API_KEY`, `server/llm_test_generation.py`) makes one live OpenAI
   call over the same graph+docs context gap analysis uses, and designs
-  structured, QA-style test cases: title, preconditions, ordered steps,
+  structured, QA-style test cases. Unlike gap analysis, documents are
+  optional here: code structure alone is enough to generate a full set of
+  test cases (the button works with zero documents added), and the model is
+  told to prioritize by what's structurally central in the code (widely
+  depended-on classes/functions, naming that suggests core logic) instead of
+  by documented flows when there are no documents to go on. Adding documents
+  sharpens that prioritization and grounds "critical" in what's actually
+  meant to happen, but was never a hard requirement the way it is for gap
+  analysis (which is meaningless without something to compare the code
+  against). Each case has a title, preconditions, ordered steps,
   expected result, and which specific edge case it targets. The count scales
   with the repo's actual testable surface (~2-3 cases per real, non-test
   class/function — one happy path plus edge/error cases — rather than a flat

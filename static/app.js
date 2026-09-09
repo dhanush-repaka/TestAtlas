@@ -202,8 +202,10 @@ async function loadRuns() {
 function renderOverview() {
   const latest = activeRuns[0];
   const cards = $("#statCards");
+  const moduleList = $("#overviewModuleList");
   if (!latest || latest.status !== "success") {
     cards.innerHTML = `<div class="stat-card"><div class="num">—</div><div class="lbl">No successful run yet</div></div>`;
+    moduleList.innerHTML = "";
   } else {
     const s = latest.stats || {};
     const byType = s.by_node_type || {};
@@ -214,6 +216,9 @@ function renderOverview() {
       statCard(byType.File ?? 0, "Files"),
       statCard(latest.finding_count ?? 0, "Findings"),
     ].join("");
+    // The "Modules" card above is just a count -- list what they actually
+    // are right here too, not only buried in the Insights tab.
+    moduleList.innerHTML = s.module_scores?.length ? renderModuleScores(s.module_scores, s.skipped_files || []) : "";
   }
 
   const tbody = $("#runTable tbody");
@@ -824,7 +829,6 @@ async function loadTestCasesPanel() {
 }
 
 async function runTestGeneration() {
-  if (!activeDocuments.length) { toast("Add at least one document first", "error"); return; }
   const btn = $("#runTestGenBtn");
   btn.disabled = true;
   const originalLabel = btn.textContent;
@@ -844,7 +848,7 @@ async function runTestGeneration() {
 function renderTestCaseDocsIncluded() {
   const el = $("#testCaseDocsIncluded");
   if (!activeDocuments.length) {
-    el.textContent = "Add at least one document (in the Docs tab) before generating test cases.";
+    el.textContent = "Based on the codebase structure alone — no documents added yet. Add some (in the Docs tab) for richer, better-prioritized coverage.";
     return;
   }
   const names = activeDocuments.map((d) => d.name).join(", ");

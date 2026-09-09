@@ -10,7 +10,10 @@ configured, the "Generate test cases" button simply doesn't appear.
 Reuses kg.doc_gaps.gap_analysis_context() for the input -- the context a
 gap comparison needs (every document + every module's real files/classes/
 functions/purpose summaries) is exactly what test-case generation needs too,
-just put to a different prompt.
+just put to a different prompt. Unlike gap analysis, documents are optional
+here (called with require_docs=False): code structure alone is enough to
+generate test cases, documents just sharpen what counts as "critical" and
+what the intended behavior is when present.
 
 Output is a structured, reviewable QA-style test case (title, preconditions,
 steps, expected result, which edge case it targets) -- not runnable code.
@@ -67,10 +70,28 @@ def _target_case_count(context: dict) -> int:
 
 def _build_prompt(context: dict, target: int) -> str:
     modules_json = json.dumps(context["modules"], indent=2)
-    docs_block = "\n\n".join(
-        f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"]
+    has_docs = bool(context["documents"])
+    docs_block = (
+        "\n\n".join(f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"])
+        if has_docs
+        else "(No project documents were provided for this repo. Base every test case on the codebase "
+             "contents below alone -- infer intended behavior from naming, purpose summaries, class/function "
+             "shape, and ordinary conventions for this kind of code.)"
     )
-    return f"""You design test cases for a codebase, using its documentation and its real structure as evidence for what it should do and what surface actually exists to test.
+    priority_1 = (
+        "The most business-critical flows described in the documents."
+        if has_docs
+        else "The most structurally important code: classes/functions that many others depend on or that "
+             "define a module's main public surface, and names suggesting core business logic (e.g. auth, "
+             "payment, signing, validation) over incidental helpers."
+    )
+    priority_3 = (
+        "At least one happy-path case per major documented flow, so edge cases have a baseline to contrast with."
+        if has_docs
+        else "At least one happy-path case per real class/function you target, so edge cases have a baseline "
+             "to contrast with."
+    )
+    return f"""You design test cases for a codebase, using its documentation (when available) and its real structure as evidence for what it should do and what surface actually exists to test.
 
 {docs_block}
 
@@ -82,14 +103,14 @@ ACTUAL CODEBASE CONTENTS -- every module, its files, and each file's real classe
 Some of the modules above are the codebase's OWN EXISTING TESTS (e.g. a `tests` package, files named `test_*`). Never target those with a new test case -- there's no value in writing a test of a test. Treat them only as a signal for what's already covered.
 
 Design approximately {target} test cases -- that number reflects the actual size of the real (non-test) surface above, so treat it as a real target, not a suggestion to undershoot: aim for roughly 2-3 cases per meaningfully distinct class/function (one happy path plus 1-2 edge/error cases), not one case per file or one case for the whole module. It's fine to land a bit under or over if the codebase genuinely warrants it, but don't stop early out of caution. Prioritize:
-1. The most business-critical flows described in the documents.
-2. Realistic edge cases for each: boundary values (empty/zero/max/min), invalid or malformed input, missing/null fields, error and exception paths, expiry/timeout conditions, permission/auth failures, and concurrent or repeated use where relevant to what's documented.
-3. At least one happy-path case per major documented flow, so edge cases have a baseline to contrast with.
+1. {priority_1}
+2. Realistic edge cases for each: boundary values (empty/zero/max/min), invalid or malformed input, missing/null fields, error and exception paths, expiry/timeout conditions, permission/auth failures, and concurrent or repeated use where relevant.
+3. {priority_3}
 
-Do not invent function/class names that aren't listed above. Each test case must be traceable to something real: a documented flow, and/or an actual class or function from the codebase contents (excluding the existing-tests modules, per above).
+Do not invent function/class names that aren't listed above. Each test case must be traceable to something real: {"a documented flow, and/or " if has_docs else ""}an actual class or function from the codebase contents (excluding the existing-tests modules, per above).
 
 For each test case, classify it as exactly one of:
-- "happy_path": exercises normal, expected, documented usage
+- "happy_path": exercises normal, expected usage (per the documents when available, otherwise per what the code's naming/shape implies it's meant to do)
 - "edge_case": a boundary, unusual, or rarely-hit but valid condition
 - "error_handling": an invalid input or failure condition that should be rejected or handled gracefully
 
