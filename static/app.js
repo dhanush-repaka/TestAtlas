@@ -653,9 +653,20 @@ async function loadDocsPanel() {
 
 let activeGapFindings = [];
 
+let autoGapAnalysisAvailable = null; // null = not checked yet
+
 async function loadGapsPanel() {
   if (!activeDocuments.length) activeDocuments = await api(`/repos/${activeRepoId}/documents`).catch(() => []);
   populateGapDocSelectors();
+
+  if (autoGapAnalysisAvailable === null) {
+    autoGapAnalysisAvailable = await api("/gap-analysis/config")
+      .then((c) => c.automatic_available)
+      .catch(() => false);
+    $("#runAutoGapBtn").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
+    $("#autoGapHint").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
+  }
+
   const perDoc = await Promise.all(
     activeDocuments.map((doc) =>
       api(`/documents/${doc.id}/gap-findings`)
@@ -666,6 +677,25 @@ async function loadGapsPanel() {
   activeGapFindings = perDoc.flat();
   renderGapSummary();
   renderGapFindingsList();
+}
+
+async function runAutoGapAnalysis() {
+  const docId = $("#gapDocSelect").value;
+  if (!docId) { toast("Add a document first", "error"); return; }
+  const btn = $("#runAutoGapBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Analyzing…";
+  try {
+    const result = await api(`/documents/${docId}/gap-analysis/run`, { method: "POST" });
+    await loadGapsPanel();
+    toast(`Found ${result.applied} finding${result.applied === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 }
 
 function populateGapDocSelectors() {
@@ -922,6 +952,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#docFileInput").addEventListener("change", handleDocFileInput);
   wireDocsList();
 
+  $("#runAutoGapBtn").addEventListener("click", runAutoGapAnalysis);
   $("#getGapContextBtn").addEventListener("click", getGapContextForSelected);
   $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
   $("#gapFilterDocSelect").addEventListener("change", renderGapFindingsList);

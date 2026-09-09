@@ -21,7 +21,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract
+from . import auth, db, doc_extract, llm_gap_analysis
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -519,6 +519,36 @@ def api_gap_analysis_context(doc_id: str):
     return context
 
 
+@api.post("/documents/{doc_id}/gap-analysis/run")
+def api_run_gap_analysis(doc_id: str):
+    """Runs gap analysis automatically via a live OpenAI API call -- the one
+    part of TestAtlas with a real, metered cost per use, opt-in via
+    OPENAI_API_KEY (see server/llm_gap_analysis.py). Replaces this document's
+    stored findings with the result, same as the manual paste-findings flow."""
+    if not llm_gap_analysis.is_configured():
+        raise HTTPException(
+            400,
+            "Automatic analysis isn't configured on this deployment (no OPENAI_API_KEY) -- "
+            "use \"Get analysis context\" + paste findings instead.",
+        )
+    doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(404, "document not found")
+    run = db.get_latest_successful_run(doc["repo_id"])
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    context = gap_analysis_context(g, doc)
+    if not context["ok"]:
+        raise HTTPException(400, context["message"])
+    try:
+        findings = llm_gap_analysis.run_gap_analysis(context)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.replace_doc_gap_findings(doc_id, doc["repo_id"], run["id"], findings)
+    return {"applied": len(findings), "findings": findings}
+
+
 @api.post("/documents/{doc_id}/gap-findings")
 def api_post_gap_findings(doc_id: str, payload: GapFindingsIn):
     """Stores the result of a gap-analysis comparison -- replaces this
@@ -539,6 +569,13 @@ def api_get_gap_findings(doc_id: str):
     if not db.get_document(doc_id):
         raise HTTPException(404, "document not found")
     return db.list_doc_gap_findings(doc_id)
+
+
+@api.get("/gap-analysis/config")
+def api_gap_analysis_config():
+    """Lets the UI know whether the automatic (paid) analysis button should
+    show at all -- it's opt-in per deployment, off unless OPENAI_API_KEY is set."""
+    return {"automatic_available": llm_gap_analysis.is_configured()}
 
 
 app.include_router(api)

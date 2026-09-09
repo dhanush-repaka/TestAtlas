@@ -18,7 +18,11 @@ Python via the stdlib `ast` module today), then layers two things on top:
 - **Doc-vs-code gap detection** — upload a high-level process doc and compare
   its claims against the whole codebase's real contents, surfacing real
   development gaps (a documented capability with no code behind it, or the
-  reverse). Same non-live-API pattern as purpose summaries.
+  reverse). Free by default (same non-live-API pattern as purpose summaries);
+  an optional opt-in "Run automatic analysis" button will make one live,
+  metered OpenAI API call to do the comparison itself instead, if
+  `OPENAI_API_KEY` is set (see "Doc-vs-code gap detection" below for the
+  tradeoff).
 
 Everything is local: a FastAPI backend + SQLite, and a small dashboard UI. An
 optional free Neo4j AuraDB instance can hold a browsable/queryable copy of each
@@ -73,8 +77,21 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
   findings list. Surfaces real development gaps — a documented capability
   with no corresponding code, or code with no matching documentation. This
   can't fully self-drive for an anonymous visitor (same reason enrichment
-  can't): the comparison needs an LLM actually reading both
-  sides.
+  can't): the comparison needs an LLM actually reading both sides.
+  - **Optional automatic mode**: if the deployment has `OPENAI_API_KEY` set,
+    a "Run automatic analysis" button appears above the manual flow and makes
+    one live call to OpenAI (`gpt-4o-mini`, `server/llm_gap_analysis.py`) to
+    do the same comparison itself, replacing the doc's stored findings with
+    the result. This is the one part of TestAtlas with a real, metered
+    per-use cost, entirely opt-in — with no key configured it's a no-op and
+    the free manual flow above still works exactly as before.
+    **Verified against production** (real API call, real response, findings
+    stored correctly) — but the LLM's accuracy is not perfect: in testing it
+    both invented a false "missing" finding for a class that was clearly
+    present in the supplied codebase context, and missed a deliberately
+    planted false requirement in the test document. Treat its findings as a
+    fast first pass to review, not a substitute for the manual flow's
+    human-in-the-loop check.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
@@ -109,6 +126,8 @@ static/                vanilla HTML/JS/CSS dashboard (no build step)
 server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
+  llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
+                          call (OPENAI_API_KEY) -- the one metered feature here
   db.py                 SQLite: repos + runs
   crypto.py             Fernet encryption for stored PATs (data/secret.key, gitignored)
   auth.py                optional single-password gate (TESTATLAS_PASSWORD)
@@ -181,6 +200,7 @@ docker run -p 8000:8000 \
   -e BASE_PATH=/testatlas \
   -e TESTATLAS_PASSWORD=<a real password> \
   -e NEO4J_URI=<optional> -e NEO4J_USER=<optional> -e NEO4J_PASSWORD=<optional> \
+  -e OPENAI_API_KEY=<optional> \
   -v testatlas_persist:/app/persist \
   testatlas
 # then: curl http://localhost:8000/testatlas/login
@@ -206,6 +226,7 @@ fly launch --copy-config --name <pick-a-unique-name> --no-deploy
 fly volumes create testatlas_persist --size 2
 fly secrets set TESTATLAS_PASSWORD="a real password"
 fly secrets set NEO4J_URI="neo4j+s://..." NEO4J_USER="..." NEO4J_PASSWORD="..."  # optional
+fly secrets set OPENAI_API_KEY="sk-..."  # optional -- enables automatic (paid) gap analysis
 fly deploy
 ```
 

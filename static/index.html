@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=23" />
+<link rel="stylesheet" href="static/styles.css?v=24" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -137,16 +137,22 @@
 
         <div class="result-block">
           <h3>Run a comparison</h3>
-          <p class="muted small">1. Pick a document. 2. Get its analysis context below. 3. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 4. Paste the result back and submit.</p>
           <div class="findings-toolbar">
             <label class="field-inline">Document<select id="gapDocSelect"></select></label>
-            <button type="button" class="btn" id="getGapContextBtn">Get analysis context</button>
+            <button type="button" class="btn btn-primary is-hidden" id="runAutoGapBtn">Run automatic analysis</button>
           </div>
-          <div class="doc-gap-context is-hidden" id="gapContextOutput"></div>
-          <label class="small">Paste findings JSON
-            <textarea id="gapFindingsInput" rows="4" placeholder='[{"category":"missing_implementation","description":"..."}]'></textarea>
-          </label>
-          <button type="button" class="btn btn-primary" id="submitGapFindingsBtn">Submit findings</button>
+          <p class="muted small is-hidden" id="autoGapHint">Calls OpenAI directly — this is the one part of TestAtlas with a real, metered cost per click.</p>
+
+          <details style="margin-top:10px;">
+            <summary class="small muted" style="cursor:pointer;">Or do it manually with any LLM session (free)</summary>
+            <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
+            <button type="button" class="btn" id="getGapContextBtn">Get analysis context</button>
+            <div class="doc-gap-context is-hidden" id="gapContextOutput"></div>
+            <label class="small">Paste findings JSON
+              <textarea id="gapFindingsInput" rows="4" placeholder='[{"category":"missing_implementation","description":"..."}]'></textarea>
+            </label>
+            <button type="button" class="btn btn-primary" id="submitGapFindingsBtn">Submit findings</button>
+          </details>
         </div>
 
         <h3 class="section-title">Findings</h3>
@@ -261,6 +267,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=23"></script>
+  <script src="static/app.js?v=24"></script>
 </body>
 </html>
