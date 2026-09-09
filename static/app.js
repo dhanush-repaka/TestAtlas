@@ -186,6 +186,7 @@ async function showRepoDetail(id) {
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
   await loadRuns();
   await loadDocsPanel();
+  await loadGapsPanel();
 }
 
 async function loadRuns() {
@@ -648,18 +649,130 @@ async function loadDocsPanel() {
   renderDocsList();
 }
 
+// --------------------------------------------------------------------------- gap analysis (separate tab)
+
+let activeGapFindings = [];
+
+async function loadGapsPanel() {
+  if (!activeDocuments.length) activeDocuments = await api(`/repos/${activeRepoId}/documents`).catch(() => []);
+  populateGapDocSelectors();
+  const perDoc = await Promise.all(
+    activeDocuments.map((doc) =>
+      api(`/documents/${doc.id}/gap-findings`)
+        .then((findings) => findings.map((f) => ({ ...f, doc_name: doc.name })))
+        .catch(() => [])
+    )
+  );
+  activeGapFindings = perDoc.flat();
+  renderGapSummary();
+  renderGapFindingsList();
+}
+
+function populateGapDocSelectors() {
+  const opts = activeDocuments.map((d) => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join("");
+  $("#gapDocSelect").innerHTML = opts || `<option value="">Add a document first</option>`;
+  const filterSel = $("#gapFilterDocSelect");
+  const prev = filterSel.value;
+  filterSel.innerHTML = `<option value="">All documents</option>` + opts;
+  filterSel.value = prev;
+}
+
+function renderGapSummary() {
+  const total = activeGapFindings.length;
+  const byCat = {};
+  for (const f of activeGapFindings) byCat[f.category] = (byCat[f.category] || 0) + 1;
+  $("#gapSummaryCards").innerHTML = [
+    statCard(total, "Total gaps found"),
+    statCard(byCat.missing_implementation || 0, "Missing implementation"),
+    statCard(byCat.undocumented_capability || 0, "Undocumented capability"),
+    statCard(byCat.mismatch || 0, "Mismatch"),
+  ].join("");
+
+  const breakdown = $("#gapBreakdown");
+  if (!total) { breakdown.innerHTML = ""; return; }
+  const max = Math.max(...Object.values(byCat));
+  const rows = Object.entries(byCat)
+    .sort((a, b) => b[1] - a[1])
+    .map(
+      ([cat, count]) => `
+      <div class="rank-row">
+        <div class="rank-body">
+          <div class="rank-label"><span class="finding-cat cat-${cat}">${cat.replaceAll("_", " ")}</span></div>
+          <div class="rank-bar-track"><div class="rank-bar" style="width:${Math.max(4, (count / max) * 100)}%"></div></div>
+        </div>
+        <span class="rank-score">${count}</span>
+      </div>`
+    )
+    .join("");
+  breakdown.innerHTML = `<div class="result-block"><h3>By category</h3><div class="rank-list">${rows}</div></div>`;
+}
+
+function renderGapFindingsList() {
+  const docFilter = $("#gapFilterDocSelect").value;
+  const catFilter = $("#gapFilterCategorySelect").value;
+  const rows = activeGapFindings.filter(
+    (f) => (!docFilter || f.document_id === docFilter) && (!catFilter || f.category === catFilter)
+  );
+  const el = $("#gapFindingsListAll");
+  if (!rows.length) {
+    el.innerHTML = `<p class="muted small">${activeGapFindings.length ? "No findings match this filter." : "No findings yet — run a comparison above."}</p>`;
+    return;
+  }
+  el.innerHTML = rows
+    .map(
+      (f) => `
+      <div class="doc-gap-finding">
+        <span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span>
+        <span class="small muted" style="margin-left:8px;">${escapeHtml(f.doc_name)}</span>
+        <p>${escapeHtml(f.description)}</p>
+      </div>`
+    )
+    .join("");
+}
+
+async function getGapContextForSelected() {
+  const docId = $("#gapDocSelect").value;
+  if (!docId) { toast("Add a document first", "error"); return; }
+  const el = $("#gapContextOutput");
+  el.classList.remove("is-hidden");
+  el.textContent = "Loading…";
+  try {
+    const ctx = await api(`/documents/${docId}/gap-analysis-context`);
+    el.textContent = JSON.stringify(ctx, null, 2);
+  } catch (e) {
+    el.textContent = "Error: " + e.message;
+  }
+}
+
+async function submitGapFindingsForSelected() {
+  const docId = $("#gapDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const raw = $("#gapFindingsInput").value.trim();
+  if (!raw) { toast("Paste the findings JSON first", "error"); return; }
+  let findings;
+  try {
+    findings = JSON.parse(raw);
+  } catch (e) {
+    toast("That's not valid JSON: " + e.message, "error");
+    return;
+  }
+  try {
+    await api(`/documents/${docId}/gap-findings`, { method: "POST", body: JSON.stringify({ findings }) });
+    $("#gapFindingsInput").value = "";
+    await loadGapsPanel();
+    toast("Findings saved", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
 function renderDocsList() {
   const el = $("#docsList");
   if (!activeDocuments.length) {
-    el.innerHTML = `<p class="muted small">No documents yet — add a README or design note and link it to a module.</p>`;
+    el.innerHTML = `<p class="muted small">No documents yet — add a high-level process/architecture doc describing the system overall.</p>`;
     return;
   }
   el.innerHTML = activeDocuments.map(renderDocCard).join("");
-  activeDocuments.forEach((doc) => {
-    api(`/documents/${doc.id}/gap-findings`)
-      .then((findings) => renderGapFindings(doc.id, findings))
-      .catch(() => {});
-  });
 }
 
 function renderDocCard(doc) {
@@ -674,34 +787,7 @@ function renderDocCard(doc) {
         </div>
       </div>
       <div class="doc-card-content">${escapeHtml(preview)}</div>
-      <details>
-        <summary class="small muted" style="cursor:pointer;">Gap analysis</summary>
-        <p class="muted small">1. Get the context below. 2. Hand it to an LLM session (this one, or your own) and ask it to compare the doc against the whole codebase's real contents, producing a JSON array of <code>{category, description}</code> (category: <code>missing_implementation</code>, <code>undocumented_capability</code>, or <code>mismatch</code>). 3. Paste the result back and submit.</p>
-        <button type="button" class="btn" data-action="get-context">Get analysis context</button>
-        <div class="doc-gap-context is-hidden" data-role="context"></div>
-        <label class="small">Paste findings JSON
-          <textarea data-role="findings-input" rows="4" placeholder='[{"category":"missing_implementation","description":"..."}]'></textarea>
-        </label>
-        <button type="button" class="btn btn-primary" data-action="submit-findings">Submit findings</button>
-        <div data-role="findings-list"></div>
-      </details>
     </div>`;
-}
-
-function renderGapFindings(docId, findings) {
-  const card = $(`.doc-card[data-doc-id="${docId}"]`);
-  if (!card) return;
-  const el = card.querySelector('[data-role="findings-list"]');
-  if (!findings.length) { el.innerHTML = `<p class="muted small">No findings yet.</p>`; return; }
-  el.innerHTML = findings
-    .map(
-      (f) => `
-      <div class="doc-gap-finding">
-        <span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span>
-        <p>${escapeHtml(f.description)}</p>
-      </div>`
-    )
-    .join("");
 }
 
 function openDocModal(doc = null) {
@@ -720,6 +806,18 @@ function closeDocModal() {
   $("#docModalBackdrop").hidden = true;
 }
 
+function handleDocFileInput(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("#docContentInput").value = reader.result;
+    if (!$("#docNameInput").value) $("#docNameInput").value = file.name.replace(/\.(md|markdown|txt)$/i, "");
+  };
+  reader.onerror = () => toast("Couldn't read that file", "error");
+  reader.readAsText(file);
+}
+
 async function submitDocForm(ev) {
   ev.preventDefault();
   const fd = new FormData(ev.target);
@@ -732,6 +830,7 @@ async function submitDocForm(ev) {
     else await api(`/repos/${activeRepoId}/documents`, { method: "POST", body: JSON.stringify(payload) });
     closeDocModal();
     await loadDocsPanel();
+    await loadGapsPanel();
     toast(editingDocId ? "Document saved" : "Document added", "ok");
   } catch (e) {
     toast(e.message, "error");
@@ -742,38 +841,7 @@ async function deleteDoc(docId) {
   if (!confirm("Delete this document and its gap findings?")) return;
   await api(`/documents/${docId}`, { method: "DELETE" });
   await loadDocsPanel();
-}
-
-async function getGapContext(docId, card) {
-  const el = card.querySelector('[data-role="context"]');
-  el.classList.remove("is-hidden");
-  el.textContent = "Loading…";
-  try {
-    const ctx = await api(`/documents/${docId}/gap-analysis-context`);
-    el.textContent = JSON.stringify(ctx, null, 2);
-  } catch (e) {
-    el.textContent = "Error: " + e.message;
-  }
-}
-
-async function submitGapFindings(docId, card) {
-  const raw = card.querySelector('[data-role="findings-input"]').value.trim();
-  if (!raw) { toast("Paste the findings JSON first", "error"); return; }
-  let findings;
-  try {
-    findings = JSON.parse(raw);
-  } catch (e) {
-    toast("That's not valid JSON: " + e.message, "error");
-    return;
-  }
-  try {
-    await api(`/documents/${docId}/gap-findings`, { method: "POST", body: JSON.stringify({ findings }) });
-    const stored = await api(`/documents/${docId}/gap-findings`);
-    renderGapFindings(docId, stored);
-    toast("Findings saved", "ok");
-  } catch (e) {
-    toast(e.message, "error");
-  }
+  await loadGapsPanel();
 }
 
 function wireDocsList() {
@@ -785,8 +853,6 @@ function wireDocsList() {
     const action = btn.dataset.action;
     if (action === "edit-doc") openDocModal(activeDocuments.find((d) => d.id === docId));
     else if (action === "delete-doc") deleteDoc(docId);
-    else if (action === "get-context") getGapContext(docId, card);
-    else if (action === "submit-findings") submitGapFindings(docId, card);
   });
 }
 
@@ -823,5 +889,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#cancelDocBtn").addEventListener("click", closeDocModal);
   $("#docModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "docModalBackdrop") closeDocModal(); });
   $("#docForm").addEventListener("submit", submitDocForm);
+  $("#docFileInput").addEventListener("change", handleDocFileInput);
   wireDocsList();
+
+  $("#getGapContextBtn").addEventListener("click", getGapContextForSelected);
+  $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
+  $("#gapFilterDocSelect").addEventListener("change", renderGapFindingsList);
+  $("#gapFilterCategorySelect").addEventListener("change", renderGapFindingsList);
 });
