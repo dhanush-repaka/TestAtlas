@@ -108,9 +108,14 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
   with the repo's actual testable surface (~2-3 cases per real, non-test
   class/function — one happy path plus edge/error cases — rather than a flat
   number), so a 5-file repo and a 500-file repo don't get the same count;
-  bounded at 200 cases per call as a cost/output safety ceiling. Existing
-  test files in the graph are recognized and excluded as generation targets
-  (no "test for a test"), used only as a signal for what's already covered.
+  bounded around ~59 cases per call, derived from `gpt-4o-mini`'s own 16,384
+  output-token ceiling (asking for more than that would just truncate the
+  response mid-JSON — a real failure hit while building this) rather than an
+  arbitrary round number. A repo with more testable surface than that fits
+  in one call gets the highest-priority ~59, not literally everything.
+  Existing test files in the graph are recognized and excluded as generation
+  targets (no "test for a test"), used only as a signal for what's already
+  covered.
   Classified as `happy_path`, `edge_case` (boundary values, invalid input,
   timing/expiry), or `error_handling`, shown as summary stat cards plus a
   filterable list. These are reviewable records, not runnable code, and the

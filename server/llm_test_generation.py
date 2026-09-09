@@ -29,10 +29,17 @@ ALLOWED_TEST_CASE_CATEGORIES = {"happy_path", "edge_case", "error_handling"}
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
-# Hard safety ceiling on one call's cost/output size -- not the practical
-# target (see _target_case_count), just a backstop against a pathological
-# response.
-HARD_CASE_CAP = 200
+# gpt-4o-mini's own output ceiling is 16384 tokens. ~230 tokens/case (title,
+# target, preconditions, several steps, expected result, edge case, plus
+# JSON overhead) was measured against real output; ~1500 tokens go to the
+# model echoing/reasoning over the prompt. So the real achievable ceiling is
+# ~64 cases, not an arbitrary round number -- asking for more than this would
+# just truncate the response mid-JSON (a real failure hit while building
+# this: an earlier flat max_tokens=8000 truncated a 65-case response).
+_PROMPT_OVERHEAD_TOKENS = 1500
+_TOKENS_PER_CASE = 230
+_MODEL_TOKEN_CEILING = 16384
+HARD_CASE_CAP = (_MODEL_TOKEN_CEILING - _PROMPT_OVERHEAD_TOKENS) // _TOKENS_PER_CASE - 5  # 5-case safety margin
 
 
 def _is_test_file(dotted_path: str) -> bool:
@@ -58,12 +65,11 @@ def _target_case_count(context: dict) -> int:
     return max(15, min(HARD_CASE_CAP, round(real_units * 2.5)))
 
 
-def _build_prompt(context: dict) -> str:
+def _build_prompt(context: dict, target: int) -> str:
     modules_json = json.dumps(context["modules"], indent=2)
     docs_block = "\n\n".join(
         f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"]
     )
-    target = _target_case_count(context)
     return f"""You design test cases for a codebase, using its documentation and its real structure as evidence for what it should do and what surface actually exists to test.
 
 {docs_block}
@@ -116,15 +122,20 @@ def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]
 
     from openai import OpenAI  # lazy import: only needed when this is actually called
 
+    target = _target_case_count(context)
+    # Scale the token budget with the target count -- a fixed budget that was
+    # only ever right for a small repo silently truncates a larger repo's
+    # response mid-JSON (see HARD_CASE_CAP's derivation above for why).
+    max_tokens = min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + target * _TOKENS_PER_CASE)
+
     client = OpenAI()
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": _build_prompt(context)}],
+            messages=[{"role": "user", "content": _build_prompt(context, target)}],
             response_format={"type": "json_object"},
             temperature=0.2,  # a little variety helps cover more distinct edge cases than temperature=0
-            max_tokens=8000,  # a larger, size-scaled case count needs real headroom -- a cut-off response
-                               # would just fail json.loads below instead of quietly returning fewer cases
+            max_tokens=max_tokens,
         )
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
