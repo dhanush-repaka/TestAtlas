@@ -117,14 +117,21 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
   analysis (which is meaningless without something to compare the code
   against). Each case has a title, preconditions, ordered steps,
   expected result, and which specific edge case it targets. The count scales
-  with the repo's actual testable surface (~2-3 cases per real, non-test
-  class/function — one happy path plus edge/error cases — rather than a flat
-  number), so a 5-file repo and a 500-file repo don't get the same count;
-  bounded around ~59 cases per call, derived from `gpt-4o-mini`'s own 16,384
-  output-token ceiling (asking for more than that would just truncate the
-  response mid-JSON — a real failure hit while building this) rather than an
-  arbitrary round number. A repo with more testable surface than that fits
-  in one call gets the highest-priority ~59, not literally everything.
+  with the repo's actual testable surface (~1-2 cases per real, non-test
+  function or method — one happy path plus edge/error cases — rather than a
+  flat number), so a 5-file repo and a 500-file repo don't get the same
+  count. `kg/doc_gaps.py`'s context includes each class's real method names
+  (not just the bare class name) — fixed after finding that omission meant a
+  class-heavy codebase's real methods (routinely 2-3x the number of classes
+  themselves) were completely invisible to the model; it could only guess
+  at conventional method names instead of targeting real ones, quietly
+  capping both quality and count well below what the code actually supports.
+  Bounded around ~59 cases per call regardless of how large the real surface
+  is, derived from `gpt-4o-mini`'s own 16,384 output-token ceiling (asking
+  for more than that would just truncate the response mid-JSON — a real
+  failure hit while building this) rather than an arbitrary round number. A
+  repo with more testable surface than that fits in one call gets the
+  highest-priority ~59, not literally everything.
   Existing test files in the graph are recognized and excluded as generation
   targets (no "test for a test"), used only as a signal for what's already
   covered.

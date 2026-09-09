@@ -44,9 +44,15 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
     not one at a time -- against the codebase's real, complete contents:
     every module (business-domain grouping, see kg/dev_graph_builder.py),
     each with its purpose summary (if enriched) and the actual class/function
-    names AST found in each of its files. Pass require_docs=False (test
-    generation does) to build the same context with zero documents -- the
-    "documents" list in the result is just empty in that case."""
+    names AST found in each of its files -- each class's real METHODS
+    included, not just its bare name (a File only DEFINES its top-level
+    classes/functions; a class's own methods are a separate Class-DEFINES->
+    Function edge that's easy to miss walking file-level edges alone, and
+    doing so left the consumer -- test-case generation -- unable to see or
+    target ~2/3 of a typical class-heavy codebase's real testable surface).
+    Pass require_docs=False (test generation does) to build the same context
+    with zero documents -- the "documents" list in the result is just empty
+    in that case."""
     if require_docs and not docs:
         return {"ok": False, "message": "This repo has no documents yet -- add at least one first."}
 
@@ -58,18 +64,25 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
     for file_id in sorted(file_nodes):
         data = g.nodes[file_id]
         domain = data.get("domain") or "(ungrouped)"
-        classes = [
-            g.nodes[v]["label"] for _, v, ed in g.out_edges(file_id, data=True)
+        class_ids = [
+            v for _, v, ed in g.out_edges(file_id, data=True)
             if ed.get("relation") == "DEFINES" and g.nodes[v].get("type") == "Class"
         ]
         functions = [
             g.nodes[v]["label"] for _, v, ed in g.out_edges(file_id, data=True)
             if ed.get("relation") == "DEFINES" and g.nodes[v].get("type") == "Function"
         ]
+        classes = []
+        for cls_id in sorted(class_ids, key=lambda cid: g.nodes[cid]["label"]):
+            methods = sorted(
+                g.nodes[m]["label"] for _, m, med in g.out_edges(cls_id, data=True)
+                if med.get("relation") == "DEFINES" and g.nodes[m].get("type") == "Function"
+            )
+            classes.append({"name": g.nodes[cls_id]["label"], "methods": methods})
         by_domain.setdefault(domain, []).append({
             "file": data["label"],
             "purpose": data.get("purpose"),
-            "classes": sorted(classes),
+            "classes": classes,
             "functions": sorted(functions),
         })
 

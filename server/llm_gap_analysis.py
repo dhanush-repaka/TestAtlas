@@ -32,14 +32,14 @@ def _build_prompt(context: dict) -> str:
 
 {docs_block}
 
-ACTUAL CODEBASE CONTENTS -- every module, its files, and each file's real classes/functions (this is ground truth, derived directly from the source via AST parsing, not a summary):
+ACTUAL CODEBASE CONTENTS -- every module, its files, each file's real top-level functions, and each file's real classes WITH their real method names (this is ground truth, derived directly from the source via AST parsing, not a summary):
 ---
 {modules_json}
 ---
 
-Compare the documents' claims -- taken together, since one document may cover what another leaves out -- against what the codebase actually contains. Only report a finding when you have concrete evidence for it in the data above -- do not speculate or invent function/class names that aren't listed. A capability documented in ANY one of the documents above counts as documented; only flag it "undocumented_capability" if it appears in none of them. For each real gap, classify it as exactly one of:
-- "missing_implementation": the documents claim a capability that does not appear anywhere in the listed code
-- "undocumented_capability": the code contains significant functionality (a whole module, a notable class/function) that none of the documents mention
+Compare the documents' claims -- taken together, since one document may cover what another leaves out -- against what the codebase actually contains. Only report a finding when you have concrete evidence for it in the data above -- do not speculate or invent function/class/method names that aren't listed. A capability documented in ANY one of the documents above counts as documented; only flag it "undocumented_capability" if it appears in none of them. For each real gap, classify it as exactly one of:
+- "missing_implementation": the documents claim a capability (including a specific method a class is claimed to have) that does not appear anywhere in the listed code
+- "undocumented_capability": the code contains significant functionality (a whole module, a notable class/function/method) that none of the documents mention
 - "mismatch": both a document and the code address the same thing, but disagree on a concrete detail (scope, behavior, naming)
 
 Respond with ONLY a JSON object of this exact shape, no other text:
