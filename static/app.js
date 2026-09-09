@@ -874,20 +874,39 @@ function renderTestCaseList() {
   el.innerHTML = rows.map(renderTestCaseCard).join("");
 }
 
+const TEST_CASE_ICONS = {
+  happy_path: `<svg class="tc-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  edge_case: `<svg class="tc-icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.5l9.5 16.5H2.5L12 3.5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  error_handling: `<svg class="tc-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+};
+
 function renderTestCaseCard(c) {
   return `
-    <div class="test-case-card">
+    <div class="test-case-card tc-${c.category}">
       <div class="test-case-head">
-        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
+        ${TEST_CASE_ICONS[c.category] || ""}
         <h4>${escapeHtml(c.title)}</h4>
-        ${c.target ? `<span class="test-case-target">${escapeHtml(c.target)}</span>` : ""}
+        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
       </div>
-      <dl>
-        ${c.preconditions ? `<dt>Preconditions</dt><dd>${escapeHtml(c.preconditions)}</dd>` : ""}
-        <dt>Steps</dt><dd><ol>${c.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol></dd>
-        <dt>Expected result</dt><dd>${escapeHtml(c.expected_result)}</dd>
-        ${c.edge_case_description ? `<dt>Edge case</dt><dd>${escapeHtml(c.edge_case_description)}</dd>` : ""}
-      </dl>
+      ${c.target ? `<div class="test-case-target">${escapeHtml(c.target)}</div>` : ""}
+      ${c.preconditions ? `
+        <div class="tc-section">
+          <span class="tc-section-label">Preconditions</span>
+          <p>${escapeHtml(c.preconditions)}</p>
+        </div>` : ""}
+      <div class="tc-section">
+        <span class="tc-section-label">Steps</span>
+        <ol class="tc-steps">${c.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>
+      </div>
+      <div class="tc-section">
+        <span class="tc-section-label">Expected result</span>
+        <p class="tc-expected">${escapeHtml(c.expected_result)}</p>
+      </div>
+      ${c.edge_case_description ? `
+        <div class="tc-section">
+          <span class="tc-section-label">Edge case</span>
+          <p class="tc-edge-case">${escapeHtml(c.edge_case_description)}</p>
+        </div>` : ""}
     </div>`;
 }
 
@@ -916,16 +935,22 @@ function renderDocCard(doc) {
 }
 
 const _TEXT_FILE_RE = /\.(md|markdown|txt)$/i;
-let pendingUploadFile = null; // a non-text file (docx/pptx/xlsx/pdf) awaiting server-side extraction on submit
+let pendingUploadFile = null; // a single non-text file (docx/pptx/xlsx/pdf) awaiting server-side extraction on submit
+let pendingBulkFiles = [];    // 2+ files selected at once -- each becomes its own document, named from its filename
 
 function openDocModal(doc = null) {
   $("#docForm").reset();
   editingDocId = doc ? doc.id : null;
   pendingUploadFile = null;
-  $("#docModalTitle").textContent = doc ? "Edit document" : "Add document";
+  pendingBulkFiles = [];
+  $("#docModalTitle").textContent = doc ? "Edit document" : "Add document(s)";
   $("#docSubmitBtn").textContent = doc ? "Save changes" : "Save document";
+  $("#docNameLabel").classList.remove("is-hidden");
+  $("#docNameInput").required = true;
   $("#docContentLabel").hidden = false;
   $("#docFileSelectedNote").classList.add("is-hidden");
+  $("#docBulkFileList").classList.add("is-hidden");
+  $("#docBulkFileList").innerHTML = "";
 
   if (doc) {
     $("#docNameInput").value = doc.name;
@@ -938,9 +963,39 @@ function closeDocModal() {
 }
 
 function handleDocFileInput(ev) {
-  const file = ev.target.files[0];
-  if (!file) return;
+  const files = Array.from(ev.target.files || []);
+  if (!files.length) return;
 
+  if (files.length > 1) {
+    if (editingDocId) {
+      // Editing replaces one document's content -- multi-select doesn't apply here.
+      toast("Editing replaces one document -- pick a single file", "error");
+      ev.target.value = "";
+      return;
+    }
+    pendingUploadFile = null;
+    pendingBulkFiles = files;
+    $("#docNameLabel").classList.add("is-hidden");
+    $("#docNameInput").required = false; // hiding the label alone doesn't exempt it from native validation
+    $("#docContentLabel").hidden = true;
+    $("#docFileSelectedNote").classList.add("is-hidden");
+    const list = $("#docBulkFileList");
+    list.innerHTML = files.map((f) => `<li>${escapeHtml(f.name)} <span class="muted small">(${(f.size / 1024).toFixed(1)} KB)</span></li>`).join("");
+    list.classList.remove("is-hidden");
+    $("#docSubmitBtn").textContent = `Add ${files.length} documents`;
+    return;
+  }
+
+  // Exactly one file: keep the existing single-document flow (lets you
+  // rename it or tweak content before saving).
+  pendingBulkFiles = [];
+  $("#docNameLabel").classList.remove("is-hidden");
+  $("#docNameInput").required = true;
+  $("#docBulkFileList").classList.add("is-hidden");
+  $("#docBulkFileList").innerHTML = "";
+  $("#docSubmitBtn").textContent = editingDocId ? "Save changes" : "Save document";
+
+  const file = files[0];
   if (_TEXT_FILE_RE.test(file.name)) {
     // Plain text/Markdown: read client-side, no server round-trip needed.
     pendingUploadFile = null;
@@ -968,6 +1023,33 @@ function handleDocFileInput(ev) {
 
 async function submitDocForm(ev) {
   ev.preventDefault();
+
+  if (pendingBulkFiles.length > 1) {
+    const btn = $("#docSubmitBtn");
+    btn.disabled = true;
+    let ok = 0;
+    const failed = [];
+    for (const file of pendingBulkFiles) {
+      btn.textContent = `Adding ${ok + failed.length + 1} of ${pendingBulkFiles.length}…`;
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        await api(`/repos/${activeRepoId}/documents/upload`, { method: "POST", body: fd, headers: {} });
+        ok++;
+      } catch (e) {
+        failed.push(`${file.name}: ${e.message}`);
+      }
+    }
+    btn.disabled = false;
+    closeDocModal();
+    await loadDocsPanel();
+    await loadGapsPanel();
+    await loadTestCasesPanel();
+    if (failed.length) toast(`Added ${ok} of ${pendingBulkFiles.length} — failed: ${failed.join("; ")}`, "error");
+    else toast(`Added ${ok} document${ok === 1 ? "" : "s"}`, "ok");
+    return;
+  }
+
   const name = $("#docNameInput").value.trim();
   try {
     if (pendingUploadFile) {

@@ -29,10 +29,33 @@ ALLOWED_TEST_CASE_CATEGORIES = {"happy_path", "edge_case", "error_handling"}
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
-# Keeps one call's cost and output bounded on a large repo -- this is a
-# prioritized sample of the most important cases, not literally one test
-# per function.
-MAX_TEST_CASES = 40
+# Hard safety ceiling on one call's cost/output size -- not the practical
+# target (see _target_case_count), just a backstop against a pathological
+# response.
+HARD_CASE_CAP = 200
+
+
+def _is_test_file(dotted_path: str) -> bool:
+    """Heuristic: a file already under a tests/ package or named test_*/  \
+    *_test is existing test code, not something to write new tests against."""
+    segments = dotted_path.lower().split(".")
+    return any(seg in ("test", "tests") or seg.startswith("test_") or seg.endswith("_test") for seg in segments)
+
+
+def _target_case_count(context: dict) -> int:
+    """Scales the requested case count with the actual testable surface --
+    real (non-test) classes/functions -- rather than a flat number, so a
+    small repo doesn't get padded with filler and a large one doesn't get
+    capped down to a token count that was only ever right for a small one.
+    Aims for roughly 2-3 cases per real unit (happy path + edge/error mix),
+    bounded so a huge repo still fits in one call at reasonable cost."""
+    real_units = 0
+    for m in context["modules"]:
+        for f in m["files"]:
+            if _is_test_file(f["file"]):
+                continue
+            real_units += len(f["classes"]) + len(f["functions"])
+    return max(15, min(HARD_CASE_CAP, round(real_units * 2.5)))
 
 
 def _build_prompt(context: dict) -> str:
@@ -40,6 +63,7 @@ def _build_prompt(context: dict) -> str:
     docs_block = "\n\n".join(
         f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"]
     )
+    target = _target_case_count(context)
     return f"""You design test cases for a codebase, using its documentation and its real structure as evidence for what it should do and what surface actually exists to test.
 
 {docs_block}
@@ -49,12 +73,14 @@ ACTUAL CODEBASE CONTENTS -- every module, its files, and each file's real classe
 {modules_json}
 ---
 
-Design up to {MAX_TEST_CASES} test cases that together give the best possible coverage, prioritizing:
+Some of the modules above are the codebase's OWN EXISTING TESTS (e.g. a `tests` package, files named `test_*`). Never target those with a new test case -- there's no value in writing a test of a test. Treat them only as a signal for what's already covered.
+
+Design approximately {target} test cases -- that number reflects the actual size of the real (non-test) surface above, so treat it as a real target, not a suggestion to undershoot: aim for roughly 2-3 cases per meaningfully distinct class/function (one happy path plus 1-2 edge/error cases), not one case per file or one case for the whole module. It's fine to land a bit under or over if the codebase genuinely warrants it, but don't stop early out of caution. Prioritize:
 1. The most business-critical flows described in the documents.
 2. Realistic edge cases for each: boundary values (empty/zero/max/min), invalid or malformed input, missing/null fields, error and exception paths, expiry/timeout conditions, permission/auth failures, and concurrent or repeated use where relevant to what's documented.
 3. At least one happy-path case per major documented flow, so edge cases have a baseline to contrast with.
 
-Do not invent function/class names that aren't listed above. Each test case must be traceable to something real: a documented flow, and/or an actual class or function from the codebase contents.
+Do not invent function/class names that aren't listed above. Each test case must be traceable to something real: a documented flow, and/or an actual class or function from the codebase contents (excluding the existing-tests modules, per above).
 
 For each test case, classify it as exactly one of:
 - "happy_path": exercises normal, expected, documented usage
@@ -97,6 +123,8 @@ def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]
             messages=[{"role": "user", "content": _build_prompt(context)}],
             response_format={"type": "json_object"},
             temperature=0.2,  # a little variety helps cover more distinct edge cases than temperature=0
+            max_tokens=8000,  # a larger, size-scaled case count needs real headroom -- a cut-off response
+                               # would just fail json.loads below instead of quietly returning fewer cases
         )
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
@@ -112,7 +140,7 @@ def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]
         raise RuntimeError("Model's response had an unexpected shape (test_cases wasn't a list).")
 
     validated = []
-    for c in cases[:MAX_TEST_CASES]:
+    for c in cases[:HARD_CASE_CAP]:
         if not isinstance(c, dict):
             continue
         title = c.get("title")

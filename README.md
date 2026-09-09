@@ -68,9 +68,11 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Docs** — paste text, or upload as many actual documents as you want
   (`.docx`, `.pptx`, `.xlsx`, `.pdf`, `.md`, `.txt`) — high-level
   process/architecture docs covering the system overall (not one per
-  module). Non-text formats are extracted server-side
-  (`server/doc_extract.py`, pure-Python libraries, no external service) into
-  plain text on upload. In the **Gap Analysis** tab, "Get analysis context"
+  module). "Add document(s)" accepts a multi-file selection in one go: each
+  file becomes its own document, named from its filename, uploaded in one
+  pass with a per-file success/failure summary. Non-text formats are
+  extracted server-side (`server/doc_extract.py`, pure-Python libraries, no
+  external service) into plain text on upload. In the **Gap Analysis** tab, "Get analysis context"
   bundles *every* one of the repo's documents together — as one corpus, not
   one at a time — with *every* module's real files/classes/functions/purpose
   summaries; hand that to an LLM session and ask it to compare the two, then
@@ -100,17 +102,23 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     human-in-the-loop check.
 - **Test Cases** — a "Generate test cases" button (also gated on
   `OPENAI_API_KEY`, `server/llm_test_generation.py`) makes one live OpenAI
-  call over the same graph+docs context gap analysis uses, and designs up to
-  40 structured, QA-style test cases: title, preconditions, ordered steps,
-  expected result, and which specific edge case it targets. Classified as
-  `happy_path`, `edge_case` (boundary values, invalid input, timing/expiry),
-  or `error_handling`, shown as summary stat cards plus a filterable list.
-  These are reviewable records, not runnable code, and the model only ever
-  sees names/purpose summaries (never real function bodies, which the graph
-  doesn't carry) — treat them as a first draft to adapt, not a QA suite
-  ready to run as-is. Unlike gap analysis, this has **no free manual
-  fallback** today: with no `OPENAI_API_KEY` configured, the button simply
-  doesn't appear.
+  call over the same graph+docs context gap analysis uses, and designs
+  structured, QA-style test cases: title, preconditions, ordered steps,
+  expected result, and which specific edge case it targets. The count scales
+  with the repo's actual testable surface (~2-3 cases per real, non-test
+  class/function — one happy path plus edge/error cases — rather than a flat
+  number), so a 5-file repo and a 500-file repo don't get the same count;
+  bounded at 200 cases per call as a cost/output safety ceiling. Existing
+  test files in the graph are recognized and excluded as generation targets
+  (no "test for a test"), used only as a signal for what's already covered.
+  Classified as `happy_path`, `edge_case` (boundary values, invalid input,
+  timing/expiry), or `error_handling`, shown as summary stat cards plus a
+  filterable list. These are reviewable records, not runnable code, and the
+  model only ever sees names/purpose summaries (never real function bodies,
+  which the graph doesn't carry) — treat them as a first draft to adapt, not
+  a QA suite ready to run as-is. Unlike gap analysis, this has **no free
+  manual fallback** today: with no `OPENAI_API_KEY` configured, the button
+  simply doesn't appear.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
