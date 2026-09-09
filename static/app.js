@@ -190,7 +190,10 @@ async function showRepoDetail(id) {
 }
 
 async function loadRuns() {
-  activeRuns = await api(`/repos/${activeRepoId}/runs`);
+  const repoId = activeRepoId;
+  const runs = await api(`/repos/${repoId}/runs`);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  activeRuns = runs;
   renderOverview();
   populateRunSelectors();
 }
@@ -645,7 +648,10 @@ let activeDocuments = [];
 let editingDocId = null;
 
 async function loadDocsPanel() {
-  activeDocuments = await api(`/repos/${activeRepoId}/documents`).catch(() => []);
+  const repoId = activeRepoId;
+  const docs = await api(`/repos/${repoId}/documents`).catch(() => []);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  activeDocuments = docs;
   renderDocsList();
 }
 
@@ -656,24 +662,32 @@ let activeGapFindings = [];
 let autoGapAnalysisAvailable = null; // null = not checked yet
 
 async function loadGapsPanel() {
-  if (!activeDocuments.length) activeDocuments = await api(`/repos/${activeRepoId}/documents`).catch(() => []);
+  const repoId = activeRepoId;
+  if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
   populateGapDocSelectors();
 
   if (autoGapAnalysisAvailable === null) {
     autoGapAnalysisAvailable = await api("/gap-analysis/config")
       .then((c) => c.automatic_available)
       .catch(() => false);
+    if (repoId !== activeRepoId) return;
     $("#runAutoGapBtn").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
     $("#autoGapHint").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
   }
 
+  // Snapshot the doc list for *this* repo -- activeDocuments could otherwise be
+  // reassigned (by a newer loadDocsPanel call for a different repo) while this
+  // Promise.all is still in flight.
+  const docsForThisRepo = activeDocuments;
   const perDoc = await Promise.all(
-    activeDocuments.map((doc) =>
+    docsForThisRepo.map((doc) =>
       api(`/documents/${doc.id}/gap-findings`)
         .then((findings) => findings.map((f) => ({ ...f, doc_name: doc.name })))
         .catch(() => [])
     )
   );
+  if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
   activeGapFindings = perDoc.flat();
   renderGapSummary();
   renderGapFindingsList();
