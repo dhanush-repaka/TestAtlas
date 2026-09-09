@@ -28,7 +28,7 @@ _driver = None
 # Only these become real Neo4j labels / relationship types -- both originate
 # from dev_graph_builder.py's own fixed vocabulary, never external input, but the
 # check stays as defense in depth since Cypher can't parameterize labels.
-_ALLOWED_LABELS = {"Module", "Class", "Function"}
+_ALLOWED_LABELS = {"File", "Class", "Function"}
 _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 

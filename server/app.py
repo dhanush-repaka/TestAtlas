@@ -369,6 +369,7 @@ def api_run_insights(run_id: str):
 class EnrichmentEntry(BaseModel):
     purpose: str
     tags: Optional[list[str]] = None
+    domain: Optional[str] = None  # File nodes only -- overrides the mechanical default business-module grouping
 
 
 class EnrichmentIn(BaseModel):

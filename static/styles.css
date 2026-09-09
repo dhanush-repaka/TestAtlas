@@ -314,7 +314,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .cat-untagged_scenario { background: var(--panel-3); color: var(--muted); }
 .cat-failing_scenario { background: var(--danger-soft); color: var(--danger); }
 .cat-unused_function, .cat-empty_class { background: var(--accent-soft); color: var(--accent-strong); }
-.cat-isolated_module { background: var(--panel-3); color: var(--muted); }
+.cat-isolated_file { background: var(--panel-3); color: var(--muted); }
 .cat-unparsed_file { background: var(--danger-soft); color: var(--danger); }
 
 .cause-block { background: var(--panel); border: 1px solid var(--danger); border-left-width: 3px; border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }

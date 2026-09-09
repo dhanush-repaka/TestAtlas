@@ -1,7 +1,5 @@
-"""Findings over the dev-code graph (kg/dev_graph_builder.py). Parallels
-kg/queries.py's test-schema findings, using the Module/Class/Function schema
-instead.
-"""
+"""Findings over the dev-code graph (kg/dev_graph_builder.py): File/Class/
+Function nodes, IMPORTS/DEFINES/CALLS edges."""
 from __future__ import annotations
 
 import networkx as nx
@@ -28,13 +26,13 @@ def unused_functions(g: nx.MultiDiGraph) -> list[str]:
     return unused
 
 
-def isolated_modules(g: nx.MultiDiGraph) -> list[str]:
-    """Modules with no import edge in or out -- either genuinely standalone
-    (e.g. a script or config module) or an entry point nothing internal
+def isolated_files(g: nx.MultiDiGraph) -> list[str]:
+    """Files with no import edge in or out -- either genuinely standalone
+    (e.g. a script or config file) or an entry point nothing internal
     references. Not necessarily a problem, but worth surfacing."""
     isolated = []
     for n, data in g.nodes(data=True):
-        if data.get("type") != "Module":
+        if data.get("type") != "File":
             continue
         has_import_edge = any(
             d.get("relation") == "IMPORTS" for _, _, d in g.out_edges(n, data=True)
@@ -67,7 +65,7 @@ def dev_findings(g: nx.MultiDiGraph) -> list[dict]:
             findings.append({"category": category, "node_id": n, "label": g.nodes[n].get("label", n)})
 
     add("unused_function", unused_functions(g))
-    add("isolated_module", isolated_modules(g))
+    add("isolated_file", isolated_files(g))
     add("empty_class", empty_classes(g))
     skipped = g.graph.get("skipped_files") or []
     for f in skipped:

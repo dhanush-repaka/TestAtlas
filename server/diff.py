@@ -20,8 +20,8 @@ def _edge_set(g: nx.MultiDiGraph) -> set[tuple[str, str, str]]:
 def _brief(g: nx.MultiDiGraph, node_id: str) -> dict:
     d = g.nodes[node_id]
     out = {"id": node_id, "type": d.get("type"), "label": d.get("label")}
-    if "module" in d:
-        out["module"] = d["module"]
+    if "domain" in d:
+        out["domain"] = d["domain"]
     return out
 
 

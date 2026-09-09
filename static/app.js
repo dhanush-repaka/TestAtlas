@@ -140,7 +140,7 @@ function repoTileHtml(repo, latestRun) {
     : repo.source_type === "github_git" ? `${repo.github_owner}/${repo.github_repo}`
     : `${repo.ado_org}/${repo.ado_project}/${repo.ado_repo}`;
   const stats = latestRun && latestRun.status === "success" ? latestRun.stats || {} : null;
-  const moduleCount = (stats?.by_node_type || {}).Module ?? "—";
+  const moduleCount = stats?.module_scores?.length ?? "—";
   const topModule = stats?.module_scores?.length ? stats.module_scores[0] : null;
   return `
     <div class="repo-tile" data-id="${repo.id}">
@@ -204,8 +204,8 @@ function renderOverview() {
     cards.innerHTML = [
       statCard(s.nodes ?? "—", "Total nodes"),
       statCard(s.edges ?? "—", "Total edges"),
-      statCard(byType.Module ?? 0, "Modules"),
-      statCard(byType.Function ?? 0, "Functions"),
+      statCard(s.module_scores?.length ?? 0, "Modules"),
+      statCard(byType.File ?? 0, "Files"),
       statCard(latest.finding_count ?? 0, "Findings"),
     ].join("");
   }
@@ -339,7 +339,7 @@ function renderModuleScores(scores, skippedFiles) {
         <span class="rank-num">${idx + 1}</span>
         <div class="rank-body">
           <div class="rank-label">${escapeHtml(s.module)}${s.isolated ? ` <span class="finding-cat cat-dead_locator">not yet connected</span>` : ""}</div>
-          <div class="small muted">${s.class_count} classes · ${s.function_count} functions · imported by ${s.imported_by_count}</div>
+          <div class="small muted">${s.file_count} file${s.file_count === 1 ? "" : "s"} · ${s.class_count} classes · ${s.function_count} functions · imported by ${s.imported_by_count}</div>
           ${s.purpose ? `<div class="small module-purpose">${escapeHtml(s.purpose)}</div>` : ""}
           <div class="rank-bar-track"><div class="rank-bar" style="width:${Math.max(4, (s.pagerank / maxRank) * 100)}%"></div></div>
         </div>

@@ -1,11 +1,16 @@
 # TestAtlas
 
-Turns a codebase into a **knowledge graph** — Module/Class/Function nodes,
+Turns a codebase into a **knowledge graph** — File/Class/Function nodes,
 IMPORTS/DEFINES/CALLS edges — using real AST parsing (zero cost, deterministic,
 Python via the stdlib `ast` module today), then layers two things on top:
 
-- **Module-wise criticality scores** (PageRank + betweenness centrality via networkx)
-- **LLM-written purpose summaries** for modules/classes — a semantic layer added
+- **Business-module criticality scores** (PageRank + betweenness centrality via
+  networkx, rolled up from files to the business capability they implement --
+  Accounts, Payments, Statements -- not one score per file). The free default
+  groups files by their immediate containing package; an LLM enrichment pass
+  can override that grouping per file where folder structure doesn't reflect
+  real domains (see "Business modules" below).
+- **LLM-written purpose summaries** for files/classes — a semantic layer added
   *after* the mechanical parse, via an agent (Claude Code, or any coding assistant)
   reading the actual files and posting summaries back through the API. This
   deliberately isn't a live API call baked into the backend, so running this adds
@@ -42,21 +47,42 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 - **Run analysis** — clones/pulls (ADO/GitHub) or reads (local) the repo,
   parses every `.py` file, builds the graph, scores modules, computes findings,
   and stores a timestamped **run**. Syncs to Neo4j automatically if configured.
-- **Overview** — node/edge/module/function counts and full run history.
-- **Findings** — functions no static call reaches, modules with no import
+- **Overview** — node/edge/module/file counts and full run history.
+- **Findings** — functions no static call reaches, files with no import
   edges, empty classes, unparsed files — filterable by category.
 - **Graph** — an interactive, physics-based visualization for any past run.
-  Nodes cluster and color by their owning module. A **Neo4j (live)** toggle
-  re-fetches the same run's graph straight from Neo4j instead of the local
-  copy, with node size driven by the stored PageRank score.
+  Nodes cluster and color by their owning business module. A **Neo4j (live)**
+  toggle re-fetches the same run's graph straight from Neo4j instead of the
+  local copy, with node size driven by the stored PageRank score.
 - **Insights** — module scores (instant, local, no Neo4j needed) plus, if
   Neo4j is configured, the most-critical-nodes/bottleneck rankings and a
   direct link into Neo4j's own Browser.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
-  (`module:pkg.mod`, `function:pkg.mod:func`), not random ids, so this is
+  (`file:pkg.mod`, `function:pkg.mod:func`), not random ids, so this is
   meaningful across runs instead of "everything looks new every time."
+
+## Business modules
+
+"Module" in this app means a business capability (Accounts, Payments,
+Statements), not a single `.py` file — those are **File** nodes. Every
+File/Class/Function gets a `domain` attribute:
+
+- **Free default**: the file's immediate containing package. `app/accounts/models.py`
+  and `app/accounts/views.py` both land in domain `app.accounts` — correct for
+  most feature-organized codebases, at zero cost.
+- **LLM override**: for layered architectures (`controllers/`, `services/`,
+  `models/` split across a feature, so folder structure *doesn't* reflect the
+  real domain), an enrichment entry can set `"domain": "Accounts"` on a File
+  node directly — `POST /runs/{id}/enrichment` accepts it alongside `purpose`.
+  Classes/functions defined in that file inherit the override automatically.
+  `score_modules()` re-groups by this field the next time it's read, no
+  separate rebuild step needed.
+
+The graph schema itself doesn't change for this — it's a rollup computed from
+`domain`, not new node types or edges, so it works the same locally and once
+synced to Neo4j.
 
 ## Architecture
 
@@ -73,13 +99,14 @@ ado/client.py            ADO REST (test-connection) + git clone/pull
 github/client.py         GitHub REST (test-connection) + git clone/pull (PAT optional)
 kg/
   python_ast_parser.py   mechanical parser: walks .py files via stdlib `ast`,
-                          extracts modules/classes/functions + resolved imports/calls
-  dev_graph_builder.py   builds the networkx.MultiDiGraph + module-wise scoring
+                          extracts files/classes/functions + resolved imports/calls
+  dev_graph_builder.py   builds the networkx.MultiDiGraph + business-module
+                          scoring (rolls per-file scores up by `domain`)
   dev_queries.py         findings over that graph
-  enrichment.py          LLM semantic layer: what needs a purpose summary,
-                          and merging one back onto the graph
+  enrichment.py          LLM semantic layer: what needs a purpose summary
+                          (and optionally a domain override), merged back onto the graph
   graph_io.py            shared load/save for a run's persisted graph.json
-  visualize.py           pyvis interactive HTML (physics layout, module-colored) + exports
+  visualize.py           pyvis interactive HTML (physics layout, domain-colored) + exports
   neo4j_sync.py          optional: syncs a run's graph into Neo4j, batched via UNWIND
   graph_intelligence.py  optional: reads PageRank/betweenness back out of Neo4j
 ```
@@ -87,11 +114,14 @@ kg/
 The graph schema:
 
 ```
-Module -DEFINES-> Class -DEFINES-> Function (method)
-Module -DEFINES-> Function (top-level)
-Module -IMPORTS-> Module
+File -DEFINES-> Class -DEFINES-> Function (method)
+File -DEFINES-> Function (top-level)
+File -IMPORTS-> File
 Function -CALLS-> Function
 ```
+
+Every File/Class/Function also carries a `domain` attribute — see "Business
+modules" above; it's what `score_modules()` groups by, not a separate node type.
 
 ## Neo4j (optional)
 
@@ -180,10 +210,10 @@ request after idle time.
 - **More languages**: `kg/python_ast_parser.py` is Python-only today. The
   clean way to add another language is [tree-sitter](https://tree-sitter.github.io/)
   (one library, per-language grammars) with a thin adapter mapping its parse
-  tree onto the same Module/Class/Function schema — not a second hand-written
+  tree onto the same File/Class/Function schema — not a second hand-written
   parser, and not an LLM doing the structural extraction (see below for why).
 - **Why AST, not an LLM, for structure**: an LLM is the right tool for
-  judgment calls ("what is this module for") but the wrong tool for a large,
+  judgment calls ("what business module is this file part of") but the wrong tool for a large,
   exact, cross-referenced fact table (every import/call resolved against
   every file) — it's slower, non-deterministic (breaks Compare Runs' stable
   node ids), and can miss/hallucinate exactly the mechanical details that

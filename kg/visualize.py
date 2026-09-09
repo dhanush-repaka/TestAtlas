@@ -7,10 +7,12 @@ three straight, crossed-over lanes. Physics lets modules and their own
 classes/functions pull into natural clusters instead, which is both more
 honest about the graph's real shape and easier to read at a glance.
 
-Color: each node is shaded by its OWNING module -- a deterministic hue per
-module (hashed from its dotted name), with Module nodes darkest/biggest and
-their Classes/Functions progressively lighter/smaller. Related code reads as
-one visual cluster of the same hue, reinforcing what physics already pulls
+Color: each node is shaded by its business-module `domain` (see
+kg/dev_graph_builder.py) -- a deterministic hue per domain (hashed from its
+name), with File nodes darkest/biggest and their Classes/Functions
+progressively lighter/smaller. Everything belonging to one business module
+(Accounts, Payments, ...) reads as one visual cluster of the same hue, even
+when it's split across several files, reinforcing what physics already pulls
 together structurally.
 """
 from __future__ import annotations
@@ -23,8 +25,8 @@ from pathlib import Path
 import networkx as nx
 from pyvis.network import Network
 
-_BASE_SIZE = {"Module": 26, "Class": 15, "Function": 9}
-_BASE_LIGHTNESS = {"Module": 0.40, "Class": 0.52, "Function": 0.62}
+_BASE_SIZE = {"File": 26, "Class": 15, "Function": 9}
+_BASE_LIGHTNESS = {"File": 0.40, "Class": 0.52, "Function": 0.62}
 
 EDGE_STYLE = {
     "IMPORTS": ("#8e44ad", 0.55),
@@ -34,16 +36,10 @@ EDGE_STYLE = {
 _DEFAULT_EDGE_STYLE = ("#b9bfd0", 0.4)
 
 
-def _owning_module(node_type: str, data: dict) -> str:
-    if node_type == "Module":
-        return data.get("label", "")
-    return data.get("module", "") or data.get("label", "")
-
-
-def _module_color(module_name: str, lightness: float) -> str:
-    """Deterministic, evenly-distributed hue per module name -- same module
+def _domain_color(domain_name: str, lightness: float) -> str:
+    """Deterministic, evenly-distributed hue per domain name -- same domain
     always gets the same color across runs, no fixed palette to run out of."""
-    digest = hashlib.md5(module_name.encode()).hexdigest()
+    digest = hashlib.md5(domain_name.encode()).hexdigest()
     hue = int(digest[:8], 16) / 0xFFFFFFFF
     r, g, b = colorsys.hls_to_rgb(hue, lightness, 0.55)
     return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
@@ -57,14 +53,14 @@ def to_pyvis_html(g: nx.MultiDiGraph, out_path: Path, height: str = "900px", ban
 
     for node_id, data in g.nodes(data=True):
         node_type = data.get("type", "Unknown")
-        module_name = _owning_module(node_type, data)
+        domain_name = data.get("domain") or ""
         title_lines = [f"<b>{node_type}</b>: {data.get('label', node_id)}"]
         for k, v in data.items():
             if k in ("type", "label"):
                 continue
             title_lines.append(f"{k}: {v}")
 
-        color = _module_color(module_name, _BASE_LIGHTNESS.get(node_type, 0.55)) if module_name else "#5b6172"
+        color = _domain_color(domain_name, _BASE_LIGHTNESS.get(node_type, 0.55)) if domain_name else "#5b6172"
 
         # A node pulled from Neo4j (kg/graph_intelligence.py's fetch_graph_for_run)
         # carries a live PageRank score -- when present, let it drive size
@@ -83,7 +79,7 @@ def to_pyvis_html(g: nx.MultiDiGraph, out_path: Path, height: str = "900px", ban
             color={"background": color, "border": color, "highlight": {"background": color, "border": "#ffffff"}},
             shape="dot",
             size=size,
-            font={"size": 14 if node_type == "Module" else 10, "color": "#e7e9f2", "face": "Inter, -apple-system, sans-serif"},
+            font={"size": 14 if node_type == "File" else 10, "color": "#e7e9f2", "face": "Inter, -apple-system, sans-serif"},
             borderWidth=1,
         )
 
