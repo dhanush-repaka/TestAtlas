@@ -805,6 +805,18 @@ async function submitGapFindingsForSelected() {
 let activeTestCases = [];
 let testGenAvailable = null; // null = not checked yet
 
+// Same heuristic as server/llm_test_generation.py's _is_test_file, applied to
+// a whole module (domain) name instead of a file path -- a module that's
+// entirely the codebase's own tests (e.g. domain "tests" or
+// "tests.test_foo") has nothing real for generation to target, so there's no
+// point offering (and metering) a call for it.
+function isTestModuleName(name) {
+  return name
+    .toLowerCase()
+    .split(".")
+    .some((seg) => seg === "test" || seg === "tests" || seg.startsWith("test_") || seg.endsWith("_test"));
+}
+
 async function loadTestCasesPanel() {
   const repoId = activeRepoId;
   if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
@@ -816,30 +828,63 @@ async function loadTestCasesPanel() {
       .then((c) => c.automatic_available)
       .catch(() => false);
     if (repoId !== activeRepoId) return;
-    $("#runTestGenBtn").classList.toggle("is-hidden", !testGenAvailable);
-    $("#testGenHint").classList.toggle("is-hidden", !testGenAvailable);
     $("#testGenUnavailableHint").classList.toggle("is-hidden", testGenAvailable);
   }
 
   const cases = await api(`/repos/${repoId}/test-cases`).catch(() => []);
   if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
   activeTestCases = cases;
+  renderModuleGenList();
+  populateTestCaseModuleFilter();
   renderTestCaseSummary();
   renderTestCaseList();
 }
 
-async function runTestGeneration() {
-  const btn = $("#runTestGenBtn");
+function renderModuleGenList() {
+  const el = $("#moduleGenList");
+  const searchInput = $("#moduleGenSearch");
+  if (!testGenAvailable) {
+    el.innerHTML = "";
+    searchInput.classList.add("is-hidden");
+    return;
+  }
+  const query = searchInput.value.trim().toLowerCase();
+  const moduleScores = (activeRuns[0]?.stats?.module_scores || []).filter(
+    (m) => !isTestModuleName(m.module) && (!query || m.module.toLowerCase().includes(query))
+  );
+  searchInput.classList.toggle("is-hidden", !(activeRuns[0]?.stats?.module_scores || []).length);
+  if (!moduleScores.length) {
+    el.innerHTML = `<p class="muted small">${query ? "No modules match that filter." : "No modules to generate for yet — run analysis first."}</p>`;
+    return;
+  }
+  el.innerHTML = moduleScores
+    .map((m) => {
+      const count = activeTestCases.filter((c) => c.module === m.module).length;
+      return `
+      <div class="module-gen-row">
+        <div class="module-gen-info">
+          <b>${escapeHtml(m.module)}</b>
+          <span class="small muted">${m.file_count} file${m.file_count === 1 ? "" : "s"} · ${m.class_count} classes · ${m.function_count} functions</span>
+        </div>
+        <div class="module-gen-actions">
+          <span class="small muted">${count ? `${count} generated` : ""}</span>
+          <button type="button" class="btn btn-sm module-gen-btn" data-module="${escapeHtml(m.module)}">${count ? "Regenerate" : "Generate"}</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+async function runTestGenerationForModule(moduleName, btn) {
   btn.disabled = true;
   const originalLabel = btn.textContent;
   btn.textContent = "Generating…";
   try {
-    const result = await api(`/repos/${activeRepoId}/test-cases/run`, { method: "POST" });
+    const result = await api(`/repos/${activeRepoId}/test-cases/run?module=${encodeURIComponent(moduleName)}`, { method: "POST" });
     await loadTestCasesPanel();
-    toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"}`, "ok");
+    toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"} for ${moduleName}`, "ok");
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     btn.disabled = false;
     btn.textContent = originalLabel;
   }
@@ -848,11 +893,11 @@ async function runTestGeneration() {
 function renderTestCaseDocsIncluded() {
   const el = $("#testCaseDocsIncluded");
   if (!activeDocuments.length) {
-    el.textContent = "Based on the codebase structure alone — no documents added yet. Add some (in the Docs tab) for richer, better-prioritized coverage.";
+    el.textContent = "Based on each module's code alone — no documents added yet. Add some (in the Docs tab) for richer, better-prioritized coverage.";
     return;
   }
   const names = activeDocuments.map((d) => d.name).join(", ");
-  el.textContent = `Based on all ${activeDocuments.length} document${activeDocuments.length === 1 ? "" : "s"} and the full codebase structure: ${names}`;
+  el.textContent = `Each module is generated using its own code plus all ${activeDocuments.length} document${activeDocuments.length === 1 ? "" : "s"}: ${names}`;
 }
 
 function renderTestCaseSummary() {
@@ -867,12 +912,21 @@ function renderTestCaseSummary() {
   ].join("");
 }
 
+function populateTestCaseModuleFilter() {
+  const sel = $("#testCaseFilterModuleSelect");
+  const prev = sel.value;
+  const modules = [...new Set(activeTestCases.map((c) => c.module).filter(Boolean))].sort();
+  sel.innerHTML = `<option value="">All modules</option>` + modules.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+  sel.value = modules.includes(prev) ? prev : "";
+}
+
 function renderTestCaseList() {
+  const modFilter = $("#testCaseFilterModuleSelect").value;
   const catFilter = $("#testCaseFilterCategorySelect").value;
-  const rows = activeTestCases.filter((c) => !catFilter || c.category === catFilter);
+  const rows = activeTestCases.filter((c) => (!modFilter || c.module === modFilter) && (!catFilter || c.category === catFilter));
   const el = $("#testCaseListAll");
   if (!rows.length) {
-    el.innerHTML = `<p class="muted small">${activeTestCases.length ? "No test cases match this filter." : "No test cases yet — generate some above."}</p>`;
+    el.innerHTML = `<p class="muted small">${activeTestCases.length ? "No test cases match this filter." : "No test cases yet — generate a module above."}</p>`;
     return;
   }
   el.innerHTML = rows.map(renderTestCaseCard).join("");
@@ -892,7 +946,10 @@ function renderTestCaseCard(c) {
         <h4>${escapeHtml(c.title)}</h4>
         <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
       </div>
-      ${c.target ? `<div class="test-case-target">${escapeHtml(c.target)}</div>` : ""}
+      ${(c.module || c.target) ? `
+        <div class="test-case-target">
+          ${c.module ? `<span class="test-case-module">${escapeHtml(c.module)}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
+        </div>` : ""}
       ${c.preconditions ? `
         <div class="tc-section">
           <span class="tc-section-label">Preconditions</span>
@@ -1138,6 +1195,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
   $("#gapFilterCategorySelect").addEventListener("change", renderGapFindingsList);
 
-  $("#runTestGenBtn").addEventListener("click", runTestGeneration);
+  $("#moduleGenList").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".module-gen-btn");
+    if (btn) runTestGenerationForModule(btn.dataset.module, btn);
+  });
+  $("#moduleGenSearch").addEventListener("input", renderModuleGenList);
+  $("#testCaseFilterModuleSelect").addEventListener("change", renderTestCaseList);
   $("#testCaseFilterCategorySelect").addEventListener("change", renderTestCaseList);
 });

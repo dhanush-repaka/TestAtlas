@@ -7,11 +7,16 @@ project follows -- gated entirely behind OPENAI_API_KEY being set. Unlike
 gap analysis, this feature has no free manual fallback today: with no key
 configured, the "Generate test cases" button simply doesn't appear.
 
-Reuses kg.doc_gaps.gap_analysis_context() for the input -- the context a
-gap comparison needs (every document + every module's real files/classes/
-functions/purpose summaries) is exactly what test-case generation needs too,
-just put to a different prompt. Unlike gap analysis, documents are optional
-here (called with require_docs=False): code structure alone is enough to
+Reuses kg.doc_gaps.module_test_context() for the input -- one call per
+MODULE, not per repo. An earlier version ran one call over the whole
+codebase; on a large repo (hundreds of modules) that one call's ~59-case
+output-token budget got spread across every module, leaving most of them
+with zero cases. Scoping each call to a single module gives that module its
+own full budget, so "many test cases per module" becomes achievable
+regardless of how many modules the repo has -- at the cost of one call per
+module generated, same metered-and-opt-in principle as everything else
+here. Unlike gap analysis, documents are optional (module_test_context
+always builds with require_docs=False): code structure alone is enough to
 generate test cases, documents just sharpen what counts as "critical" and
 what the intended behavior is when present.
 
@@ -60,10 +65,13 @@ def _target_case_count(context: dict) -> int:
     has, which badly undercounted any class-heavy codebase's true testable
     surface -- a class contributes 1 (itself, e.g. construction/exceptions)
     plus one per real method, not just 1) -- rather than a flat number, so a
-    small repo doesn't get padded with filler and a large one doesn't get
+    small module doesn't get padded with filler and a large one doesn't get
     capped down to a token count that was only ever right for a small one.
     Aims for roughly 1-2 cases per real unit (happy path + edge/error mix),
-    bounded so a huge repo still fits in one call at reasonable cost."""
+    bounded so a huge module still fits in one call at reasonable cost. The
+    floor is deliberately low (3, not the 15 an earlier whole-repo version
+    used) -- context is now one module at a time, and a tiny module (a
+    couple of helper functions) genuinely doesn't need 15 cases."""
     real_units = 0
     for m in context["modules"]:
         for f in m["files"]:
@@ -72,49 +80,51 @@ def _target_case_count(context: dict) -> int:
             real_units += len(f["functions"])
             for c in f["classes"]:
                 real_units += 1 + len(c["methods"])
-    return max(15, min(HARD_CASE_CAP, round(real_units * 1.5)))
+    return max(3, min(HARD_CASE_CAP, round(real_units * 1.5)))
 
 
 def _build_prompt(context: dict, target: int) -> str:
+    module_name = context["modules"][0]["module"] if context["modules"] else "(unknown)"
     modules_json = json.dumps(context["modules"], indent=2)
     has_docs = bool(context["documents"])
     docs_block = (
         "\n\n".join(f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"])
         if has_docs
-        else "(No project documents were provided for this repo. Base every test case on the codebase "
+        else "(No project documents were provided for this repo. Base every test case on the module's "
              "contents below alone -- infer intended behavior from naming, purpose summaries, class/function "
              "shape, and ordinary conventions for this kind of code.)"
     )
     priority_1 = (
-        "The most business-critical flows described in the documents."
+        "The most business-critical flows described in the documents that this module implements."
         if has_docs
-        else "The most structurally important code: classes/functions that many others depend on or that "
-             "define a module's main public surface, and names suggesting core business logic (e.g. auth, "
-             "payment, signing, validation) over incidental helpers."
+        else "The most structurally important code in this module: classes/functions that many others "
+             "depend on or that define the module's main public surface, and names suggesting core "
+             "business logic (e.g. auth, payment, signing, validation) over incidental helpers."
     )
     priority_3 = (
-        "At least one happy-path case per major documented flow, so edge cases have a baseline to contrast with."
+        "At least one happy-path case per major documented flow this module implements, so edge cases "
+        "have a baseline to contrast with."
         if has_docs
         else "At least one happy-path case per real method or function you target, so edge cases have a "
              "baseline to contrast with."
     )
-    return f"""You design test cases for a codebase, using its documentation (when available) and its real structure as evidence for what it should do and what surface actually exists to test.
+    return f"""You design test cases for ONE MODULE of a larger codebase -- module "{module_name}" -- using its documentation (when available) and its real structure as evidence for what it should do and what surface actually exists to test. You are NOT being asked to cover the whole codebase, only this module; other modules are handled by separate calls like this one.
 
 {docs_block}
 
-ACTUAL CODEBASE CONTENTS -- every module, its files, each file's real top-level functions, and each file's real classes WITH their real method names (this is ground truth, derived directly from the source via AST parsing, not a summary; you do NOT have the function/method bodies, only names/purposes, so infer plausible behavior from naming, purpose summaries, and the documents above rather than inventing internal logic):
+THIS MODULE'S ACTUAL CONTENTS -- its files, each file's real top-level functions, and each file's real classes WITH their real method names (this is ground truth, derived directly from the source via AST parsing, not a summary; you do NOT have the function/method bodies, only names/purposes, so infer plausible behavior from naming, purpose summaries, and the documents above rather than inventing internal logic):
 ---
 {modules_json}
 ---
 
-Some of the modules above are the codebase's OWN EXISTING TESTS (e.g. a `tests` package, files named `test_*`). Never target those with a new test case -- there's no value in writing a test of a test. Treat them only as a signal for what's already covered.
+If this module is itself the codebase's own test code (e.g. a `tests` package, files named `test_*`), don't write tests of those tests -- respond with {{"test_cases": []}}.
 
-Design approximately {target} test cases -- that number reflects the actual size of the real (non-test) surface above (every top-level function, every class, and every one of its real methods), so treat it as a real target, not a suggestion to undershoot: aim for roughly 1-2 cases per meaningfully distinct function or method (a happy path, plus an edge/error case where one genuinely applies), not one case per file or one case for the whole module -- and prefer targeting a class's actual listed methods (e.g. `Signer.unsign`) over the class as a whole wherever real methods are listed. It's fine to land a bit under or over if the codebase genuinely warrants it, but don't stop early out of caution -- a real method you haven't covered yet is a real gap, not a reason to stop. Prioritize:
+Design approximately {target} test cases -- that number reflects the actual size of this module's real (non-test) surface (every top-level function, every class, and every one of its real methods), so treat it as a real target, not a suggestion to undershoot: aim for roughly 1-2 cases per meaningfully distinct function or method (a happy path, plus an edge/error case where one genuinely applies), not one case for the whole module -- and prefer targeting a class's actual listed methods (e.g. `Signer.unsign`) over the class as a whole wherever real methods are listed. It's fine to land a bit under or over if the module genuinely warrants it, but don't stop early out of caution -- a real method you haven't covered yet is a real gap, not a reason to stop. Prioritize:
 1. {priority_1}
 2. Realistic edge cases for each: boundary values (empty/zero/max/min), invalid or malformed input, missing/null fields, error and exception paths, expiry/timeout conditions, permission/auth failures, and concurrent or repeated use where relevant.
 3. {priority_3}
 
-Do not invent function/class/method names that aren't listed above. Each test case must be traceable to something real: {"a documented flow, and/or " if has_docs else ""}an actual class, method, or top-level function from the codebase contents (excluding the existing-tests modules, per above).
+Do not invent function/class/method names that aren't listed above. Each test case must be traceable to something real: {"a documented flow, and/or " if has_docs else ""}an actual class, method, or top-level function from this module's contents.
 
 For each test case, classify it as exactly one of:
 - "happy_path": exercises normal, expected usage (per the documents when available, otherwise per what the code's naming/shape implies it's meant to do)
@@ -135,14 +145,14 @@ Respond with ONLY a JSON object of this exact shape, no other text:
   ...
 ]}}
 
-If the codebase and documents genuinely don't support meaningful test cases, respond with {{"test_cases": []}}."""
+If this module and the documents genuinely don't support meaningful test cases, respond with {{"test_cases": []}}."""
 
 
 def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]:
     """Calls the OpenAI API to design test cases from `context` (from
-    kg.doc_gaps.gap_analysis_context) and returns a validated list of
-    {title, category, target, preconditions, steps, expected_result,
-    edge_case_description} dicts. Raises RuntimeError with a message safe to
+    kg.doc_gaps.module_test_context, scoped to one module) and returns a
+    validated list of {title, category, target, preconditions, steps,
+    expected_result, edge_case_description} dicts. Raises RuntimeError with a message safe to
     show the user on any failure -- missing key, API error, or a malformed
     response."""
     if not is_configured():

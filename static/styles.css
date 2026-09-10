@@ -118,6 +118,7 @@ body {
 .btn-danger:hover { border-color: var(--danger); background: var(--danger-soft); }
 .btn-block { width: 100%; }
 .btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+.btn-sm { padding: 5px 11px; font-size: 12px; }
 
 .back-link {
   display: inline-flex; align-items: center; gap: 5px; background: none; border: none;
@@ -367,6 +368,22 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .tc-steps li { margin-bottom: 3px; }
 .tc-expected { background: var(--panel-2); border-radius: 8px; padding: 9px 11px; }
 .tc-edge-case { border-left: 2px solid var(--warn); padding-left: 9px; }
+.test-case-module { color: var(--accent-strong); font-weight: 700; margin-right: 6px; padding-right: 6px; border-right: 1px solid var(--border-soft); }
+
+.module-gen-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius);
+  background: var(--panel); margin-bottom: 6px;
+}
+.module-gen-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.module-gen-info b { font-size: 13px; font-family: var(--mono); overflow-wrap: anywhere; }
+.module-gen-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.module-gen-list-scroll { max-height: 420px; overflow-y: auto; }
+.module-gen-search {
+  display: block; width: 100%; box-sizing: border-box; margin: 10px 0; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2);
+  color: var(--text); font-size: 13px; font-family: inherit;
+}
 
 .cause-block { background: var(--panel); border: 1px solid var(--danger); border-left-width: 3px; border-radius: var(--radius); padding: 14px 16px; margin-bottom: 10px; }
 .cause-block h4 { margin: 0 0 6px 0; color: var(--danger); display: flex; align-items: center; gap: 7px; font-size: 14px; }

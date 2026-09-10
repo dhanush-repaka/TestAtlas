@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=25" />
+<link rel="stylesheet" href="static/styles.css?v=26" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -175,18 +175,17 @@
         <div class="card-grid" id="testCaseSummaryCards"></div>
 
         <div class="result-block">
-          <h3>Generate test cases</h3>
-          <p class="muted small">Uses an LLM (OpenAI) to design test cases — happy paths plus realistic edge cases (boundary values, invalid input, error/expiry conditions) — from this repo's documents and the codebase's real structure. Structured, reviewable records, not runnable code; treat them as a first draft.</p>
+          <h3>Generate by module</h3>
+          <p class="muted small">Uses an LLM (OpenAI) to design test cases — happy paths plus realistic edge cases (boundary values, invalid input, error/expiry conditions) — from this repo's documents and one module's real code structure at a time. Structured, reviewable records, not runnable code; treat them as a first draft. Each module you generate is its own metered OpenAI call, triggered individually — nothing runs in bulk.</p>
           <p class="muted small" id="testCaseDocsIncluded"></p>
-          <div class="findings-toolbar">
-            <button type="button" class="btn btn-primary is-hidden" id="runTestGenBtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3l1.8 4.9L18.5 9l-4.7 1.9L12 15l-1.8-4.1L5.5 9l4.7-1.1L12 3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M19 14l.8 2.1L22 17l-2.2.9L19 20l-.8-2.1L16 17l2.2-.9L19 14z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>Generate test cases</button>
-          </div>
-          <p class="muted small is-hidden" id="testGenHint">Calls OpenAI directly — this is metered, same as automatic gap analysis.</p>
           <p class="muted small is-hidden" id="testGenUnavailableHint">Not configured on this deployment (no <code>OPENAI_API_KEY</code>) — there's no free manual fallback for this feature yet.</p>
+          <input type="search" id="moduleGenSearch" class="module-gen-search" placeholder="Filter modules by name…" />
+          <div id="moduleGenList" class="module-gen-list-scroll"></div>
         </div>
 
         <h3 class="section-title">Test cases</h3>
         <div class="findings-toolbar">
+          <label class="field-inline">Module<select id="testCaseFilterModuleSelect"><option value="">All modules</option></select></label>
           <label class="field-inline">Category
             <select id="testCaseFilterCategorySelect">
               <option value="">All categories</option>
@@ -297,6 +296,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=29"></script>
+  <script src="static/app.js?v=30"></script>
 </body>
 </html>

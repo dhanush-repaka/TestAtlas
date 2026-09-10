@@ -103,45 +103,45 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     planted false requirement in the test document. Treat its findings as a
     fast first pass to review, not a substitute for the manual flow's
     human-in-the-loop check.
-- **Test Cases** — a "Generate test cases" button (also gated on
-  `OPENAI_API_KEY`, `server/llm_test_generation.py`) makes one live OpenAI
-  call over the same graph+docs context gap analysis uses, and designs
-  structured, QA-style test cases. Unlike gap analysis, documents are
-  optional here: code structure alone is enough to generate a full set of
-  test cases (the button works with zero documents added), and the model is
-  told to prioritize by what's structurally central in the code (widely
+- **Test Cases** — generated **per module**, one live OpenAI call each
+  (also gated on `OPENAI_API_KEY`, `server/llm_test_generation.py`), not one
+  call for the whole repo. An earlier whole-repo version put every module in
+  a single call; `gpt-4o-mini`'s own 16,384-output-token ceiling caps that
+  one call at ~59 structured cases regardless of repo size, so a repo with
+  201 modules got well under one case per module. Scoping each call to a
+  single module (`kg.doc_gaps.module_test_context`) gives every module its
+  own full budget instead — the tab lists every real (non-test) module with
+  its file/class/function counts and a per-module "Generate" button
+  (searchable, since a large repo can have hundreds), each an individually
+  costed, individually triggered call; there's no bulk "generate everything"
+  action, so cost always stays an explicit choice. Regenerating a module
+  replaces only that module's cases, leaving every other module's untouched.
+  Unlike gap analysis, documents are optional: code structure alone is
+  enough (the button works with zero documents added), and the model
+  prioritizes by what's structurally central in the module (widely
   depended-on classes/functions, naming that suggests core logic) instead of
-  by documented flows when there are no documents to go on. Adding documents
-  sharpens that prioritization and grounds "critical" in what's actually
-  meant to happen, but was never a hard requirement the way it is for gap
+  documented flows when there's nothing to go on. Adding documents sharpens
+  that prioritization but was never a hard requirement the way it is for gap
   analysis (which is meaningless without something to compare the code
-  against). Each case has a title, preconditions, ordered steps,
-  expected result, and which specific edge case it targets. The count scales
-  with the repo's actual testable surface (~1-2 cases per real, non-test
-  function or method — one happy path plus edge/error cases — rather than a
-  flat number), so a 5-file repo and a 500-file repo don't get the same
-  count. `kg/doc_gaps.py`'s context includes each class's real method names
-  (not just the bare class name) — fixed after finding that omission meant a
-  class-heavy codebase's real methods (routinely 2-3x the number of classes
-  themselves) were completely invisible to the model; it could only guess
-  at conventional method names instead of targeting real ones, quietly
-  capping both quality and count well below what the code actually supports.
-  Bounded around ~59 cases per call regardless of how large the real surface
-  is, derived from `gpt-4o-mini`'s own 16,384 output-token ceiling (asking
-  for more than that would just truncate the response mid-JSON — a real
-  failure hit while building this) rather than an arbitrary round number. A
-  repo with more testable surface than that fits in one call gets the
-  highest-priority ~59, not literally everything.
-  Existing test files in the graph are recognized and excluded as generation
-  targets (no "test for a test"), used only as a signal for what's already
-  covered.
-  Classified as `happy_path`, `edge_case` (boundary values, invalid input,
-  timing/expiry), or `error_handling`, shown as summary stat cards plus a
-  filterable list. These are reviewable records, not runnable code, and the
-  model only ever sees names/purpose summaries (never real function bodies,
-  which the graph doesn't carry) — treat them as a first draft to adapt, not
-  a QA suite ready to run as-is. Unlike gap analysis, this has **no free
-  manual fallback** today: with no `OPENAI_API_KEY` configured, the button
+  against). Each case has a title, preconditions, ordered steps, expected
+  result, and which specific edge case it targets, classified as
+  `happy_path`, `edge_case` (boundary values, invalid input, timing/expiry),
+  or `error_handling`. The per-module count scales with that module's actual
+  testable surface (~1-2 cases per real, non-test function or method,
+  floored at 3 so a two-function module isn't padded with filler) rather
+  than a flat number. `kg/doc_gaps.py`'s context includes each class's real
+  method names, not just the bare class name -- fixed after finding that
+  omission meant a class-heavy module's real methods (routinely 2-3x the
+  number of classes themselves) were completely invisible to the model; it
+  could only guess at conventional method names instead of targeting real
+  ones, quietly capping both quality and count. A module that's itself the
+  codebase's own tests (e.g. a `tests` package) is excluded from the
+  generate list entirely -- there's nothing to write a test of a test
+  against. These are reviewable records, not runnable code, and the model
+  only ever sees names/purpose summaries (never real function bodies, which
+  the graph doesn't carry) — treat them as a first draft to adapt, not a QA
+  suite ready to run as-is. Unlike gap analysis, this has **no free manual
+  fallback** today: with no `OPENAI_API_KEY` configured, the module list
   simply doesn't appear.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are

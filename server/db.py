@@ -98,12 +98,19 @@ CREATE TABLE IF NOT EXISTS doc_gap_findings (
 );
 
 -- LLM-generated test cases -- structured QA-style records (not runnable code),
--- produced by one live OpenAI call per repo from the same graph+docs context
--- gap analysis uses (see server/llm_test_generation.py). Replaced wholesale on
--- each run, same "fresh pass supersedes the last one" rule as gap findings.
+-- produced by one live OpenAI call PER MODULE from the same graph+docs context
+-- gap analysis uses (see server/llm_test_generation.py). One call covering an
+-- entire large repo (hundreds of modules) hit gpt-4o-mini's own output-token
+-- ceiling long before every module got even one case; scoping each call to a
+-- single module's real surface fixes that. Replaced wholesale per (repo,
+-- module) pair on each generation pass for that module, same "fresh pass
+-- supersedes the last one" rule as gap findings -- other modules' previously
+-- generated cases are untouched.
 CREATE TABLE IF NOT EXISTS test_cases (
     id TEXT PRIMARY KEY,
     repo_id TEXT NOT NULL,
+    module TEXT,                      -- which module (domain) this case was generated for; NULL on
+                                       -- rows from before per-module generation existed (legacy, harmless)
     run_id TEXT,                      -- which run's graph was used to generate these
     title TEXT NOT NULL,
     category TEXT NOT NULL,           -- 'happy_path' | 'edge_case' | 'error_handling'
@@ -142,21 +149,26 @@ _REPO_COLUMN_MIGRATIONS = {
     "github_pat_enc": "TEXT",
 }
 
+_TEST_CASES_COLUMN_MIGRATIONS = {
+    "module": "TEXT",  # added when test-case generation moved from repo-wide to per-module
+}
 
-def _migrate_repo_columns(conn: sqlite3.Connection) -> None:
-    """Adds any repos columns introduced after a DB already existed --
-    CREATE TABLE IF NOT EXISTS only helps on a brand-new DB, so an existing
-    production database needs an explicit ALTER TABLE per new column."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()}
-    for col, col_type in _REPO_COLUMN_MIGRATIONS.items():
+
+def _migrate_columns(conn: sqlite3.Connection, table: str, migrations: dict[str, str]) -> None:
+    """Adds any columns introduced after a DB already existed -- CREATE TABLE
+    IF NOT EXISTS only helps on a brand-new DB, so an existing production
+    database needs an explicit ALTER TABLE per new column."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for col, col_type in migrations.items():
         if col not in existing:
-            conn.execute(f"ALTER TABLE repos ADD COLUMN {col} {col_type}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
 
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        _migrate_repo_columns(conn)
+        _migrate_columns(conn, "repos", _REPO_COLUMN_MIGRATIONS)
+        _migrate_columns(conn, "test_cases", _TEST_CASES_COLUMN_MIGRATIONS)
         # The Playwright+BDD parser was retired -- any repo still configured
         # for it has no parser left to run; move it to the one supported
         # framework rather than leave it permanently broken.
@@ -419,20 +431,22 @@ def list_repo_gap_findings(repo_id: str) -> list[dict]:
 
 # --------------------------------------------------------------------------- test cases
 
-def replace_test_cases(repo_id: str, run_id: str | None, cases: list[dict]) -> None:
-    """Idempotent: drops this repo's previously generated test cases and stores the
-    new set -- a fresh generation pass supersedes the last one rather than
-    accumulating stale results."""
+def replace_test_cases(repo_id: str, module: str, run_id: str | None, cases: list[dict]) -> None:
+    """Idempotent per (repo, module): drops just that module's previously
+    generated test cases and stores the new set -- a fresh generation pass
+    for a module supersedes its last one, but leaves every other module's
+    cases untouched (generation is scoped per module precisely so a large
+    repo's modules can be generated one at a time, not wiped by each other)."""
     ts = now()
     with get_conn() as conn:
-        conn.execute("DELETE FROM test_cases WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM test_cases WHERE repo_id = ? AND module = ?", (repo_id, module))
         for c in cases:
             conn.execute(
                 """INSERT INTO test_cases
-                   (id, repo_id, run_id, title, category, target, preconditions, steps, expected_result, edge_case_description, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id, repo_id, module, run_id, title, category, target, preconditions, steps, expected_result, edge_case_description, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    str(uuid.uuid4()), repo_id, run_id, c["title"], c["category"], c.get("target"),
+                    str(uuid.uuid4()), repo_id, module, run_id, c["title"], c["category"], c.get("target"),
                     c.get("preconditions"), json.dumps(c["steps"]), c["expected_result"],
                     c.get("edge_case_description"), ts,
                 ),

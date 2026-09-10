@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from ado import client as ado_client
 from github import client as github_client
 from kg import neo4j_sync
-from kg.doc_gaps import ALLOWED_GAP_CATEGORIES, gap_analysis_context
+from kg.doc_gaps import ALLOWED_GAP_CATEGORIES, gap_analysis_context, module_test_context
 from kg.enrichment import apply_enrichment, enrichment_coverage, enrichment_targets
 from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
@@ -588,15 +588,20 @@ def api_gap_analysis_config():
 # --------------------------------------------------------------------------- LLM test case generation
 
 @api.post("/repos/{repo_id}/test-cases/run")
-def api_run_test_generation(repo_id: str):
-    """Generates test cases via a live OpenAI API call, from the same
-    graph+docs context gap analysis uses (see server/llm_test_generation.py).
-    Unlike gap analysis, documents are optional here -- code structure alone
-    is enough to generate test cases; documents (if any) just add richer
-    grounding for what's "critical" and what the intended behavior is. Also
-    unlike gap analysis, this has no free manual fallback -- gated entirely
-    on OPENAI_API_KEY, same as automatic gap analysis. Replaces this repo's
-    stored test cases with the result."""
+def api_run_test_generation(repo_id: str, module: str):
+    """Generates test cases via a live OpenAI API call, SCOPED TO ONE MODULE
+    (see server/llm_test_generation.py) -- an earlier whole-repo version
+    spread one call's ~59-case output-token budget across every module in
+    the repo, leaving most modules with zero cases on anything but a small
+    codebase. One call per module instead gives each module its own full
+    budget, at the cost of one OpenAI call per module generated. Unlike gap
+    analysis, documents are optional here -- code structure alone is enough
+    to generate test cases; documents (if any) just add richer grounding
+    for what's "critical" and what the intended behavior is. Also unlike gap
+    analysis, this has no free manual fallback -- gated entirely on
+    OPENAI_API_KEY, same as automatic gap analysis. Replaces this module's
+    previously stored test cases with the result -- other modules' cases
+    are untouched."""
     if not llm_test_generation.is_configured():
         raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
     if not db.get_repo(repo_id):
@@ -606,15 +611,15 @@ def api_run_test_generation(repo_id: str):
     if not run or not run.get("graph_path"):
         raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
     g = load_graph(run["graph_path"])
-    context = gap_analysis_context(g, docs, require_docs=False)
+    context = module_test_context(g, docs, module)
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:
         cases = llm_test_generation.run_test_generation(context)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    db.replace_test_cases(repo_id, run["id"], cases)
-    return {"applied": len(cases), "test_cases": cases}
+    db.replace_test_cases(repo_id, module, run["id"], cases)
+    return {"applied": len(cases), "test_cases": cases, "module": module}
 
 
 @api.get("/repos/{repo_id}/test-cases")

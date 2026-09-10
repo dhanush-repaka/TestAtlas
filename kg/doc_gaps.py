@@ -31,6 +31,17 @@ analysis (which is meaningless without documents to compare against), test
 generation only NEEDS the code -- documents just add extra grounding when
 present. Hence `require_docs`, defaulting to True to keep gap analysis's
 existing behavior.
+
+Test generation additionally uses module_test_context() below to scope that
+same context down to ONE module, rather than the whole codebase -- a large
+repo (hundreds of modules) sent as one context made one OpenAI call spread
+its single ~59-case output-token budget across every module in the repo,
+leaving most modules with zero cases. A per-module call gives each module
+its own full budget instead. Deliberately NOT the same move gap analysis's
+docstring above warns against (per-module doc comparison, which added a
+linking step for no benefit) -- this is scoping the CODE side of an
+already-built context to control a single LLM call's output size, not
+re-introducing a document-to-module linking step.
 """
 from __future__ import annotations
 
@@ -93,3 +104,19 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
         "documents": [{"id": d["id"], "name": d["name"], "content": d["content"]} for d in docs],
         "modules": modules,
     }
+
+
+def module_test_context(g: nx.MultiDiGraph, docs: list[dict], module: str) -> dict:
+    """Same context gap_analysis_context() builds, narrowed to a single
+    module's code -- documents stay the full set (a doc may describe this
+    module's role within the wider system; there's no per-doc split here),
+    only the "modules" list is filtered down to the one requested. See the
+    module docstring for why test generation needs this and gap analysis
+    doesn't."""
+    full = gap_analysis_context(g, docs, require_docs=False)
+    if not full["ok"]:
+        return full
+    matching = [m for m in full["modules"] if m["module"] == module]
+    if not matching:
+        return {"ok": False, "message": f"No module named '{module}' found in this run's graph."}
+    return {"ok": True, "documents": full["documents"], "modules": matching}
