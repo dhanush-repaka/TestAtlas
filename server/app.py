@@ -21,7 +21,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, llm_gap_analysis, llm_test_generation
+from . import auth, db, doc_extract, llm_gap_analysis, llm_module_naming, llm_test_generation
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -634,6 +634,49 @@ def api_test_generation_config():
     """Lets the UI know whether the "Generate test cases" button should show
     at all -- opt-in per deployment, off unless OPENAI_API_KEY is set."""
     return {"automatic_available": llm_test_generation.is_configured()}
+
+
+@api.get("/repos/{repo_id}/module-labels")
+def api_get_module_labels(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    return db.get_module_labels(repo_id)
+
+
+@api.post("/repos/{repo_id}/module-labels/generate")
+def api_generate_module_labels(repo_id: str):
+    """Names every module in this repo's latest run with a friendly,
+    business-English display name via one live OpenAI call (see
+    server/llm_module_naming.py) -- purely cosmetic, the real dotted-path
+    module name underneath is unchanged. Unlike test cases/gap findings,
+    this doesn't replace anything: existing labels for modules the model
+    renames again are just overwritten, and labels for modules that no
+    longer exist are left in place (harmless, unused until that module
+    reappears)."""
+    if not llm_module_naming.is_configured():
+        raise HTTPException(400, "Module naming isn't configured on this deployment (no OPENAI_API_KEY).")
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    context = gap_analysis_context(g, [], require_docs=False)
+    if not context["ok"]:
+        raise HTTPException(400, context["message"])
+    try:
+        labels = llm_module_naming.generate_module_names(context)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.set_module_labels(repo_id, labels)
+    return {"applied": len(labels), "labels": labels}
+
+
+@api.get("/module-naming/config")
+def api_module_naming_config():
+    """Lets the UI know whether the "Generate friendly names" button should
+    show at all -- opt-in per deployment, off unless OPENAI_API_KEY is set."""
+    return {"automatic_available": llm_module_naming.is_configured()}
 
 
 app.include_router(api)

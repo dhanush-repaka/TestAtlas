@@ -4,6 +4,17 @@ let activeRepoId = null;
 let activeRuns = [];
 let view = "dashboard"; // "dashboard" | "repo"
 
+let activeModuleLabels = {}; // {raw module name -> friendly display name}, per repo
+let moduleNamingAvailable = null; // null = not checked yet; deployment-wide, checked once
+
+// The raw module name (a dotted package path -- kg/dev_graph_builder.py's
+// stable grouping key) is never shown alone once a friendly name exists for
+// it -- the raw path stays visible too, just demoted to secondary text, so
+// technical and non-technical readers both get what they need.
+function moduleDisplayName(raw) {
+  return activeModuleLabels[raw] || raw;
+}
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $all = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -184,10 +195,51 @@ async function showRepoDetail(id) {
     repo.source_type === "local" ? `Local folder · ${repo.local_path}`
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
+  activeModuleLabels = {};
+  await loadModuleLabels();
   await loadRuns();
   await loadDocsPanel();
   await loadGapsPanel();
   await loadTestCasesPanel();
+}
+
+async function loadModuleLabels() {
+  const repoId = activeRepoId;
+  if (moduleNamingAvailable === null) {
+    moduleNamingAvailable = await api("/module-naming/config")
+      .then((c) => c.automatic_available)
+      .catch(() => false);
+  }
+  activeModuleLabels = await api(`/repos/${repoId}/module-labels`).catch(() => ({}));
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  renderModuleNamingControl();
+}
+
+async function generateModuleLabels(btn) {
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Naming modules…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/module-labels/generate`, { method: "POST" });
+    activeModuleLabels = { ...activeModuleLabels, ...result.labels };
+    renderModuleNamingControl(); // updates the button's own label to "Re-generate…" now that labels exist
+    renderOverview();
+    renderModuleGenList();
+    renderTestCaseList();
+    toast(`Named ${result.applied} module${result.applied === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+function renderModuleNamingControl() {
+  const el = $("#moduleNamingControl");
+  if (!moduleNamingAvailable) { el.innerHTML = ""; return; }
+  const hasAny = Object.keys(activeModuleLabels).length > 0;
+  el.innerHTML = `<button type="button" class="btn btn-sm" id="generateModuleLabelsBtn">${hasAny ? "Re-generate friendly names" : "Generate friendly module names"}</button>`;
+  $("#generateModuleLabelsBtn").addEventListener("click", (ev) => generateModuleLabels(ev.target));
 }
 
 async function loadRuns() {
@@ -349,7 +401,7 @@ function renderModuleScores(scores, skippedFiles) {
       <div class="rank-row">
         <span class="rank-num">${idx + 1}</span>
         <div class="rank-body">
-          <div class="rank-label">${escapeHtml(s.module)}${s.isolated ? ` <span class="finding-cat cat-dead_locator">not yet connected</span>` : ""}</div>
+          <div class="rank-label">${escapeHtml(moduleDisplayName(s.module))}${activeModuleLabels[s.module] ? ` <span class="module-raw-name">${escapeHtml(s.module)}</span>` : ""}${s.isolated ? ` <span class="finding-cat cat-dead_locator">not yet connected</span>` : ""}</div>
           <div class="small muted">${s.file_count} file${s.file_count === 1 ? "" : "s"} · ${s.class_count} classes · ${s.function_count} functions · imported by ${s.imported_by_count}</div>
           ${s.purpose ? `<div class="small module-purpose">${escapeHtml(s.purpose)}</div>` : ""}
           <div class="rank-bar-track"><div class="rank-bar" style="width:${Math.max(4, (s.pagerank / maxRank) * 100)}%"></div></div>
@@ -850,7 +902,9 @@ function renderModuleGenList() {
   }
   const query = searchInput.value.trim().toLowerCase();
   const moduleScores = (activeRuns[0]?.stats?.module_scores || []).filter(
-    (m) => !isTestModuleName(m.module) && (!query || m.module.toLowerCase().includes(query))
+    (m) =>
+      !isTestModuleName(m.module) &&
+      (!query || m.module.toLowerCase().includes(query) || moduleDisplayName(m.module).toLowerCase().includes(query))
   );
   searchInput.classList.toggle("is-hidden", !(activeRuns[0]?.stats?.module_scores || []).length);
   if (!moduleScores.length) {
@@ -863,7 +917,7 @@ function renderModuleGenList() {
       return `
       <div class="module-gen-row">
         <div class="module-gen-info">
-          <b>${escapeHtml(m.module)}</b>
+          <b>${escapeHtml(moduleDisplayName(m.module))}</b>${activeModuleLabels[m.module] ? `<span class="module-raw-name">${escapeHtml(m.module)}</span>` : ""}
           <span class="small muted">${m.file_count} file${m.file_count === 1 ? "" : "s"} · ${m.class_count} classes · ${m.function_count} functions</span>
         </div>
         <div class="module-gen-actions">
@@ -916,7 +970,7 @@ function populateTestCaseModuleFilter() {
   const sel = $("#testCaseFilterModuleSelect");
   const prev = sel.value;
   const modules = [...new Set(activeTestCases.map((c) => c.module).filter(Boolean))].sort();
-  sel.innerHTML = `<option value="">All modules</option>` + modules.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+  sel.innerHTML = `<option value="">All modules</option>` + modules.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(moduleDisplayName(m))}</option>`).join("");
   sel.value = modules.includes(prev) ? prev : "";
 }
 
@@ -948,7 +1002,7 @@ function renderTestCaseCard(c) {
       </div>
       ${(c.module || c.target) ? `
         <div class="test-case-target">
-          ${c.module ? `<span class="test-case-module">${escapeHtml(c.module)}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
+          ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
         </div>` : ""}
       ${c.preconditions ? `
         <div class="tc-section">

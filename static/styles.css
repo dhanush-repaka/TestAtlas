@@ -376,7 +376,7 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
   background: var(--panel); margin-bottom: 6px;
 }
 .module-gen-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.module-gen-info b { font-size: 13px; font-family: var(--mono); overflow-wrap: anywhere; }
+.module-gen-info b { font-size: 13px; overflow-wrap: anywhere; margin-right: 6px; }
 .module-gen-actions { display: flex; align-items: center; gap: 10px; flex: none; }
 .module-gen-list-scroll { max-height: 420px; overflow-y: auto; }
 .module-gen-search {
@@ -401,6 +401,12 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .rank-body { flex: 1; min-width: 0; }
 .rank-label { font-size: 13px; font-weight: 600; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .module-purpose { margin: 2px 0 5px; font-style: italic; }
+.module-raw-name {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--muted-2);
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 6px;
+}
+.module-naming-control { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.module-naming-control:empty { display: none; }
 .rank-bar-track { height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
 .rank-bar { height: 100%; background: var(--accent); border-radius: 3px; }
 .rank-score { flex: none; font-family: var(--mono); font-size: 12px; color: var(--muted); width: 46px; text-align: right; }

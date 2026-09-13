@@ -170,6 +170,20 @@ The graph schema itself doesn't change for this — it's a rollup computed from
 `domain`, not new node types or edges, so it works the same locally and once
 synced to Neo4j.
 
+**Friendly display names**: `domain` itself stays a technical, stable
+identifier (a dotted package path like `kg` or `src.itsdangerous.signer`) --
+it's the key everything else keys off of (per-module test generation, doc
+gap grouping, Compare Runs). A separate "Generate friendly module names"
+button (Overview tab, gated on `OPENAI_API_KEY`, `server/llm_module_naming.py`)
+makes one live OpenAI call naming every module in a repo at once (e.g. `kg`
+-> "Knowledge Graph Engine") for a non-technical audience, purely as a
+cosmetic label shown next to the raw name everywhere modules appear. Unlike
+per-run domain overrides above (which the graph itself carries, and a fresh
+`Run analysis` wipes), friendly names live in their own table keyed by
+`(repo_id, module)` -- not tied to any run -- so they survive re-analysis
+indefinitely without needing to be regenerated. Falls back to the raw
+technical name anywhere a module hasn't been named yet.
+
 ## Architecture
 
 ```
@@ -178,9 +192,13 @@ server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
   llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
-                          call (OPENAI_API_KEY) -- one of two metered features here
+                          call (OPENAI_API_KEY) -- one of three metered features here
   llm_test_generation.py optional: designs test cases via a live OpenAI API
-                          call (OPENAI_API_KEY, same key) -- the other metered feature
+                          call (OPENAI_API_KEY, same key) -- another metered feature
+  llm_module_naming.py   optional: friendly module display names via a live
+                          OpenAI API call (OPENAI_API_KEY, same key) -- the
+                          cheapest of the three (one call per repo, not one
+                          per module)
   db.py                 SQLite: repos + runs
   crypto.py             Fernet encryption for stored PATs (data/secret.key, gitignored)
   auth.py                optional single-password gate (TESTATLAS_PASSWORD)

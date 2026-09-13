@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS test_cases (
     created_at TEXT NOT NULL,
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
+
+-- Friendly, business-English names for modules (see server/llm_module_naming.py)
+-- -- purely cosmetic, keyed to the module's real dotted-path name (`domain`),
+-- NOT to any one run's graph, so a friendly name survives "Run analysis"
+-- being clicked again indefinitely -- unlike per-run enrichment (which the
+-- graph itself carries and a fresh run wipes), this table is the one piece
+-- of module-level data in this app that's deliberately NOT tied to a run_id.
+CREATE TABLE IF NOT EXISTS module_labels (
+    repo_id TEXT NOT NULL,
+    module TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repo_id, module),
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
 """
 
 
@@ -269,6 +284,7 @@ def delete_repo(repo_id: str) -> None:
         )
         conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM test_cases WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM module_labels WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM documents WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM runs WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
@@ -464,3 +480,28 @@ def list_test_cases(repo_id: str) -> list[dict]:
         d["steps"] = json.loads(d["steps"]) if d["steps"] else []
         out.append(d)
     return out
+
+
+# --------------------------------------------------------------------------- module labels
+
+def set_module_labels(repo_id: str, labels: dict[str, str]) -> None:
+    """Upserts a friendly display name for each (repo_id, module) pair given.
+    Independent of any run -- see module_labels' schema comment for why."""
+    ts = now()
+    with get_conn() as conn:
+        for module, display_name in labels.items():
+            conn.execute(
+                """INSERT INTO module_labels (repo_id, module, display_name, updated_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(repo_id, module) DO UPDATE SET display_name = excluded.display_name,
+                                                               updated_at = excluded.updated_at""",
+                (repo_id, module, display_name, ts),
+            )
+
+
+def get_module_labels(repo_id: str) -> dict[str, str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT module, display_name FROM module_labels WHERE repo_id = ?", (repo_id,)
+        ).fetchall()
+    return {r["module"]: r["display_name"] for r in rows}
