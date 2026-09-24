@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS doc_gap_findings (
     FOREIGN KEY (document_id) REFERENCES documents(id)
 );
 
--- LLM-generated test cases -- structured QA-style records (not runnable code),
+-- LLM-generated FUNCTIONAL test cases in Azure DevOps shape (title, description,
+-- priority, preconditions, steps each with an action + expected result) -- not runnable code,
 -- produced by one live OpenAI call PER MODULE from the same graph+docs context
 -- gap analysis uses (see server/llm_test_generation.py). One call covering an
 -- entire large repo (hundreds of modules) hit gpt-4o-mini's own output-token
@@ -117,8 +118,11 @@ CREATE TABLE IF NOT EXISTS test_cases (
     target TEXT,                      -- the function/class/flow this case exercises, if identifiable
     preconditions TEXT,
     steps TEXT NOT NULL,              -- JSON-encoded list of ordered step strings
-    expected_result TEXT NOT NULL,
-    edge_case_description TEXT,       -- what specific edge condition this targets (blank for happy_path)
+    expected_result TEXT NOT NULL,    -- overall outcome: for a functional case, the last step's expected result
+    edge_case_description TEXT,       -- legacy (unit-style cases); functional cases carry expected results per step
+    description TEXT,                 -- what the case verifies and why (ADO's summary/description)
+    priority INTEGER,                 -- 1 (critical path) .. 4 (rare); NULL on legacy cases
+    covers TEXT,                      -- JSON list of real code names (functions/classes/Class.method) the scenario exercises
     created_at TEXT NOT NULL,
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
@@ -166,6 +170,11 @@ _REPO_COLUMN_MIGRATIONS = {
 
 _TEST_CASES_COLUMN_MIGRATIONS = {
     "module": "TEXT",  # added when test-case generation moved from repo-wide to per-module
+    # added when test cases became functional / ADO-shaped (steps are now {action, expected} objects,
+    # stored in the same JSON `steps` column -- legacy rows still hold plain strings, and both render)
+    "description": "TEXT",
+    "priority": "INTEGER",
+    "covers": "TEXT",
 }
 
 
@@ -459,12 +468,14 @@ def replace_test_cases(repo_id: str, module: str, run_id: str | None, cases: lis
         for c in cases:
             conn.execute(
                 """INSERT INTO test_cases
-                   (id, repo_id, module, run_id, title, category, target, preconditions, steps, expected_result, edge_case_description, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id, repo_id, module, run_id, title, category, target, preconditions, steps, expected_result,
+                    edge_case_description, description, priority, covers, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(uuid.uuid4()), repo_id, module, run_id, c["title"], c["category"], c.get("target"),
                     c.get("preconditions"), json.dumps(c["steps"]), c["expected_result"],
-                    c.get("edge_case_description"), ts,
+                    c.get("edge_case_description"), c.get("description"), c.get("priority"),
+                    json.dumps(c.get("covers") or []), ts,
                 ),
             )
 
@@ -472,12 +483,15 @@ def replace_test_cases(repo_id: str, module: str, run_id: str | None, cases: lis
 def list_test_cases(repo_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM test_cases WHERE repo_id = ? ORDER BY created_at DESC", (repo_id,)
+            # newest generation pass first; within a pass, most important first (legacy cases have no priority -> last)
+            "SELECT * FROM test_cases WHERE repo_id = ? ORDER BY created_at DESC, COALESCE(priority, 5), rowid",
+            (repo_id,),
         ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
         d["steps"] = json.loads(d["steps"]) if d["steps"] else []
+        d["covers"] = json.loads(d["covers"]) if d.get("covers") else []
         out.append(d)
     return out
 

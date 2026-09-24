@@ -76,6 +76,11 @@ def is_ignored_path(rel: Path) -> bool:
     return rel.name.lower().endswith(_JS_ONLY_SUFFIXES) and any(part in _VENDOR_DIRS for part in rel.parts)
 
 
+# JSX attributes whose string value is text a person actually sees or hears.
+_UI_TEXT_ATTRS = {"placeholder", "aria-label", "title", "alt", "label"}
+_UI_TEXT_PER_FILE = 15   # a marketing page could otherwise dump hundreds of strings into an LLM prompt
+_UI_TEXT_MAX_LEN = 60    # longer is body copy, not a label a test step would reference
+
 MAX_FILE_BYTES = 1_000_000  # bigger than this is a generated bundle, not source someone reads
 
 _TRY_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
@@ -173,6 +178,16 @@ def _function_like(value):
     return None
 
 
+def _ui_string(node) -> str | None:
+    """The human-readable text of a JSX text node / string literal, or None if
+    it's whitespace, punctuation, or too long to be a label."""
+    raw = _string_value(node) if node.type == "string" else _t(node)
+    text = " ".join((raw or "").split())
+    if not (2 <= len(text) <= _UI_TEXT_MAX_LEN) or not any(c.isalpha() for c in text):
+        return None
+    return text
+
+
 def _describe_callee(callee, kind: str):
     """Reduces a call/new/JSX callee to a small tuple resolvable later, without
     keeping the syntax tree alive: (kind, object, name) where object is None
@@ -246,8 +261,31 @@ class _Extractor:
     def run(self, root) -> None:
         for stmt in root.named_children:
             self._statement(stmt)
-        # require('x') and import('x') can sit anywhere, not just at the top level
+        # require('x') and import('x') can sit anywhere, not just at the top level.
+        # The same walk collects the text a user can see (button labels, headings,
+        # placeholders): functional test cases are written from the user's side of
+        # the screen, and without this the model can only guess at what's on it.
+        ui_text: list[str] = []
         for n in _walk(root):
+            if n.type == "jsx_text":
+                text = _ui_string(n)
+                if text and text not in ui_text:
+                    ui_text.append(text)
+                continue
+            if n.type == "jsx_attribute":
+                name = next((c for c in n.children if c.type == "property_identifier"), None)
+                value = next((c for c in n.children if c.type == "string"), None)
+                if name is not None and value is not None and _t(name) in _UI_TEXT_ATTRS:
+                    text = _ui_string(value)
+                    if text and text not in ui_text:
+                        ui_text.append(text)
+                continue
+            if n.type == "jsx_expression":  # {"Sign in"}
+                lit = next((c for c in n.named_children if c.type == "string"), None)
+                text = _ui_string(lit) if lit is not None else None
+                if text and text not in ui_text:
+                    ui_text.append(text)
+                continue
             if n.type != "call_expression":
                 continue
             fn = n.child_by_field_name("function")
@@ -257,6 +295,7 @@ class _Extractor:
             spec = _string_value(args.named_children[0]) if args is not None and args.named_children else None
             if spec:
                 self.info.specs.add(spec)
+        self.info.module.ui_text = ui_text[:_UI_TEXT_PER_FILE]
         for qual, node in self._func_nodes.items():
             self.info.raw_calls[qual] = _collect_calls(node)
         self._func_nodes.clear()

@@ -653,7 +653,7 @@ def api_run_test_generation(repo_id: str, module: str):
     if not run or not run.get("graph_path"):
         raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
     g = load_graph(run["graph_path"])
-    context = module_test_context(g, docs, module)
+    context = module_test_context(g, docs, module, display_name=db.get_module_labels(repo_id).get(module))
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:

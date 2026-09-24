@@ -51,6 +51,8 @@ def build_dev_graph(repo: ParsedRepo) -> nx.MultiDiGraph:
     for dotted, module in repo.modules.items():
         file_id = f"file:{dotted}"
         g.add_node(file_id, type="File", label=dotted, path=module.path, domain=_default_domain(dotted), language=module.language)
+        if module.ui_text:
+            g.nodes[file_id]["ui_text"] = module.ui_text  # only set when present, so Python-only graphs are byte-for-byte what they were
 
     for dotted, module in repo.modules.items():
         file_id = f"file:{dotted}"

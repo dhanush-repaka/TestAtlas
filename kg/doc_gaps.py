@@ -50,7 +50,9 @@ import networkx as nx
 ALLOWED_GAP_CATEGORIES = {"missing_implementation", "undocumented_capability", "mismatch"}
 
 
-def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: bool = True) -> dict:
+def gap_analysis_context(
+    g: nx.MultiDiGraph, docs: list[dict], require_docs: bool = True, include_ui_text: bool = False
+) -> dict:
     """Everything an agent needs to compare a repo's documents -- combined,
     not one at a time -- against the codebase's real, complete contents:
     every module (business-domain grouping, see kg/dev_graph_builder.py),
@@ -63,7 +65,10 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
     target ~2/3 of a typical class-heavy codebase's real testable surface).
     Pass require_docs=False (test generation does) to build the same context
     with zero documents -- the "documents" list in the result is just empty
-    in that case."""
+    in that case. include_ui_text=True (test generation does) also lists the
+    visible strings kg/ts_parser.py found in a file's JSX -- button labels,
+    headings, placeholders -- so a functional test step can name what's really
+    on screen; off by default so gap analysis prompts don't grow for it."""
     if require_docs and not docs:
         return {"ok": False, "message": "This repo has no documents yet -- add at least one first."}
 
@@ -90,12 +95,15 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
                 if med.get("relation") == "DEFINES" and g.nodes[m].get("type") == "Function"
             )
             classes.append({"name": g.nodes[cls_id]["label"], "methods": methods})
-        by_domain.setdefault(domain, []).append({
+        entry = {
             "file": data["label"],
             "purpose": data.get("purpose"),
             "classes": classes,
             "functions": sorted(functions),
-        })
+        }
+        if include_ui_text and data.get("ui_text"):
+            entry["ui_text"] = data["ui_text"]
+        by_domain.setdefault(domain, []).append(entry)
 
     modules = [{"module": domain, "files": files} for domain, files in sorted(by_domain.items())]
 
@@ -106,17 +114,20 @@ def gap_analysis_context(g: nx.MultiDiGraph, docs: list[dict], require_docs: boo
     }
 
 
-def module_test_context(g: nx.MultiDiGraph, docs: list[dict], module: str) -> dict:
+def module_test_context(g: nx.MultiDiGraph, docs: list[dict], module: str, display_name: str | None = None) -> dict:
     """Same context gap_analysis_context() builds, narrowed to a single
     module's code -- documents stay the full set (a doc may describe this
     module's role within the wider system; there's no per-doc split here),
     only the "modules" list is filtered down to the one requested. See the
     module docstring for why test generation needs this and gap analysis
     doesn't."""
-    full = gap_analysis_context(g, docs, require_docs=False)
+    full = gap_analysis_context(g, docs, require_docs=False, include_ui_text=True)
     if not full["ok"]:
         return full
     matching = [m for m in full["modules"] if m["module"] == module]
     if not matching:
         return {"ok": False, "message": f"No module named '{module}' found in this run's graph."}
-    return {"ok": True, "documents": full["documents"], "modules": matching}
+    # display_name (the friendly, business-English label from server/llm_module_naming.py,
+    # if this module has one) tells the model what the module is FOR -- which is what
+    # decides whether a functional scenario is even meaningful for it.
+    return {"ok": True, "documents": full["documents"], "modules": matching, "display_name": display_name}

@@ -1191,22 +1191,22 @@ const TEST_CASE_ICONS = {
 };
 
 function renderTestCaseCard(c) {
-  return `
-    <div class="test-case-card tc-${c.category}">
-      <div class="test-case-head">
-        ${TEST_CASE_ICONS[c.category] || ""}
-        <h4>${escapeHtml(c.title)}</h4>
-        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
-      </div>
-      ${(c.module || c.target) ? `
-        <div class="test-case-target">
-          ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
-        </div>` : ""}
-      ${c.preconditions ? `
-        <div class="tc-section">
-          <span class="tc-section-label">Preconditions</span>
-          <p>${escapeHtml(c.preconditions)}</p>
-        </div>` : ""}
+  // Functional (Azure DevOps-shaped) cases store steps as {action, expected} pairs;
+  // older unit-style cases stored plain strings plus one overall expected result.
+  // Both still render, so regenerating a module upgrades it without breaking the rest.
+  const functional = c.steps.length > 0 && typeof c.steps[0] === "object";
+  const steps = functional
+    ? `
+      <div class="tc-section">
+        <span class="tc-section-label">Steps</span>
+        <table class="tc-steps-table">
+          <thead><tr><th class="tc-col-n">#</th><th>Action</th><th>Expected result</th></tr></thead>
+          <tbody>${c.steps
+            .map((s, i) => `<tr><td class="tc-col-n">${i + 1}</td><td>${escapeHtml(s.action)}</td><td>${escapeHtml(s.expected)}</td></tr>`)
+            .join("")}</tbody>
+        </table>
+      </div>`
+    : `
       <div class="tc-section">
         <span class="tc-section-label">Steps</span>
         <ol class="tc-steps">${c.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>
@@ -1219,6 +1219,31 @@ function renderTestCaseCard(c) {
         <div class="tc-section">
           <span class="tc-section-label">Edge case</span>
           <p class="tc-edge-case">${escapeHtml(c.edge_case_description)}</p>
+        </div>` : ""}`;
+
+  return `
+    <div class="test-case-card tc-${c.category}">
+      <div class="test-case-head">
+        ${TEST_CASE_ICONS[c.category] || ""}
+        <h4>${escapeHtml(c.title)}</h4>
+        ${c.priority ? `<span class="tc-priority tc-p${c.priority}" title="Priority ${c.priority} (1 = critical path, 4 = rare)">P${c.priority}</span>` : ""}
+        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
+      </div>
+      ${(c.module || c.target) ? `
+        <div class="test-case-target">
+          ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
+        </div>` : ""}
+      ${c.description ? `<p class="tc-description">${escapeHtml(c.description)}</p>` : ""}
+      ${c.preconditions ? `
+        <div class="tc-section">
+          <span class="tc-section-label">Preconditions</span>
+          <p>${escapeHtml(c.preconditions)}</p>
+        </div>` : ""}
+      ${steps}
+      ${(c.covers || []).length ? `
+        <div class="tc-section">
+          <span class="tc-section-label">Exercises</span>
+          <div class="tc-covers">${c.covers.map((n) => `<code>${escapeHtml(n)}</code>`).join("")}</div>
         </div>` : ""}
     </div>`;
 }

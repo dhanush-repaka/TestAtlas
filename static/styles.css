@@ -370,6 +370,33 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .tc-steps li { margin-bottom: 3px; }
 .tc-expected { background: var(--panel-2); border-radius: 8px; padding: 9px 11px; }
 .tc-edge-case { border-left: 2px solid var(--warn); padding-left: 9px; }
+.tc-description { margin: 0 0 4px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.tc-priority {
+  flex: none; font-size: 10.5px; font-weight: 800; letter-spacing: .03em; padding: 2px 7px; border-radius: 6px;
+  border: 1px solid var(--border); color: var(--muted); background: var(--panel-2);
+}
+.tc-priority.tc-p1 { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.tc-priority.tc-p2 { color: var(--warn); border-color: var(--warn); }
+/* the Steps grid -- Step / Action / Expected result, as in an Azure DevOps test case */
+.tc-steps-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.45; margin-top: 3px; }
+.tc-steps-table th {
+  text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted-2); padding: 5px 9px; border-bottom: 1px solid var(--border);
+}
+.tc-steps-table td { padding: 8px 9px; vertical-align: top; border-bottom: 1px solid var(--border-soft); }
+.tc-steps-table tr:last-child td { border-bottom: none; }
+.tc-steps-table td:nth-child(3) { color: var(--text); background: var(--panel-2); }
+.tc-col-n { width: 28px; color: var(--muted-2); font-weight: 700; }
+.tc-covers { display: flex; flex-wrap: wrap; gap: 5px; }
+.tc-covers code { font-size: 11px; padding: 1px 7px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--muted); }
+@media (max-width: 560px) {
+  .tc-steps-table thead { display: none; }
+  .tc-steps-table, .tc-steps-table tbody, .tc-steps-table tr, .tc-steps-table td { display: block; width: 100%; box-sizing: border-box; }
+  .tc-steps-table tr { border-bottom: 1px solid var(--border-soft); padding: 6px 0; }
+  .tc-steps-table td { border: none; padding: 3px 9px; }
+  .tc-steps-table td:nth-child(3)::before { content: "Expected: "; font-weight: 700; color: var(--muted-2); }
+  .tc-col-n { width: auto; }
+}
 .test-case-module { color: var(--accent-strong); font-weight: 700; margin-right: 6px; padding-right: 6px; border-right: 1px solid var(--border-soft); }
 
 .module-gen-row {

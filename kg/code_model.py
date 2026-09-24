@@ -45,6 +45,7 @@ class CodeModule:
     classes: list[CodeClass] = field(default_factory=list)
     functions: list[CodeFunction] = field(default_factory=list)  # top-level functions AND methods
     language: str = "python"  # "python" | "typescript" | "javascript"
+    ui_text: list[str] = field(default_factory=list)  # visible strings in JSX (labels, headings, placeholders) -- see kg/ts_parser.py
 
 
 @dataclass
