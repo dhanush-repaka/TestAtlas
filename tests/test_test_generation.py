@@ -63,8 +63,14 @@ class NormalizeCaseTests(unittest.TestCase):
             {"action": "Click it", "expected": "Something happens"}, {"action": "Then this", "expected": ""}]), CANON))
         self.assertIsNone(gen._normalize_case(good_case(steps=["Click it", "Then this"]), CANON))  # bare strings: no expected result
 
-    def test_a_one_step_scenario_is_not_a_functional_test(self):
-        self.assertIsNone(gen._normalize_case(good_case(steps=[{"action": "a", "expected": "b"}]), CANON))
+    def test_a_single_step_negative_case_is_valid_and_an_empty_one_is_not(self):
+        # regression: requiring 2+ steps silently deleted exactly the short negative cases ("click Add To Cart
+        # with no option chosen -> 'Please select an option'"): gpt-4o lost 10 of 12 cases to it in production
+        one = gen._normalize_case(good_case(steps=[{"action": "Click Add To Cart with no option chosen",
+                                                    "expected": "'Please select an option' is shown"}]), CANON)
+        self.assertEqual(len(one["steps"]), 1)
+        self.assertEqual(one["expected_result"], "'Please select an option' is shown")
+        self.assertIsNone(gen._normalize_case(good_case(steps=[]), CANON))
 
     def test_tolerates_key_spelling_drift(self):
         n = gen._normalize_case(good_case(steps=[
@@ -129,13 +135,13 @@ class RunGenerationTests(unittest.TestCase):
     def test_every_discard_is_reported_with_its_reason_never_silent(self):
         result, _ = self._run({"test_cases": [
             good_case(), {"title": "no category"}, good_case(title="b", steps=["bare text"]),
-            good_case(title="c", steps=[{"action": "a", "expected": "b"}]), "junk", good_case(title="d", category="unit"),
+            good_case(title="c", steps=[]), "junk", good_case(title="d", category="unit"),
             good_case(title="e", steps="just prose")]},
             {"test_cases": []})
         self.assertEqual(len(result.cases), 1)
         self.assertEqual(len(result.dropped), 6)
         joined = " | ".join(result.dropped)
-        for why in ("no category", "steps weren't a list", "plain text", "only 1 step", "not a JSON object", "unknown category 'unit'"):
+        for why in ("no category", "steps weren't a list", "plain text", "no steps", "not a JSON object", "unknown category 'unit'"):
             self.assertIn(why, joined)
 
     def test_no_follow_up_call_when_every_on_screen_message_is_already_covered(self):

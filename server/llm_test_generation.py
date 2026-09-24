@@ -65,7 +65,12 @@ _TOKENS_PER_CASE = 520
 _MODEL_TOKEN_CEILING = 16384
 HARD_CASE_CAP = (_MODEL_TOKEN_CEILING - _PROMPT_OVERHEAD_TOKENS) // _TOKENS_PER_CASE - 3  # 3-case safety margin
 
-MIN_STEPS = 2  # a one-step "scenario" is an assertion, not a functional test
+# A functional case needs at least one step with its own expected result. This was 2 at first
+# ("a one-step scenario is an assertion, not a test") -- and that was WRONG: negative cases are
+# naturally short (one action triggers one error message), so the rule deleted exactly the cases
+# the module most needed. Found only after discards were made visible: gpt-4o wrote 12 cases for
+# one module and 10 were thrown away for having a single step.
+MIN_STEPS = 1
 
 
 def _is_test_file(dotted_path: str) -> bool:
@@ -156,7 +161,7 @@ TEST CASE FORMAT (an Azure DevOps test case)
 - "category": "happy_path" (normal successful use), "edge_case" (a boundary or unusual-but-valid condition: empty state, limit, repeated action), or "error_handling" (invalid input, refused or failed operation).
 - "feature": the feature or user flow under test, as a short noun phrase.
 - "preconditions": the state that must hold before step 1 (signed-in user, item already in the cart, ...), or "" if none.
-- "steps": {MIN_STEPS} to 8 ordered steps. Each step is {{"action": ..., "expected": ...}}: "action" is ONE concrete thing the tester does; "expected" is what they observe right after THAT action -- concrete and checkable (what appears, changes, is returned or is refused). EVERY step has its own expected result, and the last step's expected result states the overall outcome of the scenario.
+- "steps": ordered steps -- typically 2 to 6, up to 8. A short negative case (one action that triggers an error message) may be a single step; never pad a case with filler steps to look longer. Each step is {{"action": ..., "expected": ...}}: "action" is ONE concrete thing the tester does; "expected" is what they observe right after THAT action -- concrete and checkable (what appears, changes, is returned or is refused). EVERY step has its own expected result, and the last step's expected result states the overall outcome of the scenario.
 - "covers": the real names from the contents above (functions, classes, or `Class.method`) that this scenario exercises, so it can be traced back to code. Use ONLY names that appear above.
 
 COVERAGE
@@ -262,7 +267,7 @@ def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
             return None, f"step {n} was missing its {'action' if not action else 'expected result'}"
         steps.append({"action": action, "expected": expected})
     if len(steps) < MIN_STEPS:
-        return None, f"only {len(steps)} step(s); a scenario needs at least {MIN_STEPS}"
+        return None, "no steps"
 
     try:
         priority = max(1, min(4, int(c.get("priority", 2))))
