@@ -35,12 +35,24 @@ checked: names that aren't in the module are dropped rather than trusted.
 from __future__ import annotations
 
 import json
+import os
+import re
+from dataclasses import dataclass, field
 
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
 ALLOWED_TEST_CASE_CATEGORIES = {"happy_path", "edge_case", "error_handling"}
 
 DEFAULT_MODEL = "gpt-4o-mini"
+
+
+def _model(override: str | None = None) -> str:
+    """OPENAI_TEST_MODEL (a plain env var, not a secret) picks the model without a code
+    change. gpt-4o-mini is the default because it costs roughly an order of magnitude
+    less per token -- but it's the weaker instruction-follower, so if functional test
+    quality matters more than cost, switch this one feature to a stronger model
+    (`fly secrets set OPENAI_TEST_MODEL=gpt-4o`)."""
+    return override or os.environ.get("OPENAI_TEST_MODEL") or DEFAULT_MODEL
 
 # gpt-4o-mini's own output ceiling is 16384 tokens. A functional case -- title,
 # description, preconditions and 3-8 steps each with an action AND an expected
@@ -95,7 +107,7 @@ def _target_case_count(context: dict) -> int:
     return max(3, min(HARD_CASE_CAP, round(real_units * 0.4)))
 
 
-def _build_prompt(context: dict, target: int) -> str:
+def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = None) -> str:
     module_name = context["modules"][0]["module"] if context["modules"] else "(unknown)"
     display = context.get("display_name")
     named = f' (known as "{display}")' if display else ""
@@ -108,6 +120,14 @@ def _build_prompt(context: dict, target: int) -> str:
              "contents below alone -- infer what the feature is for from its names, purposes, UI text and "
              "file paths.)"
     )
+    must_block = ""
+    if must_trigger:
+        listed = "\n".join(f'  - "{m}"' for m in must_trigger)
+        must_block = f"""
+MESSAGES THAT MUST BE TRIGGERED
+The code can show each of these on screen -- they are error, validation, empty-state or unavailable messages, and they are what negative test cases exist to reach. Write at least one test case per message whose steps cause it and whose expected result shows that exact text ("error_handling" or "edge_case"):
+{listed}
+"""
     priority_hint = (
         "the flows the documents describe as important"
         if has_docs
@@ -142,9 +162,10 @@ TEST CASE FORMAT (an Azure DevOps test case)
 COVERAGE
 Design approximately {target} test cases. Spread them across the module's genuinely distinct features -- don't pile several cases on one feature and skip another. For each major feature write a happy-path case, then the failure and boundary cases a real tester would run: invalid or missing input, empty states (empty cart, empty list, no results), limits, repeated or duplicate actions, expired or invalid sessions or tokens, unauthorized access, an unavailable dependency. Express every one of them as a user action with an observable outcome, never an internal check. Give priority to {priority_hint}.
 Two rules on top of that:
-1. Use "ui_text" as a checklist. Every string there that reads like an error, warning, validation, empty-state, disabled or unavailable message (for example "Out Of Stock", "Please select an option", "Your cart is empty.") exists because the code can show it -- so at least one case must trigger it and expect exactly that text. These are the most valuable negative and edge cases; don't leave them out in favor of more happy paths. Aim for at least a third of your cases to be "edge_case" or "error_handling".
+1. Negative and edge cases matter as much as happy paths -- aim for at least a third of your cases to be "edge_case" or "error_handling", and don't leave a message the UI can show (see "ui_text") untested in favor of more happy paths.
 2. Every case is a distinct scenario. Don't write the same flow twice under different wording (for instance "update quantity" and "edit quantity"), and keep implementation details -- cookies, tokens, caches, function names -- out of titles and steps unless the user or consumer can actually see them.
 
+{must_block}
 GROUNDING
 Base everything on the names, purposes, UI text and documents above. Because you can't see function bodies, don't assert exact numbers, formats or messages you weren't given -- describe outcomes at the level you can actually support. Don't invent features the contents don't suggest.
 
@@ -213,28 +234,35 @@ def _first_text(d: dict, keys: tuple[str, ...]) -> str:
     return ""
 
 
-def _normalize_case(c, canon: dict[str, str]) -> dict | None:
-    """One raw model case -> a validated case, or None if it isn't a usable
-    functional test case (missing title/steps, a step with no expected result,
-    fewer than MIN_STEPS steps). Tolerates the key spellings models drift
-    between; never invents content to fill a gap."""
+def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
+    """One raw model case -> (validated case, None), or (None, why it was
+    rejected). A usable functional case needs a title, a known category, and at
+    least MIN_STEPS steps that EACH have an action and their own expected
+    result. Tolerates the key spellings models drift between; never invents
+    content to fill a gap -- and never drops one without saying why (an earlier
+    version discarded silently, which hid paid model output being thrown away)."""
     if not isinstance(c, dict):
-        return None
+        return None, "not a JSON object"
     title = _text(c.get("title"))
-    category = c.get("category")
-    if not title or category not in ALLOWED_TEST_CASE_CATEGORIES or not isinstance(c.get("steps"), list):
-        return None
+    if not title:
+        return None, "no title"
+    if c.get("category") is None:
+        return None, "no category"
+    if c.get("category") not in ALLOWED_TEST_CASE_CATEGORIES:
+        return None, f'unknown category {c.get("category")!r}'
+    if not isinstance(c.get("steps"), list):
+        return None, "steps weren't a list"
 
     steps = []
-    for raw in c["steps"]:
+    for n, raw in enumerate(c["steps"], 1):
         if not isinstance(raw, dict):
-            return None  # a bare string step has no expected result of its own -- not the format asked for
+            return None, f"step {n} was plain text, not an action/expected pair"
         action, expected = _first_text(raw, _ACTION_KEYS), _first_text(raw, _EXPECTED_KEYS)
         if not action or not expected:
-            return None
+            return None, f"step {n} was missing its {'action' if not action else 'expected result'}"
         steps.append({"action": action, "expected": expected})
     if len(steps) < MIN_STEPS:
-        return None
+        return None, f"only {len(steps)} step(s); a scenario needs at least {MIN_STEPS}"
 
     try:
         priority = max(1, min(4, int(c.get("priority", 2))))
@@ -251,7 +279,7 @@ def _normalize_case(c, canon: dict[str, str]) -> dict | None:
     return {
         "title": title,
         "description": _text(c.get("description")) or None,
-        "category": category,
+        "category": c["category"],
         "priority": priority,
         "target": _text(c.get("feature")) or None,      # the feature / flow under test
         "preconditions": _text(c.get("preconditions")) or None,
@@ -259,34 +287,74 @@ def _normalize_case(c, canon: dict[str, str]) -> dict | None:
         "expected_result": steps[-1]["expected"],        # overall outcome = the last step's (the DB column predates per-step results)
         "covers": covers[:8],
         "edge_case_description": None,                   # superseded by per-step expected results
-    }
+    }, None
 
 
+def _normalize_case(c, canon: dict[str, str]) -> dict | None:
+    return _check_case(c, canon)[0]
 
-def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]:
-    """Calls the OpenAI API to design functional test cases from `context`
-    (from kg.doc_gaps.module_test_context, scoped to one module) and returns a
-    validated list of {title, description, category, priority, target (the
-    feature under test), preconditions, steps: [{action, expected}],
-    expected_result, covers}. Raises RuntimeError with a message safe to show
-    the user on any failure -- missing key, API error, or a malformed
-    response."""
-    if not is_configured():
-        raise RuntimeError("OPENAI_API_KEY isn't configured on this deployment.")
 
+# --------------------------------------------------------------------------- checked coverage of on-screen messages
+
+# ui_text strings that read like an error / validation / empty-state / unavailable
+# message. The code can show each one, so a negative test should reach it.
+_MESSAGE_PATTERN = re.compile(
+    r"out of stock|sold out|unavailable|not available|\bno (results|items|products|matches|data)\b|\bempty\b|not found|"
+    r"\berror\b|invalid|\brequired\b|\bfail(ed|ure)?\b|try again|please (select|enter|choose|provide|sign|log)|\bmust\b|"
+    r"cannot|can't|couldn't|could not|unable to|expired|denied|forbidden|not allowed|\blimit\b|maximum|minimum|"
+    r"too (long|short|many|few)|\bmissing\b|incorrect|\bwrong\b|something went wrong",
+    re.I,
+)
+_MAX_MUST_TRIGGER = 8
+
+
+def _must_trigger_messages(context: dict) -> list[str]:
+    out: list[str] = []
+    for m in context["modules"]:
+        for f in m["files"]:
+            if _is_test_file(f["file"]):
+                continue
+            for text in f.get("ui_text", []):
+                if _MESSAGE_PATTERN.search(text) and text not in out:
+                    out.append(text)
+    return out[:_MAX_MUST_TRIGGER]
+
+
+def _uncovered(messages: list[str], cases: list[dict]) -> list[str]:
+    """Messages no case's steps mention -- checked in the text, not trusted from the model's say-so."""
+    blob = json.dumps([c["steps"] for c in cases]).lower()
+    return [m for m in messages if m.lower().rstrip(".") not in blob]
+
+
+def _build_repair_prompt(context: dict, missing: list[str], existing_titles: list[str], must_trigger: list[str]) -> str:
+    listed = "\n".join(f'  - "{m}"' for m in missing)
+    have = "\n".join(f"  - {t}" for t in existing_titles) or "  (none)"
+    return _build_prompt(context, len(missing), must_trigger) + f"""
+
+FOLLOW-UP PASS -- this overrides the count and coverage guidance above.
+A first pass already wrote test cases with these titles (do NOT repeat or rephrase any of them):
+{have}
+Those cases never reach the on-screen messages below. Write exactly one NEW test case for each message: its steps must cause the message to appear, and the expected result of the step where it appears must contain that exact text. Use "error_handling" or "edge_case". Respond in the same JSON shape, with ONLY these new cases:
+{listed}"""
+
+
+# --------------------------------------------------------------------------- the model calls
+
+@dataclass
+class GenerationResult:
+    cases: list[dict]
+    dropped: list[str] = field(default_factory=list)          # why each discarded model case was rejected
+    repaired: int = 0                                          # cases added by the follow-up coverage pass
+    still_uncovered: list[str] = field(default_factory=list)   # on-screen messages no case reaches even after it
+
+
+def _ask(prompt: str, max_tokens: int, model: str) -> list:
     from openai import OpenAI  # lazy import: only needed when this is actually called
 
-    target = _target_case_count(context)
-    # Scale the token budget with the target count -- a fixed budget that was
-    # only ever right for a small repo silently truncates a larger repo's
-    # response mid-JSON (see HARD_CASE_CAP's derivation above for why).
-    max_tokens = min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + target * _TOKENS_PER_CASE)
-
-    client = OpenAI()
     try:
-        response = client.chat.completions.create(
+        response = OpenAI().chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": _build_prompt(context, target)}],
+            messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.3,  # a little variety helps cover more distinct scenarios than temperature=0
             max_tokens=max_tokens,
@@ -299,15 +367,55 @@ def run_test_generation(context: dict, model: str = DEFAULT_MODEL) -> list[dict]
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
-
     cases = parsed.get("test_cases", [])
     if not isinstance(cases, list):
         raise RuntimeError("Model's response had an unexpected shape (test_cases wasn't a list).")
+    return cases
+
+
+def generate_test_cases(context: dict, model: str | None = None) -> GenerationResult:
+    """Designs functional test cases for `context` (from
+    kg.doc_gaps.module_test_context, scoped to one module). Validated cases
+    come back with a reason for every discard. If the module's UI can show
+    error/empty-state/unavailable messages that no case reaches, ONE follow-up
+    call asks only for those (checked in the text, not taken on the model's
+    word). Raises RuntimeError, message safe to show the user, on a missing
+    key, API error, or malformed response."""
+    if not is_configured():
+        raise RuntimeError("OPENAI_API_KEY isn't configured on this deployment.")
+    model = _model(model)
+
+    target = _target_case_count(context)
+    must = _must_trigger_messages(context)
+    # Scale the token budget with the target count -- a fixed budget only ever right for a
+    # small module silently truncates a larger one mid-JSON (see HARD_CASE_CAP's derivation).
+    max_tokens = min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + target * _TOKENS_PER_CASE)
 
     canon = _known_code_names(context)
-    validated = []
-    for c in cases[:HARD_CASE_CAP]:
-        normalized = _normalize_case(c, canon)
-        if normalized:
-            validated.append(normalized)
-    return validated
+    result = GenerationResult(cases=[])
+
+    def take(raw_cases: list) -> None:
+        seen = {c["title"].lower() for c in result.cases}
+        for raw in raw_cases[:HARD_CASE_CAP]:
+            case, why = _check_case(raw, canon)
+            if case is None:
+                result.dropped.append(why or "invalid")
+            elif case["title"].lower() not in seen and len(result.cases) < HARD_CASE_CAP:
+                result.cases.append(case)
+                seen.add(case["title"].lower())
+
+    take(_ask(_build_prompt(context, target, must), max_tokens, model))
+
+    missing = _uncovered(must, result.cases)
+    if missing and len(result.cases) < HARD_CASE_CAP:
+        before = len(result.cases)
+        prompt = _build_repair_prompt(context, missing, [c["title"] for c in result.cases], must)
+        take(_ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(missing) * _TOKENS_PER_CASE), model))
+        result.repaired = len(result.cases) - before
+    result.still_uncovered = _uncovered(must, result.cases)
+    return result
+
+
+def run_test_generation(context: dict, model: str | None = None) -> list[dict]:
+    """The validated cases from generate_test_cases(), for callers that don't need the report."""
+    return generate_test_cases(context, model).cases

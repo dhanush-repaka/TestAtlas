@@ -109,24 +109,107 @@ class PromptAndCountTests(unittest.TestCase):
 
 
 class RunGenerationTests(unittest.TestCase):
-    def _run(self, payload):
-        resp = mock.Mock()
-        resp.choices = [mock.Mock(message=mock.Mock(content=json.dumps(payload)))]
+    def _run(self, *payloads, context=CONTEXT):
+        """Mocks OpenAI: each payload is one successive model response. Returns (result, client)."""
+        def response(payload):
+            r = mock.Mock()
+            r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(payload)))]
+            return r
         client = mock.Mock()
-        client.chat.completions.create.return_value = resp
+        client.chat.completions.create.side_effect = [response(p) for p in payloads]
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}), mock.patch("openai.OpenAI", return_value=client):
-            return gen.run_test_generation(CONTEXT), client
+            return gen.generate_test_cases(context), client
 
-    def test_keeps_valid_cases_and_silently_drops_malformed_ones(self):
-        cases, client = self._run({"test_cases": [good_case(), {"title": "no steps"}, good_case(steps=["bare"]), "junk"]})
-        self.assertEqual(len(cases), 1)
-        sent = client.chat.completions.create.call_args.kwargs
-        self.assertIn("FUNCTIONAL", sent["messages"][0]["content"])
-        self.assertLessEqual(sent["max_tokens"], gen._MODEL_TOKEN_CEILING)
+    def _triggers(self, message, **over):
+        return good_case(
+            title=f"Verify that the app shows {message!r}", category="error_handling",
+            steps=[{"action": "Do the thing that fails", "expected": f'The message "{message}" is shown'},
+                   {"action": "Retry", "expected": "It works"}], **over)
+
+    def test_every_discard_is_reported_with_its_reason_never_silent(self):
+        result, _ = self._run({"test_cases": [
+            good_case(), {"title": "no category"}, good_case(title="b", steps=["bare text"]),
+            good_case(title="c", steps=[{"action": "a", "expected": "b"}]), "junk", good_case(title="d", category="unit"),
+            good_case(title="e", steps="just prose")]},
+            {"test_cases": []})
+        self.assertEqual(len(result.cases), 1)
+        self.assertEqual(len(result.dropped), 6)
+        joined = " | ".join(result.dropped)
+        for why in ("no category", "steps weren't a list", "plain text", "only 1 step", "not a JSON object", "unknown category 'unit'"):
+            self.assertIn(why, joined)
+
+    def test_no_follow_up_call_when_every_on_screen_message_is_already_covered(self):
+        cases = [good_case(), self._triggers("Out Of Stock")]
+        result, client = self._run({"test_cases": cases})
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        self.assertEqual((len(result.cases), result.repaired, result.still_uncovered), (2, 0, []))
+
+    def test_one_follow_up_call_targets_only_the_uncovered_messages(self):
+        result, client = self._run(
+            {"test_cases": [good_case()]},                       # first pass: happy path only, misses "Out Of Stock"
+            {"test_cases": [self._triggers("Out Of Stock")]})    # follow-up delivers it
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        follow_up = client.chat.completions.create.call_args_list[1].kwargs["messages"][0]["content"]
+        self.assertIn("FOLLOW-UP PASS", follow_up)
+        self.assertIn("Verify that a shopper can add an in-stock product", follow_up)   # told what NOT to repeat
+        self.assertIn('  - "Out Of Stock"', follow_up.split("FOLLOW-UP PASS")[1])
+        self.assertEqual((len(result.cases), result.repaired, result.still_uncovered), (2, 1, []))
+
+    def test_coverage_is_checked_in_the_text_so_a_lying_model_is_caught(self):
+        # the model "covers" it in a title but no step ever shows the message -> still uncovered
+        sneaky = good_case(title="Verify Out Of Stock handling", category="error_handling")
+        result, client = self._run({"test_cases": [sneaky]}, {"test_cases": []})
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(result.still_uncovered, ["Out Of Stock"])
+
+    def test_follow_up_duplicates_are_not_added_twice(self):
+        result, _ = self._run({"test_cases": [good_case()]}, {"test_cases": [good_case(), self._triggers("Out Of Stock")]})
+        self.assertEqual(sorted(c["title"] for c in result.cases),
+                         sorted([good_case()["title"], "Verify that the app shows 'Out Of Stock'"]))
 
     def test_empty_list_is_a_valid_answer(self):
-        cases, _ = self._run({"test_cases": []})
-        self.assertEqual(cases, [])
+        quiet = {"documents": [], "modules": [{"module": "m", "files": [{"file": "m.a", "functions": ["f"], "classes": []}]}]}
+        result, client = self._run({"test_cases": []}, context=quiet)
+        self.assertEqual((result.cases, result.dropped), ([], []))
+        self.assertEqual(client.chat.completions.create.call_count, 1)      # no UI messages -> nothing to chase
+
+    def test_run_test_generation_still_returns_plain_cases(self):
+        with mock.patch.object(gen, "generate_test_cases", return_value=gen.GenerationResult(cases=[{"title": "x"}])):
+            self.assertEqual(gen.run_test_generation(CONTEXT), [{"title": "x"}])
+
+
+class MessageDetectionTests(unittest.TestCase):
+    def test_only_message_like_ui_text_is_a_must_trigger(self):
+        ctx = {"modules": [{"module": "m", "files": [
+            {"file": "m.cart", "functions": [], "classes": [], "ui_text": [
+                "Out Of Stock", "Please select an option", "Your cart is empty.", "Add To Cart", "Open cart",
+                "Calculated at checkout", "Something went wrong", "Invalid email address", "Too many attempts"]},
+            {"file": "m.cart_test", "functions": [], "classes": [], "ui_text": ["This field is required"]},  # a test file: ignored
+        ]}]}
+        self.assertEqual(gen._must_trigger_messages(ctx), [
+            "Out Of Stock", "Please select an option", "Your cart is empty.",
+            "Something went wrong", "Invalid email address", "Too many attempts"])
+
+    def test_capped_so_a_message_heavy_module_cant_blow_up_the_follow_up(self):
+        ctx = {"modules": [{"module": "m", "files": [{"file": "m.f", "functions": [], "classes": [],
+               "ui_text": [f"Error number {i} occurred" for i in range(30)]}]}]}
+        self.assertEqual(len(gen._must_trigger_messages(ctx)), gen._MAX_MUST_TRIGGER)
+
+    def test_the_main_prompt_lists_them_up_front(self):
+        prompt = gen._build_prompt(CONTEXT, 5, ["Out Of Stock"])
+        self.assertIn("MESSAGES THAT MUST BE TRIGGERED", prompt)
+        self.assertIn('  - "Out Of Stock"', prompt)
+        self.assertNotIn("MESSAGES THAT MUST BE TRIGGERED", gen._build_prompt(CONTEXT, 5, []))
+
+
+class ModelChoiceTests(unittest.TestCase):
+    def test_env_var_overrides_the_default_model(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENAI_TEST_MODEL", None)
+            self.assertEqual(gen._model(), gen.DEFAULT_MODEL)
+        with mock.patch.dict(os.environ, {"OPENAI_TEST_MODEL": "gpt-4o"}):
+            self.assertEqual(gen._model(), "gpt-4o")
+            self.assertEqual(gen._model("explicit"), "explicit")           # an explicit argument still wins
 
 
 class StorageTests(unittest.TestCase):

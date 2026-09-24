@@ -657,11 +657,15 @@ def api_run_test_generation(repo_id: str, module: str):
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:
-        cases = llm_test_generation.run_test_generation(context)
+        result = llm_test_generation.generate_test_cases(context)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    db.replace_test_cases(repo_id, module, run["id"], cases)
-    return {"applied": len(cases), "test_cases": cases, "module": module}
+    db.replace_test_cases(repo_id, module, run["id"], result.cases)
+    return {
+        "applied": len(result.cases), "test_cases": result.cases, "module": module,
+        # what the model wrote but we refused, and what the coverage pass did -- surfaced, never silent
+        "dropped": result.dropped, "repaired": result.repaired, "still_uncovered": result.still_uncovered,
+    }
 
 
 @api.get("/repos/{repo_id}/test-cases")

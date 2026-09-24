@@ -1134,7 +1134,10 @@ async function runTestGenerationForModule(moduleName, btn) {
   try {
     const result = await api(`/repos/${activeRepoId}/test-cases/run?module=${encodeURIComponent(moduleName)}`, { method: "POST" });
     await loadTestCasesPanel();
-    toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"} for ${moduleName}`, "ok");
+    const notes = [];
+    if (result.repaired) notes.push(`${result.repaired} added to cover on-screen error messages`);
+    if ((result.dropped || []).length) notes.push(`${result.dropped.length} discarded as malformed`);
+    toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"} for ${moduleName}${notes.length ? ` (${notes.join("; ")})` : ""}`, "ok");
   } catch (e) {
     toast(e.message, "error");
     btn.disabled = false;
