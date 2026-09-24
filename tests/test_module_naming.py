@@ -50,7 +50,7 @@ class SummaryTests(unittest.TestCase):
 class PromptTests(unittest.TestCase):
     def test_prompt_asks_for_screens_and_features_not_technical_names(self):
         p = naming._build_prompt(naming._summarize_modules([CART]), ["components.cart", "lib.shopify.queries"])
-        for needle in ("NON-TECHNICAL", "Shopping Cart", "the SCREEN or FEATURE", "Never use developer words",
+        for needle in ("NON-TECHNICAL", "Shopping Cart", "the SCREEN or FEATURE", "NEVER use developer words", "HOME PAGE", "name the JOB",
                        '"kind"', "supporting", '"description"', "ui_text", "Add To Cart", "lib.shopify.queries"):
             self.assertIn(needle, p)
 
@@ -96,6 +96,34 @@ class GenerateTests(unittest.TestCase):
             self.assertIn('"pkg.m0"', prompt.split("MODULES TO NAME")[0])
             self.assertIn('"pkg.m129"', prompt.split("MODULES TO NAME")[0])
             self.assertLessEqual(call.kwargs["max_tokens"], 16384)
+
+    def test_developer_sounding_names_are_re_asked_once_and_only_those(self):
+        out, client = self._run([
+            {"modules": {"components.cart": {"name": "Shopping Cart", "kind": "feature"},
+                         "lib.shopify.queries": {"name": "Shopify Queries", "kind": "supporting"},
+                         "next.config": {"name": "Next.js Configuration", "kind": "supporting"}}},
+            {"modules": {"lib.shopify.queries": {"name": "Product Data Retrieval", "kind": "supporting"},
+                         "next.config": {"name": "Site Settings", "kind": "supporting"},
+                         "components.cart": {"name": "Should Not Overwrite", "kind": "feature"}}},
+        ], [CART, mod("lib.shopify.queries"), mod("next.config")])
+        calls = client.chat.completions.create.call_args_list
+        self.assertEqual(len(calls), 2)
+        follow_up = calls[1].kwargs["messages"][0]["content"]
+        self.assertIn('"lib.shopify.queries" is currently called "Shopify Queries"', follow_up)
+        self.assertNotIn("is currently called \"Shopping Cart\"", follow_up)
+        self.assertEqual(out["components.cart"]["name"], "Shopping Cart")      # a clean name is never re-asked
+        self.assertEqual(out["lib.shopify.queries"]["name"], "Product Data Retrieval")
+        self.assertEqual(out["next.config"]["name"], "Site Settings")
+
+    def test_no_second_call_when_every_name_is_plain(self):
+        _, client = self._run([{"modules": {"components.cart": {"name": "Shopping Cart"}}}], [CART])
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+
+    def test_dev_speak_check(self):
+        for bad in ("Components", "Shopify Queries", "Library", "Application", "Next.js Configuration", "API Routes"):
+            self.assertTrue(naming._dev_speak(bad), bad)
+        for good in ("Home Page", "Shopping Cart", "Store Connection", "Search & Filters", "Icons & Graphics", "Page Footer"):
+            self.assertFalse(naming._dev_speak(good), good)
 
     def test_missing_key_and_bad_responses_raise_a_message_safe_to_show(self):
         with mock.patch.dict(os.environ, {}, clear=False):

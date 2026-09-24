@@ -32,6 +32,7 @@ not tied to a run, so they survive re-analysis untouched.
 from __future__ import annotations
 
 import json
+import re
 
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
@@ -95,8 +96,13 @@ MODULES TO NAME -- each is a group of source files, with clues: "files" (file na
 {json.dumps(batch, indent=2)}
 ---
 
+HOW TO READ THE CLUES
+- Web-app folders map to what a visitor sees. A file called "page" (or "index") at the top of the app/route folder is the site's HOME PAGE. A "page" inside a folder is the page at that address (app/search = the Search page). A folder in [brackets] is a page for ONE item (app/product/[handle] = the page for a single product; [page] = an information page such as About or Terms). "layout" is the shared frame around pages (header, footer). Folders under "api" are behind-the-scenes endpoints.
+- Anything that DRAWS part of a screen -- a footer, a banner, a product grid, a carousel, a header -- is a feature, even a small one: name it "Page Footer", "Product Carousel". "supporting" is only for code that draws nothing: fetching data, connections to other systems, settings, types, helpers.
+- A module can mix things: if its files include the site's home "page", it is the Home Page (mention the shared frame in the description) -- not "Application".
+
 For EACH module return:
-- "name": what a person would call this part of the product -- the SCREEN or FEATURE it powers -- in plain everyday words, Title Case, 1 to 4 words: "Home Page", "Shopping Cart", "Product Page", "Navigation Bar", "Search & Filters". Take the words from what's on screen (ui_text) and from route/file names. Never use developer words: module, component, util, helper, lib, handler, service, fragment, query, config, API, wrapper.
+- "name": what a person would call this part of the product -- the SCREEN or FEATURE it powers -- in plain everyday words, Title Case, 1 to 4 words: "Home Page", "Shopping Cart", "Product Page", "Navigation Bar", "Search & Filters". Take the words from what's on screen (ui_text) and from route/file names. For a "supporting" module, name the JOB in business words -- "Store Connection", "Product Data Retrieval", "Site Settings", "Icons & Graphics" -- not the technology. NEVER use developer words or technology names: module, component(s), util, helper, lib, library, handler, service, fragment, query, mutation, config, configuration, API, wrapper, application, Next.js, React, PostCSS. Bad names, for illustration: "Components", "Library", "Application", "Shopify Queries", "Next.js Configuration".
 - "kind": "feature" if a person could see or use it directly; "supporting" if it only works behind the scenes -- fetching data, connections to other systems, configuration, shared types, icons and styling, helper code, test code.
 - "description": ONE plain-English sentence for the analyst. For a feature, what the person can do or see here ("Add, remove and change the quantity of items, then continue to checkout"). For a supporting module, what it does for the product ("Fetches product and cart information from the Shopify store").
 Where two modules are parts of the same screen, keep the screen's name and add the part: "Product Page - Photo Gallery", "Product Page - Options". Otherwise don't force artificial distinctiveness. Never leave a module out. Don't claim features the clues don't support.
@@ -119,6 +125,59 @@ def _clean_entry(value) -> dict | None:
         "kind": kind if kind in ALLOWED_KINDS else "feature",
         "description": description.strip() if isinstance(description, str) and description.strip() else None,
     }
+
+
+# Words that mark a name as a developer's, not a business analyst's. A prompt rule
+# against them was ignored in practice (names like "Components", "Shopify Queries",
+# "Next.js Configuration" came back), so it's CHECKED after the fact and only the
+# offending names are re-asked, once.
+_DEV_WORDS = re.compile(
+    r"\b(modules?|components?|utils?|utilit(y|ies)|helpers?|lib|librar(y|ies)|handlers?|services?|fragments?|"
+    r"quer(y|ies)|mutations?|config|configuration|api|wrappers?|applications?|next\.?js|react|postcss|"
+    r"typescript|javascript|webpack|tailwind)\b",
+    re.I,
+)
+
+
+def _dev_speak(name: str) -> bool:
+    return bool(_DEV_WORDS.search(name))
+
+
+def _build_rename_prompt(batch: list[dict], outline: list[str], current: dict[str, str]) -> str:
+    listed = "\n".join(f'  - "{m}" is currently called "{n}"' for m, n in current.items())
+    return _build_prompt(batch, outline) + f"""
+
+FOLLOW-UP PASS -- these modules were already named, but the names use developer words a business analyst wouldn't say:
+{listed}
+Rename ONLY these, following every rule above. Describe the job in the words a person who has only ever used the product would use ("Store Connection", not "Shopify Queries"; "Page Footer", not "Layout Elements"; "Site Settings", not "Next.js Configuration"). Respond in the same JSON shape with only these modules."""
+
+
+def _ask(client, model: str, prompt: str, known: set[str]) -> dict[str, dict]:
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=_MAX_TOKENS_PER_BATCH,
+        )
+    except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
+        raise RuntimeError(f"OpenAI API call failed: {e}") from e
+
+    raw = response.choices[0].message.content or "{}"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
+    entries = parsed.get("modules", {})
+    if not isinstance(entries, dict):
+        raise RuntimeError("Model's response had an unexpected shape (modules wasn't an object).")
+    out = {}
+    for module, value in entries.items():
+        cleaned = _clean_entry(value) if module in known else None
+        if cleaned:
+            out[module] = cleaned
+    return out
 
 
 def generate_module_names(context: dict, model: str | None = None) -> dict[str, dict]:
@@ -145,28 +204,14 @@ def generate_module_names(context: dict, model: str | None = None) -> dict[str, 
     out: dict[str, dict] = {}
     for i in range(0, len(summaries), _BATCH_SIZE):
         batch = summaries[i:i + _BATCH_SIZE]
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": _build_prompt(batch, outline)}],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=_MAX_TOKENS_PER_BATCH,
-            )
-        except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
-            raise RuntimeError(f"OpenAI API call failed: {e}") from e
+        out.update(_ask(client, model, _build_prompt(batch, outline), known))
 
-        raw = response.choices[0].message.content or "{}"
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
-        entries = parsed.get("modules", {})
-        if not isinstance(entries, dict):
-            raise RuntimeError("Model's response had an unexpected shape (modules wasn't an object).")
-
-        for module, value in entries.items():
-            cleaned = _clean_entry(value) if module in known else None
-            if cleaned:
-                out[module] = cleaned
+    # Verify, don't trust: re-ask once, for just the names that still sound like code.
+    by_module = {s["module"]: s for s in summaries}
+    offenders = [m for m, e in out.items() if _dev_speak(e["name"])]
+    for i in range(0, len(offenders), _BATCH_SIZE):
+        chunk = offenders[i:i + _BATCH_SIZE]
+        prompt = _build_rename_prompt([by_module[m] for m in chunk], outline, {m: out[m]["name"] for m in chunk})
+        for module, entry in _ask(client, model, prompt, set(chunk)).items():
+            out[module] = entry  # even a second-try name that's still imperfect beats the first
     return out
