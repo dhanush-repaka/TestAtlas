@@ -130,46 +130,61 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     planted false requirement in the test document. Treat its findings as a
     fast first pass to review, not a substitute for the manual flow's
     human-in-the-loop check.
-- **Test Cases** — generated **per module**, one live OpenAI call each
-  (also gated on `OPENAI_API_KEY`, `server/llm_test_generation.py`), not one
-  call for the whole repo. An earlier whole-repo version put every module in
-  a single call; `gpt-4o-mini`'s own 16,384-output-token ceiling caps that
-  one call at ~59 structured cases regardless of repo size, so a repo with
-  201 modules got well under one case per module. Scoping each call to a
-  single module (`kg.doc_gaps.module_test_context`) gives every module its
-  own full budget instead — the tab lists every real (non-test) module with
-  its file/class/function counts and a per-module "Generate" button
-  (searchable, since a large repo can have hundreds), each an individually
-  costed, individually triggered call; there's no bulk "generate everything"
-  action, so cost always stays an explicit choice. Regenerating a module
-  replaces only that module's cases, leaving every other module's untouched.
-  Unlike gap analysis, documents are optional: code structure alone is
-  enough (the button works with zero documents added), and the model
-  prioritizes by what's structurally central in the module (widely
-  depended-on classes/functions, naming that suggests core logic) instead of
-  documented flows when there's nothing to go on. Adding documents sharpens
-  that prioritization but was never a hard requirement the way it is for gap
-  analysis (which is meaningless without something to compare the code
-  against). Each case has a title, preconditions, ordered steps, expected
-  result, and which specific edge case it targets, classified as
-  `happy_path`, `edge_case` (boundary values, invalid input, timing/expiry),
-  or `error_handling`. The per-module count scales with that module's actual
-  testable surface (~1-2 cases per real, non-test function or method,
-  floored at 3 so a two-function module isn't padded with filler) rather
-  than a flat number. `kg/doc_gaps.py`'s context includes each class's real
-  method names, not just the bare class name -- fixed after finding that
-  omission meant a class-heavy module's real methods (routinely 2-3x the
-  number of classes themselves) were completely invisible to the model; it
-  could only guess at conventional method names instead of targeting real
-  ones, quietly capping both quality and count. A module that's itself the
-  codebase's own tests (e.g. a `tests` package) is excluded from the
-  generate list entirely -- there's nothing to write a test of a test
-  against. These are reviewable records, not runnable code, and the model
-  only ever sees names/purpose summaries (never real function bodies, which
-  the graph doesn't carry) — treat them as a first draft to adapt, not a QA
-  suite ready to run as-is. Unlike gap analysis, this has **no free manual
-  fallback** today: with no `OPENAI_API_KEY` configured, the module list
-  simply doesn't appear.
+- **Test Cases** — **functional** test cases in Azure DevOps shape, generated
+  **per module** with one live OpenAI call each (also gated on
+  `OPENAI_API_KEY`, `server/llm_test_generation.py`). Each case has a title,
+  description, priority (1–4), preconditions, and a **Steps grid where every
+  step pairs an action with its own expected result** — the layout of an ADO
+  test case — plus the code it exercises. They're user scenarios (or, for a
+  library, how a consumer uses its public interface), *not* unit tests: an
+  earlier version was given only function names and predictably wrote one case
+  per function ("encode an empty string"). Three things make the difference:
+  - **The model is told what functional means** — a scenario through visible
+    behavior, often spanning several code units, never one case per function;
+    an empty result for modules with no visible behavior (types, config,
+    plumbing, test code).
+  - **For web UIs it's given the real on-screen text.** `kg/ts_parser.py`
+    extracts the button labels, headings, placeholders and messages from the
+    JSX (including ternary/`&&` branches, but never `className`s, handlers or
+    i18n keys), so steps say `click "Add To Cart"` instead of inventing
+    wording, and are told not to invent labels that aren't listed.
+  - **Coverage of the error messages is checked, not requested.** UI strings
+    that read like errors/validation/empty-states/unavailable messages
+    (`Out Of Stock`, `Please select an option`, `Your cart is empty.`) go into
+    the prompt as a must-trigger list, are then verified against the returned
+    steps *in the text*, and if any is uncovered exactly one follow-up call
+    asks only for those. `covers` (the real functions/classes each scenario
+    exercises) is validated against the module's actual code — invented names
+    are dropped.
+
+  Nothing is discarded silently: every case the validator rejects is reported
+  with its reason (in the response and the UI toast), which matters — an early
+  version required 2+ steps and quietly deleted 10 of 12 `gpt-4o` cases,
+  because negative cases are naturally one step (one action, one error
+  message); that rule was wrong and is gone. The per-module tab lists every real
+  (non-test) module with a searchable Generate button (one metered call each,
+  never in bulk); regenerating a module replaces only its cases; legacy
+  unit-style cases still display alongside new ones until regenerated.
+  Documents are optional (code alone is enough); count scales gently with the
+  module's size (0.4/unit, floor 3, capped by what one response can hold — 25).
+
+  **Model**: `gpt-4o-mini` by default (cheap); set `OPENAI_TEST_MODEL` (e.g.
+  `fly secrets set OPENAI_TEST_MODEL=gpt-4o`) to use a stronger one for this
+  feature only. Measured on a real storefront's cart module with the final
+  pipeline, both models produced 9 well-formed cases, covered all three
+  on-screen messages, and needed no follow-up call; `gpt-4o-mini` wrote fuller
+  multi-step happy paths and `gpt-4o` more precise preconditions, and before the
+  fixes above `gpt-4o-mini` in particular varied run to run (3 to 6 cases from
+  the same input) — so judge on your own code rather than on this one sample.
+
+  **Limits, honestly**: the model never sees function bodies, so it infers
+  behavior from names, UI text and documents — treat the output as a reviewable
+  first draft, not a QA suite; cases are generated per module, so a flow that
+  spans several modules (browse → add to cart → check out) is only covered
+  piecewise; and UI text is only extracted from TypeScript/JavaScript (JSX),
+  so a Python web app's templates give the model names but not screen text.
+  Reviewable records, not runnable code. No free manual fallback: with no
+  `OPENAI_API_KEY`, the module list simply doesn't appear.
 - **Compare runs** — pick a baseline and current run of the *same* repo:
   structural diff (nodes/edges added/removed/changed) and which findings are
   new/resolved/still open. Node ids are derived from stable dotted names
