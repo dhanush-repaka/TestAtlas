@@ -42,6 +42,7 @@ def good_case(**over):
         "steps": [
             {"action": 'Click "Add To Cart"', "expected": "The cart shows 1 item"},
             {"action": "Open the cart", "expected": "The product is listed with quantity 1"},
+            {"action": "Check the cart total", "expected": "The total equals the product price"},
         ],
         "covers": ["AddToCart", "CartService.addItem"],
     }
@@ -55,7 +56,7 @@ class NormalizeCaseTests(unittest.TestCase):
         self.assertEqual(n["steps"][0], {"action": 'Click "Add To Cart"', "expected": "The cart shows 1 item"})
         self.assertEqual(n["target"], "Add to cart")            # `feature` is stored as the target column
         self.assertEqual(n["priority"], 1)
-        self.assertEqual(n["expected_result"], "The product is listed with quantity 1")  # overall = last step's
+        self.assertEqual(n["expected_result"], "The total equals the product price")  # overall = last step's
         self.assertEqual(n["covers"], ["AddToCart", "CartService.addItem"])
 
     def test_every_step_needs_its_own_expected_result(self):
@@ -141,6 +142,34 @@ class RunGenerationTests(unittest.TestCase):
         client.chat.completions.create.side_effect = [response(p) for p in payloads]
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}), mock.patch("openai.OpenAI", return_value=client):
             return gen.generate_test_cases(context), client
+
+    QUIET = {"modules": [{"module": "app", "files": [{"file": "app.page", "functions": ["HomePage"], "classes": [], "ui_text": ["Deploy"]}]}],
+             "documents": []}     # no on-screen error/empty-state messages, so the coverage pass stays out of the way
+
+    def test_thin_happy_paths_are_sent_back_once_and_replaced_by_the_deeper_version(self):
+        thin = good_case(title="Verify that the footer displays", steps=[{"action": "Open the home page", "expected": "The footer shows"}])
+        neg = good_case(title="Verify that a bad code is refused", category="error_handling",
+                        steps=[{"action": "Enter a bad code", "expected": "It is refused"}])   # one step is fine for a negative case
+        deeper = good_case(title="Verify that the footer displays", steps=[
+            {"action": "Open the home page", "expected": "The page loads"},
+            {"action": "Scroll to the footer", "expected": "The footer shows"},
+            {"action": 'Click "View the source"', "expected": "The source repository opens"}])
+        result, client = self._run({"test_cases": [thin, neg]}, {"test_cases": [deeper]}, context=self.QUIET)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertIn("fewer than 3 steps", client.chat.completions.create.call_args_list[1].kwargs["messages"][0]["content"])
+        by = {c["title"]: c for c in result.cases}
+        self.assertEqual(len(by["Verify that the footer displays"]["steps"]), 3)
+        self.assertEqual(len(by["Verify that a bad code is refused"]["steps"]), 1)   # never padded, never re-asked
+        self.assertEqual((result.deepened, result.still_thin), (1, 0))
+
+    def test_a_retry_that_is_no_deeper_is_ignored_and_reported(self):
+        thin = good_case(title="Verify that the footer displays", steps=[{"action": "Open", "expected": "Shows"}])
+        result, _ = self._run({"test_cases": [thin]}, {"test_cases": [thin]}, context=self.QUIET)
+        self.assertEqual((result.deepened, result.still_thin), (0, 1))
+
+    def test_no_follow_up_when_nothing_is_thin(self):
+        _, client = self._run({"test_cases": [good_case()]}, context=self.QUIET)
+        self.assertEqual(client.chat.completions.create.call_count, 1)
 
     def _triggers(self, message, **over):
         return good_case(

@@ -1177,6 +1177,7 @@ async function runTestGenerationForModule(moduleName, btn) {
     await loadTestCasesPanel();
     const notes = [];
     if (result.repaired) notes.push(`${result.repaired} added to cover on-screen error messages`);
+    if (result.deepened) notes.push(`${result.deepened} expanded from a single look at the screen into real steps`);
     if ((result.dropped || []).length) notes.push(`${result.dropped.length} discarded as malformed`);
     toast(`Generated ${result.applied} test case${result.applied === 1 ? "" : "s"} for ${moduleName}${notes.length ? ` (${notes.join("; ")})` : ""}`, "ok");
   } catch (e) {

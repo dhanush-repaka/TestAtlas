@@ -184,7 +184,7 @@ TEST CASE FORMAT (an Azure DevOps test case)
 - "category": "happy_path" (normal successful use), "edge_case" (a boundary or unusual-but-valid condition: empty state, limit, repeated action), or "error_handling" (invalid input, refused or failed operation).
 - "feature": the feature or user flow under test, as a short noun phrase.
 - "preconditions": the state that must hold before step 1 (signed-in user, item already in the cart, ...), or "" if none.
-- "steps": ordered steps, up to 8. A happy-path case walks the whole flow from where the user starts to the visible result -- typically 3 to 6 steps (reach the screen, perform the action, confirm the outcome, check any knock-on effect such as a total or a count) -- not a single click. A negative or edge case is usually shorter: one action that triggers an error or empty-state message may be a single step. Never pad a case with filler steps to look longer. Each step is {{"action": ..., "expected": ...}}: "action" is ONE concrete thing the tester does; "expected" is what they observe right after THAT action -- concrete and checkable (what appears, changes, is returned or is refused). EVERY step has its own expected result, and the last step's expected result states the overall outcome of the scenario.
+- "steps": ordered steps, up to 8. A happy-path case that only opens a screen and looks at it is NOT a test case -- it must DO something with the part under test (click, type, open, scroll, follow a link) and then confirm the result. A happy-path case walks the whole flow from where the user starts to the visible result -- typically 3 to 6 steps (reach the screen, perform the action, confirm the outcome, check any knock-on effect such as a total or a count) -- not a single click. A negative or edge case is usually shorter: one action that triggers an error or empty-state message may be a single step. Never pad a case with filler steps to look longer. Each step is {{"action": ..., "expected": ...}}: "action" is ONE concrete thing the tester does; "expected" is what they observe right after THAT action -- concrete and checkable (what appears, changes, is returned or is refused). EVERY step has its own expected result, and the last step's expected result states the overall outcome of the scenario.
 - "covers": the real names from the contents above (functions, classes, or `Class.method`) that this scenario exercises, so it can be traced back to code. Use ONLY names that appear above.
 
 COVERAGE
@@ -368,6 +368,27 @@ Those cases never reach the on-screen messages below. Write exactly one NEW test
 {listed}"""
 
 
+# A happy path that only opens the screen and looks at it ("open the home page" -> "the footer is
+# visible") checks nothing a user does. The prompt asks for 3-6 steps and the model still wrote
+# 1-2 (gpt-4o-mini AND gpt-4o), so depth is checked here and thin cases are sent back once.
+# Only happy paths: a negative case is legitimately one action (see MIN_STEPS).
+_HAPPY_MIN_STEPS = 3
+
+
+def _thin(cases: list[dict]) -> list[dict]:
+    return [c for c in cases if c["category"] == "happy_path" and len(c["steps"]) < _HAPPY_MIN_STEPS]
+
+
+def _build_deepen_prompt(context: dict, thin: list[dict], must_trigger: list[str]) -> str:
+    listed = json.dumps([{"title": c["title"], "feature": c.get("feature"), "steps": c["steps"]} for c in thin], indent=2)
+    return _build_prompt(context, len(thin), must_trigger) + f"""
+
+FOLLOW-UP PASS -- this overrides the count and coverage guidance above.
+A first pass wrote these happy-path cases, but each has fewer than {_HAPPY_MIN_STEPS} steps -- it only opens the screen and looks at it, which tests nothing a user actually does:
+{listed}
+Rewrite EACH of them as a real end-to-end scenario of {_HAPPY_MIN_STEPS} to 6 steps: reach the screen, then DO something with the part under test (click a link or button, type in a field, open a menu, scroll to a section, follow a link and come back), then confirm what changed -- each step with its own concrete expected result, quoting the on-screen text you were given. Keep each "title" EXACTLY as written so it can be matched. Respond in the same JSON shape with ONLY these rewritten cases."""
+
+
 # --------------------------------------------------------------------------- the model calls
 
 @dataclass
@@ -376,6 +397,8 @@ class GenerationResult:
     dropped: list[str] = field(default_factory=list)          # why each discarded model case was rejected
     repaired: int = 0                                          # cases added by the follow-up coverage pass
     still_uncovered: list[str] = field(default_factory=list)   # on-screen messages no case reaches even after it
+    deepened: int = 0                                          # thin happy paths rewritten with real steps
+    still_thin: int = 0                                        # happy paths still under _HAPPY_MIN_STEPS after that
 
 
 def _ask(prompt: str, max_tokens: int, model: str) -> list:
@@ -443,6 +466,18 @@ def generate_test_cases(context: dict, model: str | None = None) -> GenerationRe
         take(_ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(missing) * _TOKENS_PER_CASE), model))
         result.repaired = len(result.cases) - before
     result.still_uncovered = _uncovered(must, result.cases)
+
+    thin = _thin(result.cases)
+    if thin:
+        prompt = _build_deepen_prompt(context, thin, must)
+        by_title = {c["title"].lower(): i for i, c in enumerate(result.cases)}
+        for raw in _ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
+            case, _ = _check_case(raw, canon)
+            i = by_title.get(case["title"].lower()) if case else None
+            if i is not None and len(case["steps"]) > len(result.cases[i]["steps"]):
+                result.cases[i] = case
+                result.deepened += 1
+        result.still_thin = len(_thin(result.cases))
     return result
 
 

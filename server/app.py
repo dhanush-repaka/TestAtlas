@@ -667,6 +667,7 @@ def api_run_test_generation(repo_id: str, module: str):
         "applied": len(result.cases), "test_cases": result.cases, "module": module,
         # what the model wrote but we refused, and what the coverage pass did -- surfaced, never silent
         "dropped": result.dropped, "repaired": result.repaired, "still_uncovered": result.still_uncovered,
+        "deepened": result.deepened, "still_thin": result.still_thin,
     }
 
 
