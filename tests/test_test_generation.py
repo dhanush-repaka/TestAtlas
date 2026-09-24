@@ -127,6 +127,23 @@ class PromptAndCountTests(unittest.TestCase):
         self.assertIn("Carousel", gen._known_code_names(ctx))
         self.assertNotIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(CONTEXT, 8))
 
+    def test_cases_about_code_instead_of_what_a_user_does_are_refused_with_a_reason(self):
+        step = [{"action": "Open the page", "expected": "It loads"}]
+        for title in ("Verify that the robots function is accessible", "Verify that getCart returns an empty cart",
+                      "Verify that the sitemap endpoint responds", "Verify that the API handler rejects bad input"):
+            case, why = gen._check_case(good_case(title=title, steps=step), {})
+            self.assertIsNone(case, title)
+            self.assertIn("unit test", why)
+        case, _ = gen._check_case(good_case(title="Verify that the cart shows an empty message",
+                                            steps=[{"action": 'Click "Add To Cart"', "expected": "The cart opens"}]), {})
+        self.assertIsNotNone(case)                                              # ordinary wording still passes
+
+    def test_prompt_describes_contains_and_loads_and_forbids_code_words(self):
+        ctx = {**CONTEXT, "parts": [{"name": "Navbar", "module": "components", "contains": ["MobileMenu", "Search"], "loads": ["getMenu"]}]}
+        p = gen._build_prompt(ctx, 8)
+        for needle in ('"contains"', '"loads"', "Never invent the names of menu links", "must not contain the words function", "crawlers"):
+            self.assertIn(needle, p)
+
     def test_cap_is_derived_from_the_token_budget(self):
         self.assertLessEqual(gen.HARD_CASE_CAP * gen._TOKENS_PER_CASE + gen._PROMPT_OVERHEAD_TOKENS, gen._MODEL_TOKEN_CEILING)
 

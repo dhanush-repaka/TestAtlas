@@ -25,9 +25,11 @@ class ScreenPartsTests(unittest.TestCase):
             "app/page.tsx": "import Carousel from '../components/carousel';\nimport Footer from '../components/layout/footer';\n"
                             "import { getItems } from '../lib/store';\n"
                             "export default function HomePage() { getItems(); return <div><Carousel /><Footer /></div>; }\n",
+            "components/header.tsx": "import Search from './search';\nimport { getMenu } from '../lib/store';\nexport default function Header() { getMenu(); return <div><Search /></div>; }\n",
+            "components/search.tsx": "export default function Search() { return <input placeholder='Search for products...' />; }\n",
             "components/carousel.tsx": "export default function Carousel() { return <ul />; }\n",
             "components/layout/footer.tsx": "export default function Footer() { return <p>All rights reserved.</p>; }\n",
-            "lib/store.ts": "export function getItems() { return []; }\n",
+            "lib/store.ts": "export function getItems() { return []; }\nexport function getMenu() { return []; }\n",
         })
         self.g = build_dev_graph(parse_repo(root))
 
@@ -50,6 +52,14 @@ class ScreenPartsTests(unittest.TestCase):
         names = {p["name"] for p in screen_parts(self.g, "app", labels)}
         self.assertIn("Carousel", names)        # PascalCase component -> kept
         self.assertNotIn("getItems", names)     # camelCase data function in a supporting module -> dropped
+
+    def test_a_part_lists_what_it_contains_and_the_data_it_loads(self):
+        write(Path(self._tmp.name), {"app/page.tsx": open(Path(self._tmp.name) / "app/page.tsx").read().replace(
+            "<Footer />", "<Footer /><Header />").replace("import Footer", "import Header from '../components/header';\nimport Footer")})
+        g = build_dev_graph(parse_repo(Path(self._tmp.name)))
+        header = {p["name"]: p for p in screen_parts(g, "app")}["Header"]
+        self.assertEqual(header["contains"], ["Search"])
+        self.assertEqual(header["loads"], ["getMenu"])
 
     def test_context_carries_parts_and_kind(self):
         labels = {"app": {"name": "Home Page", "kind": "feature"}, "components.layout": {"name": "Page Footer", "kind": "feature"}}

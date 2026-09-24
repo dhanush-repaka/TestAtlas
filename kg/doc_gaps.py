@@ -116,6 +116,7 @@ def gap_analysis_context(
 
 _MAX_PARTS = 20
 _MAX_PART_TEXT = 6
+_MAX_PART_CONTAINS = 8
 
 
 def screen_parts(g: nx.MultiDiGraph, module: str, labels: dict[str, dict] | None = None) -> list[dict]:
@@ -166,6 +167,22 @@ def screen_parts(g: nx.MultiDiGraph, module: str, labels: dict[str, dict] | None
             ui_text = g.nodes[file_of[callee]].get("ui_text") or []
             if ui_text:
                 part["ui_text"] = ui_text[:_MAX_PART_TEXT]
+            # What the part itself is made of / where its content comes from, one level down:
+            # Navbar -> MobileMenu, Search, CartModal, LogoSquare, and it LOADS its menu (getMenu).
+            # Components it renders are things to test; the data it loads is what the code can't show.
+            contains, loads = [], []
+            for _, inner, ie in g.out_edges(callee, data=True):
+                if ie.get("relation") != "CALLS" or inner == callee:
+                    continue
+                inner_name = g.nodes[inner]["label"]
+                if inner_name[:1].isupper() and inner_name not in contains:
+                    contains.append(inner_name)
+                elif inner_name[:1].islower() and domain(inner) not in (None, other) and inner_name not in loads:
+                    loads.append(inner_name)
+            if contains:
+                part["contains"] = sorted(contains)[:_MAX_PART_CONTAINS]
+            if loads:
+                part["loads"] = sorted(loads)[:_MAX_PART_CONTAINS]
             parts[name] = part
     return sorted(parts.values(), key=lambda p: (p["module"], p["name"]))[:_MAX_PARTS]
 

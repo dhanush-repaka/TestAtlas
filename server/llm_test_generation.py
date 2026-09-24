@@ -136,6 +136,7 @@ def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = N
     if parts:
         parts_block = f"""
 WHAT THIS SCREEN PULLS IN FROM OTHER MODULES -- parts this module's code renders or uses, with their own on-screen text where known. A user sees these as PART of this screen, so the screen's test cases must exercise them as the user meets them (the header and its search, the product grid, the carousel, the footer links): what shows, what a click leads to, what an empty state looks like. Other modules test each part in depth, so cover it from the point of view of THIS screen. Cite them in "covers" by name.
+Each part may list "contains" (smaller parts it is made of -- a header holds a cart button, a search box, a mobile menu, a logo: each is something to check) and "loads" (data it fetches, such as a menu or a product list -- the code does NOT reveal what that data contains). Never invent the names of menu links, products or categories: for loaded content write a case that goes through EACH item ("click each link in the header menu and confirm it opens its matching page") or refer to "the first link in the menu".
 ---
 {json.dumps(parts, indent=2)}
 ---
@@ -175,6 +176,8 @@ A functional test case verifies that a feature works from the OUTSIDE, the way a
 - If the module has a user interface: write from the user's side of the screen -- pages, buttons, forms, messages. Where "ui_text" is listed, those are the REAL strings on screen: quote them verbatim in your steps (click "Add To Cart"). Do NOT invent label or message text that isn't listed; when you need to refer to something whose exact wording you weren't given, describe it instead ("the checkout button", "the search field", "an error message saying the email is invalid").
 - Do not assume the UI offers an action in a state where it plausibly doesn't. If ui_text shows an empty-state message ("Your cart is empty.") and no control for the action you're imagining, the expected result for that state is the message itself -- not an error triggered by a button that likely isn't there.
 - If the module has no UI (a library, API or service): write from the consumer's side of its public interface -- what they call or send, and the observable result or response.
+- Describe everything the way a person using the product would, never the way the code names it. Titles and steps must not contain the words function, method, class, handler, endpoint or API, nor code identifiers such as getCart -- say "the shopping cart", "the search box". A case about a code unit ("Verify that the sitemap function is accessible") is a unit test and will be rejected.
+- Files that only produce machine-readable output for search engines or crawlers (robots, sitemap, manifest, social-preview images) or that are API routes are not screens: write no cases for them.
 - If the module has no user- or consumer-visible behavior of its own (pure types, config or constants, internal plumbing, or it is itself test code such as a `tests` package or `*.test`/`*.spec` files), respond with {{"test_cases": []}}. Do not force scenarios out of internals.
 
 TEST CASE FORMAT (an Azure DevOps test case)
@@ -264,6 +267,21 @@ def _first_text(d: dict, keys: tuple[str, ...]) -> str:
     return ""
 
 
+# A functional case is written in the words of someone using the product. "Verify that the robots
+# function is accessible" is a unit test in a functional case's clothes. The prompt already says to keep
+# code out of titles and steps and the model still did it, so it's checked: a case whose title or steps
+# name a code construct ("function", "method", a getCart-style identifier) is refused, with the reason
+# shown to the user like every other discard.
+_CODE_WORDS = re.compile(r"\b(functions?|methods?|class(?:es)?|handlers?|endpoints?|apis?|callbacks?|hooks?|props|invokes?)\b", re.I)
+_IDENTIFIER = re.compile(r"\b[a-z]+(?:[A-Z][a-z0-9]+)+\b")      # getCart, addItem -- never a phrase a user would say
+
+
+def _code_speak(title: str, steps: list[dict]) -> str | None:
+    text = " ".join([title] + [f'{s["action"]} {s["expected"]}' for s in steps])
+    m = _CODE_WORDS.search(text) or _IDENTIFIER.search(text)
+    return m.group(0) if m else None
+
+
 def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
     """One raw model case -> (validated case, None), or (None, why it was
     rejected). A usable functional case needs a title, a known category, and at
@@ -293,6 +311,9 @@ def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
         steps.append({"action": action, "expected": expected})
     if len(steps) < MIN_STEPS:
         return None, "no steps"
+    code_word = _code_speak(title, steps)
+    if code_word:
+        return None, f'reads like a unit test -- mentions "{code_word}"'
 
     try:
         priority = max(1, min(4, int(c.get("priority", 2))))
