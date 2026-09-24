@@ -45,7 +45,15 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 ## What you can do in the UI
 
 - **Add repo** (top bar) — three source types:
-  - **Local folder**: point at a checkout already on disk.
+  - **Local folder**: point at a checkout already on disk -- type/paste the
+    path, or click **Browse…** to pick it in your OS's own folder dialog
+    (macOS, Windows, or Linux with `zenity`/`kdialog`). A web page can never
+    learn the absolute path of a folder it picked, so the *server* opens the
+    dialog and returns the path, which only makes sense when TestAtlas is
+    running on the same machine you're browsing from: the button is offered
+    only to a same-machine (loopback) client, and never appears on a
+    deployed instance like Fly, where you'd type the path of something
+    already on that server instead.
   - **GitHub**: paste a repo URL (`https://github.com/owner/repo`). Public repos
     need no token at all; private ones need a PAT with `repo` (classic) or
     `Contents: Read` (fine-grained) scope.
@@ -191,6 +199,7 @@ static/                vanilla HTML/JS/CSS dashboard (no build step)
 server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
+  folder_picker.py       opens the OS "choose a folder" dialog on the server's own machine
   llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
                           call (OPENAI_API_KEY) -- one of three metered features here
   llm_test_generation.py optional: designs test cases via a live OpenAI API

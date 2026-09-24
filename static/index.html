@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=27" />
+<link rel="stylesheet" href="static/styles.css?v=28" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -234,7 +234,12 @@
         <input type="hidden" name="source_type" id="sourceTypeInput" value="local" />
 
         <div id="localFields" class="field-group">
-          <label>Local path<input name="local_path" placeholder="/Users/you/coding/my-service" /></label>
+          <label>Local path
+            <span class="path-input-row">
+              <input name="local_path" placeholder="/Users/you/coding/my-service" />
+              <button type="button" class="btn btn-sm is-hidden" id="browseFolderBtn" title="Opens your computer's folder picker">Browse…</button>
+            </span>
+          </label>
         </div>
 
         <div id="adoFields" class="field-group" hidden>
@@ -297,6 +302,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=31"></script>
+  <script src="static/app.js?v=32"></script>
 </body>
 </html>

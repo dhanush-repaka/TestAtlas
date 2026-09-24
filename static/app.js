@@ -619,6 +619,37 @@ function setSourceType(value) {
   $("#githubFields").hidden = value !== "github_git";
 }
 
+// "Browse…" next to the Local path field. The browser can't reveal a picked
+// folder's absolute path, so the server opens the OS dialog itself and hands
+// the path back -- which only makes sense when the server is on this same
+// machine, so the button stays hidden unless the server says it's offered
+// (never on a deployed instance).
+async function loadSystemConfig() {
+  const available = await api("/system/config")
+    .then((c) => c.folder_picker_available)
+    .catch(() => false);
+  $("#browseFolderBtn").classList.toggle("is-hidden", !available);
+}
+
+async function browseForFolder() {
+  const btn = $("#browseFolderBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Choose in dialog…";
+  try {
+    const { path } = await api("/system/pick-folder", { method: "POST" });
+    if (!path) return; // cancelled -- leave whatever was already typed
+    $("#repoForm [name=local_path]").value = path;
+    const nameInput = $("#repoNameInput");
+    if (!nameInput.value.trim()) nameInput.value = path.split(/[\\/]/).filter(Boolean).pop() || "";
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 async function submitRepoForm(ev) {
   ev.preventDefault();
   const form = ev.target;
@@ -1214,6 +1245,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   applyTheme(document.documentElement.dataset.theme || "dark");
   loadRepos();
+  loadSystemConfig();
 
   $("#themeToggle").addEventListener("click", toggleTheme);
   $("#backToDashboard").addEventListener("click", showDashboard);
@@ -1222,6 +1254,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#repoModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "repoModalBackdrop") closeRepoModal(); });
   $("#repoForm").addEventListener("submit", submitRepoForm);
   $all("#sourceSegmented .seg-btn").forEach((b) => b.addEventListener("click", () => setSourceType(b.dataset.value)));
+  $("#browseFolderBtn").addEventListener("click", browseForFolder);
   $("#testAdoBtn").addEventListener("click", testAdoFromModal);
   $("#testGithubBtn").addEventListener("click", testGithubFromModal);
 

@@ -21,7 +21,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, llm_gap_analysis, llm_module_naming, llm_test_generation
+from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -670,6 +670,43 @@ def api_generate_module_labels(repo_id: str):
         raise HTTPException(502, str(e))
     db.set_module_labels(repo_id, labels)
     return {"applied": len(labels), "labels": labels}
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _folder_picker_allowed(request: Request) -> bool:
+    """A native dialog opens on the machine the *server* runs on, so it's only
+    meaningful -- and only offered -- when that's the same machine as the
+    browser making the request. A deployed instance (Fly, a VPS) sees its
+    clients arrive from a proxy/remote address, never loopback, so the
+    button simply never appears there; a dialog popping up on a remote
+    server's (nonexistent) screen would just hang the request."""
+    return bool(request.client and request.client.host in _LOOPBACK_HOSTS and folder_picker.is_available())
+
+
+@api.get("/system/config")
+def api_system_config(request: Request):
+    """Lets the UI know whether to show the Local-folder "Browse..." button."""
+    return {"folder_picker_available": _folder_picker_allowed(request)}
+
+
+@api.post("/system/pick-folder")
+def api_pick_folder(request: Request):
+    """Opens the OS folder dialog on this machine and returns the chosen
+    absolute path ({"path": null} if cancelled). Blocks until the user
+    decides, hence a plain `def` -- FastAPI runs it in a worker thread, so
+    other requests keep being served while the dialog is open."""
+    if not _folder_picker_allowed(request):
+        raise HTTPException(
+            403,
+            "Folder browsing only works when TestAtlas is running on the same machine you're using "
+            "-- type or paste the path instead.",
+        )
+    try:
+        return {"path": folder_picker.pick_folder()}
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
 
 
 @api.get("/module-naming/config")
