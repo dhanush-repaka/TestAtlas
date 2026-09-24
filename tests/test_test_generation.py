@@ -197,6 +197,48 @@ class UiTextExtractionTests(unittest.TestCase):
         self.assertEqual(m.ui_text, ["My Cart", "Search for products...", "Search", "Close cart",
                                      "Checkout now", "Your cart is empty.", "Product photo"])
 
+    def test_reads_strings_inside_ternaries_but_not_classnames_keys_or_handlers(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "Checkout.tsx").write_text("""
+                export function CheckoutButton({ pending, empty, t }) {
+                  return (
+                    <form onSubmit={() => track('Checkout Started Event')}>
+                      <button className={clsx('flex items-center rounded-full', pending && 'opacity-50 cursor-wait')} aria-label={pending ? 'Redirecting to checkout' : 'Proceed to Checkout'}>
+                        {pending ? <Spinner/> : 'Proceed to Checkout'}
+                      </button>
+                      {empty && 'Nothing to buy yet'}
+                      <span>{t('cart.title')}</span>
+                      <a href="/cart">{'x'}</a>
+                    </form>
+                  );
+                }""")
+            m = parse_repo(Path(d)).modules["Checkout"]
+        self.assertIn("Proceed to Checkout", m.ui_text)          # the ternary's string branch (the miss found in production)
+        self.assertIn("Redirecting to checkout", m.ui_text)      # a ternary inside an aria-label
+        self.assertIn("Nothing to buy yet", m.ui_text)           # `&&` right-hand side
+        self.assertEqual(len(m.ui_text), 3)                       # ...and nothing else:
+        for junk in ("flex items-center rounded-full", "opacity-50 cursor-wait", "Checkout Started Event", "cart.title", "/cart"):
+            self.assertNotIn(junk, m.ui_text)                    # classNames, handler args, i18n keys, paths
+
+    def test_classnames_inside_nested_jsx_in_a_map_callback_do_not_leak(self):
+        # the real bug: components.cart's modal renders <li className="flex h-16 flex-col ..."> inside items.map(...)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "Cart.tsx").write_text("""
+                export function Cart({ items }) {
+                  return (
+                    <ul className="flex flex-col gap-2 overflow-auto">
+                      {items.map((item) => (
+                        <li key={item.id} className="relative flex w-full flex-row justify-between px-1 py-4">
+                          <span className={clsx('text-sm font-bold', item.big && 'text-lg')}>{item.title}</span>
+                          <button aria-label="Remove cart item" className="h-4 w-4 dark:text-neutral-500">Remove</button>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                }""")
+            m = parse_repo(Path(d)).modules["Cart"]
+        # the aria-label and the visible button text -- and no class names, though they sit right beside them
+        self.assertEqual(m.ui_text, ["Remove cart item", "Remove"])
     def test_capped_and_absent_for_non_ui_files(self):
         with tempfile.TemporaryDirectory() as d:
             many = "".join(f"<li>Item number {i}</li>" for i in range(40))

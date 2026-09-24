@@ -180,12 +180,44 @@ def _function_like(value):
 
 def _ui_string(node) -> str | None:
     """The human-readable text of a JSX text node / string literal, or None if
-    it's whitespace, punctuation, or too long to be a label."""
+    it's whitespace, punctuation, too long to be a label, or doesn't read as
+    copy -- a single lowercase token ("flex", "cart.title", "/cart", "my-class")
+    is a CSS class, an i18n key or a path, not something a user reads."""
     raw = _string_value(node) if node.type == "string" else _t(node)
     text = " ".join((raw or "").split())
     if not (2 <= len(text) <= _UI_TEXT_MAX_LEN) or not any(c.isalpha() for c in text):
         return None
+    if " " not in text and not (text[0].isupper() and text.replace("'", "").isalpha()):
+        return None  # a phrase, or a capitalised single word ("Checkout"), reads as copy; anything else is code
     return text
+
+
+_COPY_CONTAINERS = {
+    "jsx_expression", "parenthesized_expression", "binary_expression",
+    "as_expression", "satisfies_expression", "non_null_expression",
+}
+
+
+def _strings_in(node) -> list[str]:
+    """Readable strings a JSX expression can *render* -- a bare literal, either
+    arm of a ternary, the right side of `&&`/`||`: `{pending ? <Spinner/> : 'Proceed to
+    Checkout'}`. Deliberately follows only those branches, never into a call or
+    an attribute: `{items.map(i => <li className="flex items-center">...)}` has
+    class names inside it, and a first version that walked everything leaked them
+    into the UI text (caught by checking the real storefront's cart)."""
+    out: list[str] = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "string":
+            text = _ui_string(n)
+            if text:
+                out.append(text)
+        elif n.type == "ternary_expression":  # the condition holds code, only the arms can render
+            stack.extend(c for c in (n.child_by_field_name("consequence"), n.child_by_field_name("alternative")) if c is not None)
+        elif n.type in _COPY_CONTAINERS:
+            stack.extend(n.named_children)
+    return out
 
 
 def _describe_callee(callee, kind: str):
@@ -266,35 +298,40 @@ class _Extractor:
         # placeholders): functional test cases are written from the user's side of
         # the screen, and without this the model can only guess at what's on it.
         ui_text: list[str] = []
-        for n in _walk(root):
-            if n.type == "jsx_text":
-                text = _ui_string(n)
-                if text and text not in ui_text:
+
+        def add_text(texts) -> None:
+            for text in texts:
+                if text not in ui_text:
                     ui_text.append(text)
-                continue
-            if n.type == "jsx_attribute":
+
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            t = n.type
+            if t == "jsx_attribute":
+                # only attributes that carry copy (placeholder, aria-label, ...) are read; className,
+                # handlers, styles etc. hold code, so their whole subtree is skipped
                 name = next((c for c in n.children if c.type == "property_identifier"), None)
-                value = next((c for c in n.children if c.type == "string"), None)
-                if name is not None and value is not None and _t(name) in _UI_TEXT_ATTRS:
-                    text = _ui_string(value)
-                    if text and text not in ui_text:
-                        ui_text.append(text)
+                if name is not None and _t(name) in _UI_TEXT_ATTRS:
+                    for value in n.children:  # `label="x"` (a string) or `label={cond ? 'a' : 'b'}` (an expression)
+                        if value.type in ("string", "jsx_expression"):
+                            add_text(_strings_in(value))
                 continue
-            if n.type == "jsx_expression":  # {"Sign in"}
-                lit = next((c for c in n.named_children if c.type == "string"), None)
-                text = _ui_string(lit) if lit is not None else None
-                if text and text not in ui_text:
-                    ui_text.append(text)
+            if t == "jsx_text":
+                text = _ui_string(n)
+                if text:
+                    add_text([text])
                 continue
-            if n.type != "call_expression":
-                continue
-            fn = n.child_by_field_name("function")
-            if fn is None or not (fn.type == "import" or (fn.type == "identifier" and _t(fn) == "require")):
-                continue
-            args = n.child_by_field_name("arguments")
-            spec = _string_value(args.named_children[0]) if args is not None and args.named_children else None
-            if spec:
-                self.info.specs.add(spec)
+            if t == "jsx_expression" and n.parent is not None and n.parent.type in ("jsx_element", "jsx_fragment"):
+                add_text(_strings_in(n))  # a child expression: {"Sign in"}, {busy ? <Spinner/> : 'Save'}, {empty && 'Nothing here'}
+            elif t == "call_expression":
+                fn = n.child_by_field_name("function")
+                if fn is not None and (fn.type == "import" or (fn.type == "identifier" and _t(fn) == "require")):
+                    args = n.child_by_field_name("arguments")
+                    spec = _string_value(args.named_children[0]) if args is not None and args.named_children else None
+                    if spec:
+                        self.info.specs.add(spec)
+            stack.extend(reversed(n.children))
         self.info.module.ui_text = ui_text[:_UI_TEXT_PER_FILE]
         for qual, node in self._func_nodes.items():
             self.info.raw_calls[qual] = _collect_calls(node)
