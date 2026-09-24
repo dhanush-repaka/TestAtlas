@@ -86,6 +86,11 @@ def _is_test_file(dotted_path: str) -> bool:
     )
 
 
+# A module labelled a real feature (something a person sees or uses) always deserves a
+# real spread -- happy path, empty/edge states, errors -- however few functions it has.
+_FEATURE_FLOOR = 6
+
+
 def _target_case_count(context: dict) -> int:
     """Scales the requested case count with the actual testable surface --
     real (non-test) functions, classes, AND each class's real methods
@@ -109,7 +114,15 @@ def _target_case_count(context: dict) -> int:
             real_units += len(f["functions"])
             for c in f["classes"]:
                 real_units += 1 + len(c["methods"])
-    return max(3, min(HARD_CASE_CAP, round(real_units * 0.4)))
+    # A screen is more than its own files: the Home Page module is ~7 functions of
+    # its own, and gave 3 cases -- while the page shows a header, a product grid, a
+    # carousel and a footer (its `parts`). Each part is a distinct thing to check
+    # on the page, and each on-screen string is something a user reads.
+    parts = context.get("parts") or []
+    ui_strings = sum(len(f.get("ui_text", [])) for m in context["modules"] for f in m["files"] if not _is_test_file(f["file"]))
+    wanted = real_units * 0.4 + len(parts) * 1.0 + ui_strings * 0.5
+    floor = _FEATURE_FLOOR if context.get("kind") == "feature" else 3
+    return max(floor, min(HARD_CASE_CAP, round(wanted)))
 
 
 def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = None) -> str:
@@ -118,6 +131,15 @@ def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = N
     named = f' (known as "{display}")' if display else ""
     about = f'\nWhat this module is for, in the words of the product team: {context["description"]}' if context.get("description") else ""
     modules_json = json.dumps(context["modules"], indent=2)
+    parts = context.get("parts") or []
+    parts_block = ""
+    if parts:
+        parts_block = f"""
+WHAT THIS SCREEN PULLS IN FROM OTHER MODULES -- parts this module's code renders or uses, with their own on-screen text where known. A user sees these as PART of this screen, so the screen's test cases must exercise them as the user meets them (the header and its search, the product grid, the carousel, the footer links): what shows, what a click leads to, what an empty state looks like. Other modules test each part in depth, so cover it from the point of view of THIS screen. Cite them in "covers" by name.
+---
+{json.dumps(parts, indent=2)}
+---
+"""
     has_docs = bool(context["documents"])
     docs_block = (
         "\n\n".join(f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"])
@@ -147,7 +169,7 @@ THIS MODULE'S ACTUAL CONTENTS -- its files, each file's real top-level functions
 ---
 {modules_json}
 ---
-
+{parts_block}
 WHAT "FUNCTIONAL" MEANS HERE
 A functional test case verifies that a feature works from the OUTSIDE, the way a user -- or, for a library/API/service with no UI, a developer consuming its public interface -- would exercise it: a scenario with a goal, run start to finish. It is NOT a unit test. Never write one case per function or method, never "call X with input Y and check it returns Z", never assertions about internals. A good case exercises several of the code units above together as one flow (for example: add a product to the cart, open the cart, change the quantity, remove the item).
 - If the module has a user interface: write from the user's side of the screen -- pages, buttons, forms, messages. Where "ui_text" is listed, those are the REAL strings on screen: quote them verbatim in your steps (click "Add To Cart"). Do NOT invent label or message text that isn't listed; when you need to refer to something whose exact wording you weren't given, describe it instead ("the checkout button", "the search field", "an error message saying the email is invalid").
@@ -166,7 +188,7 @@ TEST CASE FORMAT (an Azure DevOps test case)
 - "covers": the real names from the contents above (functions, classes, or `Class.method`) that this scenario exercises, so it can be traced back to code. Use ONLY names that appear above.
 
 COVERAGE
-Design approximately {target} test cases. Spread them across the module's genuinely distinct features -- don't pile several cases on one feature and skip another. For each major feature write a happy-path case, then the failure and boundary cases a real tester would run: invalid or missing input, empty states (empty cart, empty list, no results), limits, repeated or duplicate actions, expired or invalid sessions or tokens, unauthorized access, an unavailable dependency. Express every one of them as a user action with an observable outcome, never an internal check. Give priority to {priority_hint}.
+Design approximately {target} test cases. Spread them across the module's genuinely distinct features -- don't pile several cases on one feature and skip another. For each major feature write a happy-path case, then the failure and boundary cases a real tester would run: invalid or missing input, empty states (empty cart, empty list, no results), limits, repeated or duplicate actions, expired or invalid sessions or tokens, unauthorized access, an unavailable dependency. Express every one of them as a user action with an observable outcome, never an internal check. For a page or screen, treat each visible section as its own feature: the page loading with every section present, each section's content and the links or buttons in it, moving to another page and coming back, the small-screen (mobile) layout, and what shows when the data is missing or the page fails to load. Give priority to {priority_hint}.
 Two rules on top of that:
 1. Negative and edge cases matter as much as happy paths -- aim for at least a third of your cases to be "edge_case" or "error_handling", and don't leave a message the UI can show (see "ui_text") untested in favor of more happy paths.
 2. Every case is a distinct scenario. Don't write the same flow twice under different wording (for instance "update quantity" and "edit quantity"), and keep implementation details -- cookies, tokens, caches, function names -- out of titles and steps unless the user or consumer can actually see them.
@@ -203,6 +225,8 @@ def _known_code_names(context: dict) -> dict[str, str]:
     """Every name the model may legitimately cite in `covers` -> its canonical
     form. Bare method names map to `Class.method` (first class wins)."""
     canon: dict[str, str] = {}
+    for p in context.get("parts") or []:
+        canon.setdefault(p["name"], p["name"])
     for m in context["modules"]:
         for f in m["files"]:
             for fn in f["functions"]:

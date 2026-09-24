@@ -114,8 +114,61 @@ def gap_analysis_context(
     }
 
 
+_MAX_PARTS = 20
+_MAX_PART_TEXT = 6
+
+
+def screen_parts(g: nx.MultiDiGraph, module: str, labels: dict[str, dict] | None = None) -> list[dict]:
+    """The parts of OTHER modules that this module's code pulls in -- what a
+    screen is actually made of. A page's own files are thin (the Home Page is a
+    few lines that render a product grid, a carousel and a footer that live in
+    other folders), so a module's own contents alone describe almost none of what
+    a user sees on it. CALLS edges (JSX tags count as calls -- kg/ts_parser.py)
+    say which parts it renders.
+    Parts in modules the labels mark `supporting` (data access, config) are left
+    out: they draw nothing. Each part is {name, module, display_name?, ui_text?}."""
+    labels = labels or {}
+    file_of: dict[str, str] = {}
+    for u, v, d in g.edges(data=True):
+        if d.get("relation") != "DEFINES":
+            continue
+        if g.nodes[u].get("type") == "File":
+            file_of[v] = u
+        elif g.nodes[u].get("type") == "Class" and g.nodes[v].get("type") == "Function":
+            owner = next((a for a, _, e in g.in_edges(u, data=True) if e.get("relation") == "DEFINES"), None)
+            if owner:
+                file_of[v] = owner
+
+    def domain(node_id: str) -> str | None:
+        f = file_of.get(node_id)
+        return g.nodes[f].get("domain") if f else None
+
+    parts: dict[str, dict] = {}
+    for n, data in g.nodes(data=True):
+        if data.get("type") != "Function" or domain(n) != module:
+            continue
+        for _, callee, e in g.out_edges(n, data=True):
+            other = domain(callee)
+            if e.get("relation") != "CALLS" or not other or other == module:
+                continue
+            if labels.get(other, {}).get("kind") == "supporting":
+                continue
+            name = g.nodes[callee]["label"]
+            if name in parts:
+                continue
+            part = {"name": name, "module": other}
+            if labels.get(other, {}).get("name"):
+                part["display_name"] = labels[other]["name"]
+            ui_text = g.nodes[file_of[callee]].get("ui_text") or []
+            if ui_text:
+                part["ui_text"] = ui_text[:_MAX_PART_TEXT]
+            parts[name] = part
+    return sorted(parts.values(), key=lambda p: (p["module"], p["name"]))[:_MAX_PARTS]
+
+
 def module_test_context(
-    g: nx.MultiDiGraph, docs: list[dict], module: str, display_name: str | None = None, description: str | None = None
+    g: nx.MultiDiGraph, docs: list[dict], module: str, display_name: str | None = None, description: str | None = None,
+    labels: dict[str, dict] | None = None,
 ) -> dict:
     """Same context gap_analysis_context() builds, narrowed to a single
     module's code -- documents stay the full set (a doc may describe this
@@ -132,5 +185,7 @@ def module_test_context(
     # display_name (the friendly, business-English label from server/llm_module_naming.py,
     # if this module has one) tells the model what the module is FOR -- which is what
     # decides whether a functional scenario is even meaningful for it.
+    kind = (labels or {}).get(module, {}).get("kind")
     return {"ok": True, "documents": full["documents"], "modules": matching,
-            "display_name": display_name, "description": description}
+            "display_name": display_name, "description": description, "kind": kind,
+            "parts": screen_parts(g, module, labels)}

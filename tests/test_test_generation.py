@@ -110,6 +110,22 @@ class PromptAndCountTests(unittest.TestCase):
         huge = {"modules": [{"module": "m", "files": [{"file": "m.a", "functions": [f"f{i}" for i in range(900)], "classes": []}]}]}
         self.assertEqual(gen._target_case_count(huge), gen.HARD_CASE_CAP)   # bounded by what one response can hold
 
+    def test_a_thin_page_that_pulls_in_other_parts_gets_a_real_spread(self):
+        # the Home Page case: a few functions of its own, but it renders a header, grid, carousel, footer
+        page = {"modules": [{"module": "app", "files": [{"file": "app.page", "functions": ["HomePage", "RootLayout"], "classes": []}]}],
+                "documents": [], "kind": "feature",
+                "parts": [{"name": n, "module": "components"} for n in ("Navbar", "ThreeItemGrid", "Carousel", "Footer")]}
+        self.assertGreaterEqual(gen._target_case_count(page), 5)               # was 3 (0.4 * 2 units, floored)
+        bare = {**page, "parts": []}
+        self.assertEqual(gen._target_case_count(bare), gen._FEATURE_FLOOR)     # a feature never drops below the floor
+        self.assertEqual(gen._target_case_count({**bare, "kind": "supporting"}), 3)
+
+    def test_prompt_lists_the_parts_a_screen_pulls_in_and_they_are_valid_covers(self):
+        ctx = {**CONTEXT, "parts": [{"name": "Carousel", "module": "components", "display_name": "Visual Elements"}]}
+        self.assertIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(ctx, 8))
+        self.assertIn("Carousel", gen._known_code_names(ctx))
+        self.assertNotIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(CONTEXT, 8))
+
     def test_cap_is_derived_from_the_token_budget(self):
         self.assertLessEqual(gen.HARD_CASE_CAP * gen._TOKENS_PER_CASE + gen._PROMPT_OVERHEAD_TOKENS, gen._MODEL_TOKEN_CEILING)
 
