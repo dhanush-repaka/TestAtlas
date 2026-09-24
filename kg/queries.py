@@ -13,9 +13,15 @@ def graph_stats(g: nx.MultiDiGraph) -> dict:
     edge_counts: dict[str, int] = {}
     for _, _, data in g.edges(data=True):
         edge_counts[data["relation"]] = edge_counts.get(data["relation"], 0) + 1
+    language_counts: dict[str, int] = {}
+    for _, data in g.nodes(data=True):
+        if data["type"] == "File":
+            lang = data.get("language", "python")  # graphs saved before multi-language support have no tag
+            language_counts[lang] = language_counts.get(lang, 0) + 1
     return {
         "nodes": g.number_of_nodes(),
         "edges": g.number_of_edges(),
         "by_node_type": dict(sorted(node_counts.items())),
         "by_relation": dict(sorted(edge_counts.items())),
+        "by_language": dict(sorted(language_counts.items(), key=lambda kv: -kv[1])),  # files per language
     }

@@ -14,7 +14,7 @@ from github import client as github_client
 from kg import neo4j_sync
 from kg.dev_graph_builder import build_dev_graph, score_modules
 from kg.dev_queries import dev_findings
-from kg.python_ast_parser import parse_repo
+from kg.repo_parser import has_source_files, parse_repo
 from kg.queries import graph_stats
 from kg.visualize import to_pyvis_html
 
@@ -36,7 +36,7 @@ def resolve_source_dir(repo: dict) -> Path:
         # A folder the user uploaded from their browser (server/uploads.py) --
         # already sitting in this repo's workspace dir, no clone needed.
         dest = WORKSPACE_DIR / repo["id"]
-        if not dest.is_dir() or not any(dest.rglob("*.py")):
+        if not dest.is_dir() or not has_source_files(dest):
             raise RuntimeError(
                 "No folder has been uploaded for this repo yet -- open Settings and choose a folder to upload."
             )
@@ -81,8 +81,9 @@ def run_analysis(repo_id: str) -> dict:
     try:
         source_dir = resolve_source_dir(repo)
 
-        # Mechanical layer: real AST parsing, not a framework-specific parser --
-        # works on any Python codebase regardless of what's built on top of it.
+        # Mechanical layer: real syntax-tree parsing (Python's `ast`, tree-sitter for
+        # TypeScript/JavaScript), not a framework-specific parser -- works on any
+        # codebase in those languages regardless of what's built on top of it.
         # Purpose summaries/semantic enrichment are a separate pass layered on
         # after a run finishes (see kg/enrichment.py), not part of this step.
         parsed_repo = parse_repo(source_dir)
@@ -90,13 +91,13 @@ def run_analysis(repo_id: str) -> dict:
         module_scores = score_modules(g)
 
         if g.number_of_nodes() == 0:
-            # A real parser producing an empty graph is almost always "no .py
+            # A real parser producing an empty graph is almost always "no source
             # files in this repo" or a bad source path -- fail loudly instead
             # of recording a hollow "success" that looks identical to a real,
             # tiny graph.
             raise RuntimeError(
-                "Parsed 0 nodes -- no .py files were found to parse as modules/classes/"
-                "functions. Check the repo's source path/branch in Settings."
+                "Parsed 0 nodes -- no supported source files (Python, TypeScript or JavaScript) were "
+                "found to parse as modules/classes/functions. Check the repo's source path/branch in Settings."
             )
 
         run_dir = db.RUNS_DIR / run_id

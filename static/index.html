@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=29" />
+<link rel="stylesheet" href="static/styles.css?v=30" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -230,7 +230,7 @@
             <svg class="ic" viewBox="0 0 24 24"><path d="M12 2a10 10 0 00-3.16 19.5c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.15-1.11-1.46-1.11-1.46-.9-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 015 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .26.18.58.69.48A10 10 0 0012 2z" fill="currentColor"/></svg>
             GitHub
           </button>
-          <button type="button" class="seg-btn" data-value="upload" title="Pick a folder on your computer and upload its Python files">
+          <button type="button" class="seg-btn" data-value="upload" title="Pick a folder on your computer and upload its source files">
             <svg class="ic" viewBox="0 0 24 24"><path d="M12 16V4M12 4l-4 4M12 4l4 4M5 16v3a1 1 0 001 1h12a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Upload
           </button>
@@ -252,7 +252,7 @@
               <button type="button" class="btn" id="chooseUploadFolderBtn">Choose folder…</button>
               <input type="file" id="uploadFolderInput" webkitdirectory multiple hidden />
             </span>
-            <span class="hint" id="uploadSummary">Only the folder's Python (.py) files are uploaded — <code>.git</code>, <code>node_modules</code>, virtualenvs and the like are skipped. It's a snapshot: to pick up later changes, open Settings and upload again.</span>
+            <span class="hint" id="uploadSummary">Only source files — Python, TypeScript and JavaScript — are uploaded; <code>.git</code>, <code>node_modules</code>, virtualenvs, build output and the like are skipped. It's a snapshot: to pick up later changes, open Settings and upload again.</span>
           </label>
         </div>
 
@@ -316,6 +316,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=34"></script>
+  <script src="static/app.js?v=35"></script>
 </body>
 </html>

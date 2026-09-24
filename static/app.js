@@ -197,7 +197,7 @@ async function showRepoDetail(id) {
   $("#repoSourceChip").innerHTML = sourceIcon(repo.source_type);
   $("#repoSubtitle").textContent =
     repo.source_type === "local" ? `Local folder · ${repo.local_path}`
-    : repo.source_type === "upload" ? "Uploaded folder · Python files only, snapshot from your computer"
+    : repo.source_type === "upload" ? "Uploaded folder · source files only, snapshot from your computer"
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
   activeModuleLabels = {};
@@ -270,7 +270,7 @@ function renderOverview() {
       statCard(s.nodes ?? "—", "Total nodes"),
       statCard(s.edges ?? "—", "Total edges"),
       statCard(s.module_scores?.length ?? 0, "Modules"),
-      statCard(byType.File ?? 0, "Files"),
+      statCard(byType.File ?? 0, "Files", languageBreakdown(s.by_language)),
       statCard(latest.finding_count ?? 0, "Findings"),
     ].join("");
     // The "Modules" card above is just a count -- list what they actually
@@ -294,8 +294,18 @@ function renderOverview() {
     .join("") || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`;
 }
 
-function statCard(num, label) {
-  return `<div class="stat-card"><div class="num">${num}</div><div class="lbl">${label}</div></div>`;
+function statCard(num, label, sub = "") {
+  return `<div class="stat-card"><div class="num">${num}</div><div class="lbl">${label}</div>${sub ? `<div class="stat-sub">${sub}</div>` : ""}</div>`;
+}
+
+const LANGUAGE_LABELS = { python: "Python", typescript: "TypeScript", javascript: "JavaScript" };
+// e.g. "TypeScript 240 · JavaScript 22". Shown only when it says something the
+// bare file count doesn't: a repo that's all Python (the only case before
+// multi-language support, and what older runs' stats imply) stays uncluttered.
+function languageBreakdown(byLanguage) {
+  const entries = Object.entries(byLanguage || {});
+  if (!entries.length || (entries.length === 1 && entries[0][0] === "python")) return "";
+  return entries.map(([lang, n]) => `${LANGUAGE_LABELS[lang] || lang} ${n.toLocaleString()}`).join(" · ");
 }
 
 function fmtDate(iso) {
@@ -662,17 +672,36 @@ async function browseForFolder() {
 // --------------------------------------------------------------------------- folder upload
 //
 // "Upload" source: analyze a folder from THIS computer even when the server is
-// somewhere else (the hosted site) -- the browser sends the folder's Python
-// files, the server stores them as a snapshot (server/uploads.py). Only .py
-// files are sent (all the parser reads), in batches because one request can't
-// carry thousands of files. The server re-validates everything; the filtering
-// here just avoids uploading junk.
+// somewhere else (the hosted site) -- the browser sends the folder's source
+// files, the server stores them as a snapshot (server/uploads.py). Only files
+// the parsers read are sent (Python, TypeScript, JavaScript), in batches
+// because one request can't carry thousands of files. The server re-validates
+// everything; the filtering here just avoids uploading junk.
 
-// Keep in sync with kg/python_ast_parser.py's _IGNORED_DIR_NAMES.
+// Keep in sync with kg/python_ast_parser.py's _IGNORED_DIR_NAMES and
+// kg/ts_parser.py's EXTRA_IGNORED_DIRS / vendor rule.
 const UPLOAD_IGNORED_DIRS = new Set([
   ".git", "__pycache__", "node_modules", ".venv", "venv", "env",
   "build", "dist", ".tox", ".mypy_cache", ".pytest_cache", "site-packages",
 ]);
+const UPLOAD_IGNORED_DIRS_JS_TS = new Set([
+  ...UPLOAD_IGNORED_DIRS,
+  ".next", ".nuxt", ".turbo", ".svelte-kit", ".angular", ".expo", ".output", ".vercel", ".parcel-cache",
+  ".yarn", ".pnpm-store", "storybook-static", "bower_components", "lcov-report",
+]);
+const UPLOAD_VENDOR_DIRS = new Set(["vendor", "third_party"]); // skipped for vendored *JavaScript* only; vendored TypeScript is real source
+
+// Same rule as kg/repo_parser.py's is_source_file / is_ignored_path.
+function isUploadableSource(rel) {
+  const name = rel[rel.length - 1];
+  const lower = name.toLowerCase();
+  const dirs = rel.slice(0, -1);
+  if (name.endsWith(".py")) return !rel.some((p) => UPLOAD_IGNORED_DIRS.has(p));
+  if (!/\.(tsx?|jsx?|mts|cts|mjs|cjs)$/.test(lower) || /\.d\.(ts|mts|cts)$/.test(lower) || lower.includes(".min.")) return false;
+  if (rel.some((p) => UPLOAD_IGNORED_DIRS_JS_TS.has(p))) return false;
+  const jsOnly = /\.(jsx?|mjs|cjs)$/.test(lower);
+  return !(jsOnly && dirs.some((p) => UPLOAD_VENDOR_DIRS.has(p)));
+}
 const UPLOAD_BATCH_MAX_FILES = 150;
 const UPLOAD_BATCH_MAX_BYTES = 6 * 1024 * 1024; // well under any proxy's request-size limit
 
@@ -700,8 +729,7 @@ function handleUploadFolderInput(ev) {
   let bytes = 0;
   for (const f of files) {
     const rel = (f.webkitRelativePath || f.name).split("/").slice(1); // drop the picked folder's own name
-    const isPython = rel.length > 0 && /\.py$/i.test(rel[rel.length - 1]);
-    if (!isPython || rel.some((part) => UPLOAD_IGNORED_DIRS.has(part))) { skipped++; continue; }
+    if (!rel.length || !isUploadableSource(rel)) { skipped++; continue; }
     picked.push({ file: f, path: rel.join("/") });
     bytes += f.size;
   }
@@ -709,11 +737,11 @@ function handleUploadFolderInput(ev) {
 
   const summary = $("#uploadSummary");
   if (!picked.length) {
-    summary.textContent = `No Python files found in “${root}”. Pick the folder that contains your code.`;
+    summary.textContent = `No Python, TypeScript or JavaScript files found in “${root}”. Pick the folder that contains your code.`;
     return;
   }
   summary.textContent =
-    `${picked.length.toLocaleString()} Python file${picked.length === 1 ? "" : "s"} (${formatBytes(bytes)}) from “${root}” will be uploaded` +
+    `${picked.length.toLocaleString()} source file${picked.length === 1 ? "" : "s"} (${formatBytes(bytes)}) from “${root}” will be uploaded` +
     (skipped ? ` — ${skipped.toLocaleString()} other files skipped.` : ".");
   if (!$("#repoNameInput").value.trim() && root) $("#repoNameInput").value = root;
 }
@@ -771,7 +799,7 @@ async function submitUploadRepo(payload) {
     showRepoDetail(repo.id);
     if (result) {
       const extra = Object.values(result.skipped).reduce((a, b) => a + b, 0);
-      toast(`Uploaded ${result.saved.toLocaleString()} Python file${result.saved === 1 ? "" : "s"}${extra ? ` (${extra} skipped)` : ""} — run analysis to build the graph`, "ok");
+      toast(`Uploaded ${result.saved.toLocaleString()} source file${result.saved === 1 ? "" : "s"}${extra ? ` (${extra} skipped)` : ""} — run analysis to build the graph`, "ok");
     } else {
       toast("Repo settings saved", "ok");
     }
@@ -1033,7 +1061,10 @@ function isTestModuleName(name) {
   return name
     .toLowerCase()
     .split(".")
-    .some((seg) => seg === "test" || seg === "tests" || seg.startsWith("test_") || seg.endsWith("_test"));
+    .some((seg) =>
+      ["test", "tests", "spec", "specs", "__tests__"].includes(seg) ||
+      seg.startsWith("test_") || seg.endsWith("_test") || seg.endsWith("_spec")
+    );
 }
 
 async function loadTestCasesPanel() {

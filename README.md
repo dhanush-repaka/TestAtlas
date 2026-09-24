@@ -1,8 +1,11 @@
 # TestAtlas
 
 Turns a codebase into a **knowledge graph** — File/Class/Function nodes,
-IMPORTS/DEFINES/CALLS edges — using real AST parsing (zero cost, deterministic,
-Python via the stdlib `ast` module today), then layers two things on top:
+IMPORTS/DEFINES/CALLS edges — using real syntax-tree parsing (zero cost,
+deterministic): **Python** via the stdlib `ast` module and **TypeScript /
+JavaScript** (`.ts .tsx .js .jsx .mts .cts .mjs .cjs`) via tree-sitter, all
+into the same graph schema, so a repo can mix languages. Then layers two
+things on top:
 
 - **Business-module criticality scores** (PageRank + betweenness centrality via
   networkx, rolled up from files to the business capability they implement --
@@ -56,13 +59,13 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     already on that server instead.
   - **Upload**: for a deployed instance, where a "Local folder" path would
     point at the *server's* disk rather than your files. Pick a folder on
-    your computer and the browser uploads its Python files (in batches, since
+    your computer and the browser uploads its source files (in batches, since
     one request can't carry thousands); they're stored as a snapshot in the
     repo's own workspace directory and analyzed like any other checkout.
-    Only `.py` files are ever sent or stored -- that's all the parser reads --
-    with the parser's ignore list (`.git`, `node_modules`, virtualenvs, ...)
-    applied both in the browser and again on the server, so nothing else
-    reaches the volume. It's a snapshot, not a live link: to pick up later
+    Only source files the parsers read (Python, TypeScript, JavaScript) are
+    ever sent or stored, with the ignore rules (`.git`, `node_modules`,
+    virtualenvs, build output, vendored JS, ...) applied both in the browser
+    and again on the server, so nothing else reaches the volume. It's a snapshot, not a live link: to pick up later
     changes, open Settings and upload the folder again (that replaces the
     old snapshot). The server treats filenames as untrusted input: paths are
     normalized and rejected if absolute, drive-lettered, or containing `..`,
@@ -77,7 +80,7 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     scope. "Test connection" validates either before you save.
   - Add as many repos as you want — each is analyzed and versioned independently.
 - **Run analysis** — clones/pulls (ADO/GitHub), reads (local), or uses the uploaded snapshot of, the repo,
-  parses every `.py` file, builds the graph, scores modules, computes findings,
+  parses every Python/TypeScript/JavaScript file, builds the graph, scores modules, computes findings,
   and stores a timestamped **run**. Syncs to Neo4j automatically if configured.
 - **Overview** — node/edge/module/file counts, the actual module list (name,
   file/class/function counts, PageRank score — same data as Insights' module
@@ -173,10 +176,65 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
   (`file:pkg.mod`, `function:pkg.mod:func`), not random ids, so this is
   meaningful across runs instead of "everything looks new every time."
 
+## TypeScript / JavaScript
+
+Parsed with tree-sitter (`kg/ts_parser.py`) into the same File/Class/Function
++ IMPORTS/DEFINES/CALLS graph as Python, so everything downstream — module
+scores, findings, gap analysis, per-module test generation, friendly module
+names — works on it unchanged. Each File node carries its `language`, and the
+Overview's Files card breaks a repo down by language.
+
+What it understands:
+
+- **Functions**: `function` declarations, arrow/function expressions bound to
+  a top-level `const` (`export const Button = () => …` — the dominant form in
+  React), those wrapped in `memo()`/`forwardRef()`/etc., `export default`
+  (named or anonymous), and CommonJS `exports.x = …`.
+- **Classes** and their methods, including constructors, getters/setters,
+  static methods, and arrow-function class fields; `extends`/`implements` are
+  recorded as bases.
+- **Imports** — `import`, `export … from`, `require()`, dynamic `import()` —
+  resolved against the repo: relative paths (with the `./x.js` → `x.ts` ESM
+  convention and `index` files), tsconfig/jsconfig `paths` and `baseUrl`
+  aliases like `@/components/x` (nearest config per file, `extends` followed,
+  comments and trailing commas tolerated), and workspace packages in a
+  monorepo (`@acme/core` → that package's source).
+- **Calls** (best-effort, same spirit as the Python parser): direct calls,
+  `this.method()`, calls through an import including through `index.ts`
+  barrel re-exports (`export * from`, `export { x as y } from`),
+  `Namespace.fn()`, static `Class.method()`, `new Class()` (→ its constructor),
+  and **JSX tags** (`<Button/>` → the Button component — without this every
+  React component would look unused).
+
+Deliberately not modeled: interfaces, type aliases and enums (no behavior, and
+as Class nodes they'd flood the "empty class" finding), `namespace` blocks,
+object-literal methods, classes declared inside functions, and calls on a
+variable of unknown type (`svc.run()`), or to inherited methods. Files with a
+syntax error are still mined for whatever parsed (tree-sitter is
+error-tolerant) rather than skipped whole. Skipped as noise: `.d.ts`
+declaration files, `*.min.*` bundles, files over 1 MB, a `.js` that's the
+compiled twin of a same-named `.ts`, framework build output (`.next`,
+`.nuxt`, `dist`, `lcov-report` coverage output, …) and vendored *JavaScript* — vendored
+*TypeScript* is kept, because it's source others import (tRPC does this). Test
+files (`*.test.ts`, `*.spec.ts`, `__tests__/`) get the same "don't generate
+tests for the tests" treatment Python's do.
+
+Measured on real repos rather than assumed: relative imports resolve on
+every code file that exists (the only misses were `.css`/`.json`/`.md` imports
+and files a build step generates); class counts match an independent regex
+count (the only difference being classes declared inside test functions);
+TypeORM (3,600 files) parses in ~1.3 s at ~120 MB peak, since each file's
+syntax tree is freed as soon as its symbols are extracted. `python -m unittest
+discover -s tests -t .` runs the parser's regression tests. Python parsing
+was verified byte-for-byte unchanged (same graph as before on FastAPI's
+6,358 nodes / 7,578 edges and others). Re-running an existing repo that
+contains JS/TS files (a Python project with a `docs/` or `static/` folder of
+scripts, say) will now include those files in its graph.
+
 ## Business modules
 
 "Module" in this app means a business capability (Accounts, Payments,
-Statements), not a single `.py` file — those are **File** nodes. Every
+Statements), not a single source file — those are **File** nodes. Every
 File/Class/Function gets a `domain` attribute:
 
 - **Free default**: the file's immediate containing package. `app/accounts/models.py`
@@ -216,7 +274,7 @@ server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
   folder_picker.py       opens the OS "choose a folder" dialog on the server's own machine
-  uploads.py             stores a browser-uploaded folder (Python files only) as a repo's source, with strict path/size validation
+  uploads.py             stores a browser-uploaded folder (source files only) as a repo's source, with strict path/size validation
   llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
                           call (OPENAI_API_KEY) -- one of three metered features here
   llm_test_generation.py optional: designs test cases via a live OpenAI API
@@ -233,8 +291,14 @@ server/
 ado/client.py            ADO REST (test-connection) + git clone/pull
 github/client.py         GitHub REST (test-connection) + git clone/pull (PAT optional)
 kg/
+  code_model.py          language-neutral shapes every parser fills in (module/class/
+                          function) + the shared pruned file walker
   python_ast_parser.py   mechanical parser: walks .py files via stdlib `ast`,
                           extracts files/classes/functions + resolved imports/calls
+  ts_parser.py           the same for TypeScript/JavaScript via tree-sitter (see
+                          "TypeScript / JavaScript" below)
+  repo_parser.py         runs every language's parser over a checkout and merges
+                          the results into one graph; defines what counts as source
   dev_graph_builder.py   builds the networkx.MultiDiGraph + business-module
                           scoring (rolls per-file scores up by `domain`)
   dev_queries.py         findings over that graph
@@ -346,11 +410,14 @@ request after idle time.
 
 ## Extending this
 
-- **More languages**: `kg/python_ast_parser.py` is Python-only today. The
-  clean way to add another language is [tree-sitter](https://tree-sitter.github.io/)
-  (one library, per-language grammars) with a thin adapter mapping its parse
-  tree onto the same File/Class/Function schema — not a second hand-written
-  parser, and not an LLM doing the structural extraction (see below for why).
+- **More languages**: Python and TypeScript/JavaScript are done; the pattern
+  for the next one is the same as for TypeScript --
+  [tree-sitter](https://tree-sitter.github.io/) (one library, per-language
+  grammars) with a thin adapter (see `kg/ts_parser.py`) filling in the shared
+  shapes in `kg/code_model.py` — not a second hand-written parser, and not an
+  LLM doing the structural extraction (see below for why). Register it in
+  `kg/repo_parser.py`, and the graph, scoring, findings, LLM features and UI
+  all work for it with no further changes.
 - **Why AST, not an LLM, for structure**: an LLM is the right tool for
   judgment calls ("what business module is this file part of") but the wrong tool for a large,
   exact, cross-referenced fact table (every import/call resolved against

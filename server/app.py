@@ -21,6 +21,7 @@ from kg.enrichment import apply_enrichment, enrichment_coverage, enrichment_targ
 from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
+from kg.repo_parser import has_source_files
 from kg.visualize import to_pyvis_html
 from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation, uploads
 from .diff import diff_runs
@@ -240,16 +241,16 @@ def api_test_connection(repo_id: str):
         p = Path(repo["local_path"]).expanduser()
         if not p.is_dir():
             return {"ok": False, "message": f"'{p}' does not exist or is not a directory"}
-        py_files = list(p.rglob("*.py"))[:1]
+        has_source = has_source_files(p)
         return {
-            "ok": bool(py_files),
-            "message": f"Found .py files: {'yes' if py_files else 'none'}",
+            "ok": has_source,
+            "message": f"Found source files (Python/TypeScript/JavaScript): {'yes' if has_source else 'none'}",
         }
     if repo["source_type"] == "upload":
         count, size = uploads.dir_stats(uploads.upload_dir(repo_id))
         return {
             "ok": count > 0,
-            "message": f"{count:,} Python file{'s' if count != 1 else ''} uploaded ({size / 1024:,.0f} KB)"
+            "message": f"{count:,} source file{'s' if count != 1 else ''} uploaded ({size / 1024:,.0f} KB)"
             if count else "Nothing uploaded yet -- open Settings and choose a folder to upload.",
         }
     if repo["source_type"] == "github_git":

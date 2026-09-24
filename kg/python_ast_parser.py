@@ -21,8 +21,9 @@ skeleton -- not attempted here, and this module is fully useful without it.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from .code_model import CodeClass, CodeFunction, CodeModule, ParsedRepo, iter_files
 
 _IGNORED_DIR_NAMES = {
     ".git", "__pycache__", "node_modules", ".venv", "venv", "env",
@@ -30,38 +31,12 @@ _IGNORED_DIR_NAMES = {
 }
 
 
-@dataclass
-class PyFunction:
-    name: str
-    qualname: str  # "module.dotted.name:func" or "module.dotted.name:Class.method"
-    is_method: bool
-    class_qualname: str | None
-    calls: list[str] = field(default_factory=list)  # resolved qualnames of things it calls
-    lineno: int = 0
-
-
-@dataclass
-class PyClass:
-    name: str
-    qualname: str
-    bases: list[str] = field(default_factory=list)  # best-effort dotted/plain names
-    methods: list[str] = field(default_factory=list)  # qualnames, filled in after extraction
-    lineno: int = 0
-
-
-@dataclass
-class PyModule:
-    path: str  # relative path from repo root
-    dotted_name: str
-    imports: list[str] = field(default_factory=list)  # dotted names of OTHER modules in this repo
-    classes: list[PyClass] = field(default_factory=list)
-    functions: list[PyFunction] = field(default_factory=list)  # top-level only
-
-
-@dataclass
-class ParsedPythonRepo:
-    modules: dict[str, PyModule] = field(default_factory=dict)  # keyed by dotted_name
-    skipped_files: list[str] = field(default_factory=list)  # syntax errors etc.
+# The shapes themselves are language-neutral and live in kg/code_model.py; the
+# Py* names stay as aliases so nothing here (or elsewhere) had to change.
+PyFunction = CodeFunction
+PyClass = CodeClass
+PyModule = CodeModule
+ParsedPythonRepo = ParsedRepo
 
 
 def _is_ignored(path: Path) -> bool:
@@ -99,7 +74,7 @@ def _longest_known_prefix(dotted: str, known: set[str]) -> str | None:
 
 def parse_repo(root: Path) -> ParsedPythonRepo:
     result = ParsedPythonRepo()
-    py_files = sorted(p for p in root.rglob("*.py") if not _is_ignored(p.relative_to(root)))
+    py_files = sorted(iter_files(root, _IGNORED_DIR_NAMES, lambda name: name.endswith(".py")))
 
     parsed_trees: dict[str, tuple[Path, ast.Module]] = {}
     for path in py_files:

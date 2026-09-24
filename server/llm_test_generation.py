@@ -51,10 +51,16 @@ HARD_CASE_CAP = (_MODEL_TOKEN_CEILING - _PROMPT_OVERHEAD_TOKENS) // _TOKENS_PER_
 
 
 def _is_test_file(dotted_path: str) -> bool:
-    """Heuristic: a file already under a tests/ package or named test_*/  \
-    *_test is existing test code, not something to write new tests against."""
+    """Heuristic: a file already under a tests/ package or named test_*/*_test
+    (Python), or *.test.ts / *.spec.ts / under __tests__ (TypeScript/JavaScript --
+    kg/ts_parser.py turns `Button.test.tsx` into the segment `Button_test`), is
+    existing test code, not something to write new tests against."""
     segments = dotted_path.lower().split(".")
-    return any(seg in ("test", "tests") or seg.startswith("test_") or seg.endswith("_test") for seg in segments)
+    return any(
+        seg in ("test", "tests", "spec", "specs", "__tests__")
+        or seg.startswith("test_") or seg.endswith(("_test", "_spec"))
+        for seg in segments
+    )
 
 
 def _target_case_count(context: dict) -> int:

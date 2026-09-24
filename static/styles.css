@@ -407,6 +407,7 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
   font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--muted-2);
   background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 6px;
 }
+.stat-sub { margin-top: 3px; font-size: 11px; color: var(--muted-2); line-height: 1.3; }
 .module-naming-control { display: flex; justify-content: flex-end; margin-bottom: 6px; }
 .module-naming-control:empty { display: none; }
 .rank-bar-track { height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }

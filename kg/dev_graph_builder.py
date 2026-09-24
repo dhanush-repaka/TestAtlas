@@ -1,9 +1,9 @@
-"""Builds a networkx.MultiDiGraph knowledge graph from a ParsedPythonRepo
-(dev/application code, not test code) and rolls it up into business-module
+"""Builds a networkx.MultiDiGraph knowledge graph from a ParsedRepo (any
+mix of the languages kg/repo_parser.py supports; dev/application code, not test code) and rolls it up into business-module
 scores.
 
 Schema:
-  File     node  -- one per .py file (what the old schema called "Module" --
+  File     node  -- one per source file, tagged with its `language` (what the old schema called "Module" --
                     renamed because "Module" now means something more useful:
                     see below)
   Class    node
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from .python_ast_parser import ParsedPythonRepo
+from .code_model import ParsedRepo
 
 
 def _default_domain(dotted: str) -> str:
@@ -45,12 +45,12 @@ def _default_domain(dotted: str) -> str:
     return ".".join(parts[:-1]) if len(parts) > 1 else dotted
 
 
-def build_dev_graph(repo: ParsedPythonRepo) -> nx.MultiDiGraph:
+def build_dev_graph(repo: ParsedRepo) -> nx.MultiDiGraph:
     g = nx.MultiDiGraph()
 
     for dotted, module in repo.modules.items():
         file_id = f"file:{dotted}"
-        g.add_node(file_id, type="File", label=dotted, path=module.path, domain=_default_domain(dotted))
+        g.add_node(file_id, type="File", label=dotted, path=module.path, domain=_default_domain(dotted), language=module.language)
 
     for dotted, module in repo.modules.items():
         file_id = f"file:{dotted}"
