@@ -116,6 +116,7 @@ def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = N
     module_name = context["modules"][0]["module"] if context["modules"] else "(unknown)"
     display = context.get("display_name")
     named = f' (known as "{display}")' if display else ""
+    about = f'\nWhat this module is for, in the words of the product team: {context["description"]}' if context.get("description") else ""
     modules_json = json.dumps(context["modules"], indent=2)
     has_docs = bool(context["documents"])
     docs_block = (
@@ -138,7 +139,7 @@ The code can show each of these on screen -- they are error, validation, empty-s
         if has_docs
         else "the flows the module's names and UI text suggest are core"
     )
-    return f"""You are a QA analyst writing FUNCTIONAL test cases, in the style of Azure DevOps Test Plans, for ONE MODULE of a larger codebase -- module "{module_name}"{named}. Other modules are handled by separate calls like this one.
+    return f"""You are a QA analyst writing FUNCTIONAL test cases, in the style of Azure DevOps Test Plans, for ONE MODULE of a larger codebase -- module "{module_name}"{named}.{about} Other modules are handled by separate calls like this one.
 
 {docs_block}
 

@@ -114,7 +114,9 @@ def gap_analysis_context(
     }
 
 
-def module_test_context(g: nx.MultiDiGraph, docs: list[dict], module: str, display_name: str | None = None) -> dict:
+def module_test_context(
+    g: nx.MultiDiGraph, docs: list[dict], module: str, display_name: str | None = None, description: str | None = None
+) -> dict:
     """Same context gap_analysis_context() builds, narrowed to a single
     module's code -- documents stay the full set (a doc may describe this
     module's role within the wider system; there's no per-doc split here),
@@ -130,4 +132,5 @@ def module_test_context(g: nx.MultiDiGraph, docs: list[dict], module: str, displ
     # display_name (the friendly, business-English label from server/llm_module_naming.py,
     # if this module has one) tells the model what the module is FOR -- which is what
     # decides whether a functional scenario is even meaningful for it.
-    return {"ok": True, "documents": full["documents"], "modules": matching, "display_name": display_name}
+    return {"ok": True, "documents": full["documents"], "modules": matching,
+            "display_name": display_name, "description": description}

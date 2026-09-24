@@ -1,114 +1,172 @@
-"""Friendly, business-English module names via a live OpenAI API call.
+"""Plain-English names for a repo's modules, for people who have never read
+the code -- via a live OpenAI API call.
 
 Same paid, opt-in exception as server/llm_gap_analysis.py and
-server/llm_test_generation.py -- gated entirely behind OPENAI_API_KEY. This
-one is deliberately the cheapest of the three: it labels every module in a
-repo with ONE call (not one per module), since naming needs far less context
-per module than gap analysis or test-case design does.
+server/llm_test_generation.py -- gated entirely behind OPENAI_API_KEY.
+
+The audience is a business analyst or product owner. They know the product
+from USING it (for a shop: Home Page, Search, Product Page, Shopping Cart,
+Checkout, Navigation Bar), not from its folders, so "components.layout.navbar"
+and "lib.shopify.fragments" mean nothing to them. An earlier version asked for
+a "business-friendly name describing what the module does" and got names like
+"Data Encoding Utilities" -- friendlier than the path, but still a developer's
+view. So this asks for the SCREEN or FEATURE a module powers, in the words
+someone looking at the running product would use, and gives the model the
+clues that make that possible: the real on-screen text (button labels,
+headings, messages -- kg/ts_parser.py extracts it from JSX), file names (a
+Next.js `app/product/[handle]` folder is "the page for one product"), and an
+outline of the whole app so each module is named in context.
+
+Modules that only work behind the scenes (data access, configuration, types,
+icons, helpers) are marked `kind = "supporting"`, so the UI can tuck them away
+rather than list them beside real features -- there is nothing for a BA to
+test in them. Each module also gets a one-sentence description.
 
 The technical module name (the `domain` grouping kg/dev_graph_builder.py
-computes -- a dotted package path like "kg" or "src.itsdangerous.signer") is
-never replaced. It's the stable key everything else in this app already
-keys off of (module_test_context's `module` query param, doc_gaps'
-per-module grouping, stored test cases' `module` column, Compare Runs).
-Friendly names are a separate, purely cosmetic label stored in
-server/db.py's module_labels table -- keyed by (repo_id, module), so unlike
-per-run enrichment they survive a re-run untouched: the same dotted path
-just keeps whatever friendly name it was last given, no matter how many
-times "Run analysis" is clicked afterward.
+computes -- a dotted package path) is never replaced. It's the stable key
+everything else keys off of (module_test_context's `module` query param,
+stored test cases' `module` column, Compare Runs). Names are a purely cosmetic
+layer stored in server/db.py's module_labels, keyed by (repo_id, module) and
+not tied to a run, so they survive re-analysis untouched.
 """
 from __future__ import annotations
 
 import json
 
-from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all three features
+from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
 DEFAULT_MODEL = "gpt-4o-mini"
+ALLOWED_KINDS = {"feature", "supporting"}
 
-# Naming needs far less signal per module than gap analysis/test generation --
-# a handful of representative real names plus a purpose summary (if any file
-# has one) is enough to infer what a module is for. Capping this keeps the
-# one-call-for-every-module prompt compact even on a 200+ module repo.
-_MAX_SAMPLE_NAMES_PER_MODULE = 8
+# Per-module clue caps -- enough signal to tell what a module is for, small enough
+# that a 200-module repo's prompt stays reasonable.
+_MAX_SAMPLE_NAMES = 8
+_MAX_UI_TEXT = 10
+_MAX_FILES = 8
+# Modules named per call. One call for every module of a very large repo would run
+# past the model's output limit; the full outline still goes into every batch, so a
+# module is always named with the whole app in view.
+_BATCH_SIZE = 60
+_MAX_TOKENS_PER_BATCH = 8000
+
+
+def _leaf(file_label: str, module: str) -> str:
+    """`components.cart.add-to-cart` in module `components.cart` -> `add-to-cart`."""
+    prefix = module + "."
+    return file_label[len(prefix):] if file_label.startswith(prefix) else file_label.rsplit(".", 1)[-1]
 
 
 def _summarize_modules(modules: list[dict]) -> list[dict]:
-    """Trims doc_gaps.gap_analysis_context()'s full per-file/class/method
-    structure down to one compact summary per module -- real names are
-    still real (never invented), just not exhaustively listed."""
+    """Trims gap_analysis_context()'s full per-file/class/method structure to one
+    compact clue-sheet per module. Everything is real (never invented), just not
+    exhaustively listed; empty clues are omitted to keep the prompt small."""
     summaries = []
     for m in modules:
         names: list[str] = []
+        ui_text: list[str] = []
         purpose = None
         for f in m["files"]:
             if purpose is None and f.get("purpose"):
                 purpose = f["purpose"]
             names.extend(f["functions"])
             names.extend(c["name"] for c in f["classes"])
-            if len(names) >= _MAX_SAMPLE_NAMES_PER_MODULE:
-                break
-        summaries.append({
+            for t in f.get("ui_text", []):
+                if t not in ui_text:
+                    ui_text.append(t)
+        summary = {
             "module": m["module"],
-            "sample_names": names[:_MAX_SAMPLE_NAMES_PER_MODULE],
+            "files": [_leaf(f["file"], m["module"]) for f in m["files"]][:_MAX_FILES],
+            "sample_names": names[:_MAX_SAMPLE_NAMES],
+            "ui_text": ui_text[:_MAX_UI_TEXT],
             "purpose": purpose,
-        })
+        }
+        summaries.append({k: v for k, v in summary.items() if v})
     return summaries
 
 
-def _build_prompt(modules: list[dict]) -> str:
-    summary_json = json.dumps(_summarize_modules(modules), indent=2)
-    return f"""You name modules in a codebase for a non-technical audience -- a product manager or business stakeholder who has never read the code and doesn't know what "kg" or "src.itsdangerous.signer" means.
+def _build_prompt(batch: list[dict], outline: list[str]) -> str:
+    return f"""You are naming the parts of a software product for a NON-TECHNICAL business analyst or product owner. They know the product from USING it -- the pages, screens and features a person sees (for an online shop: Home Page, Search, Product Page, Shopping Cart, Checkout, Navigation Bar) -- and they cannot read code, so folder names like "components.layout.navbar" or "lib.shopify.queries" mean nothing to them.
 
-Each module below is a dotted package path (its real, technical grouping -- do not change or explain this path, you're only naming it) plus a few real class/function names from inside it and a purpose summary where one exists:
+APP OUTLINE -- every module in this codebase, by technical name, for orientation only (you are naming only the ones listed further down):
+{json.dumps(outline)}
+
+MODULES TO NAME -- each is a group of source files, with clues: "files" (file names; a folder like app/product/[handle] usually means "the page for one product"), "sample_names" (real function/class names), "ui_text" (the actual words shown on screen -- your strongest evidence), and a "purpose" if known:
 ---
-{summary_json}
+{json.dumps(batch, indent=2)}
 ---
 
-For each module, write a short (2-5 word) business-friendly display name that describes what it actually DOES, inferred from its real names and purpose -- not a cosmetic reformatting of the path itself (e.g. turning "kg" into "Kg Module" is not acceptable; infer real meaning). Two different modules can get similar-sounding names if they really do similar things -- don't force artificial distinctiveness.
+For EACH module return:
+- "name": what a person would call this part of the product -- the SCREEN or FEATURE it powers -- in plain everyday words, Title Case, 1 to 4 words: "Home Page", "Shopping Cart", "Product Page", "Navigation Bar", "Search & Filters". Take the words from what's on screen (ui_text) and from route/file names. Never use developer words: module, component, util, helper, lib, handler, service, fragment, query, config, API, wrapper.
+- "kind": "feature" if a person could see or use it directly; "supporting" if it only works behind the scenes -- fetching data, connections to other systems, configuration, shared types, icons and styling, helper code, test code.
+- "description": ONE plain-English sentence for the analyst. For a feature, what the person can do or see here ("Add, remove and change the quantity of items, then continue to checkout"). For a supporting module, what it does for the product ("Fetches product and cart information from the Shopify store").
+Where two modules are parts of the same screen, keep the screen's name and add the part: "Product Page - Photo Gallery", "Product Page - Options". Otherwise don't force artificial distinctiveness. Never leave a module out. Don't claim features the clues don't support.
 
-Respond with ONLY a JSON object of this exact shape, no other text, with one entry per module listed above (same "module" key, exactly as given):
-{{"labels": {{"<module>": "<Friendly Name>", ...}}}}"""
+Respond with ONLY a JSON object of this exact shape, one entry per module listed above, keyed by the module's technical name exactly as given:
+{{"modules": {{"<module>": {{"name": "...", "kind": "feature" | "supporting", "description": "..."}}, ...}}}}"""
 
 
-def generate_module_names(context: dict, model: str = DEFAULT_MODEL) -> dict[str, str]:
-    """Calls the OpenAI API to name every module in `context["modules"]`
-    (from kg.doc_gaps.gap_analysis_context) and returns a validated
-    {module: friendly_name} dict, restricted to modules actually present in
-    the input. Raises RuntimeError with a message safe to show the user on
-    any failure -- missing key, API error, or a malformed response."""
+def _clean_entry(value) -> dict | None:
+    """One model entry -> {name, kind, description}, or None if unusable. A missing
+    or odd `kind` defaults to feature -- better to show a module than to hide one."""
+    if isinstance(value, str):  # tolerate a bare name
+        value = {"name": value}
+    if not isinstance(value, dict) or not isinstance(value.get("name"), str) or not value["name"].strip():
+        return None
+    kind = value.get("kind")
+    description = value.get("description")
+    return {
+        "name": value["name"].strip(),
+        "kind": kind if kind in ALLOWED_KINDS else "feature",
+        "description": description.strip() if isinstance(description, str) and description.strip() else None,
+    }
+
+
+def generate_module_names(context: dict, model: str | None = None) -> dict[str, dict]:
+    """Names every module in `context["modules"]` (from
+    kg.doc_gaps.gap_analysis_context, ideally with include_ui_text=True) and
+    returns {module: {name, kind, description}}, restricted to modules actually
+    present in the input. Batches large repos. Raises RuntimeError with a message
+    safe to show the user on any failure -- missing key, API error, or a
+    malformed response."""
     if not is_configured():
         raise RuntimeError("OPENAI_API_KEY isn't configured on this deployment.")
 
     modules = context.get("modules") or []
     if not modules:
         return {}
-    known_modules = {m["module"] for m in modules}
+    known = {m["module"] for m in modules}
+    summaries = _summarize_modules(modules)
+    outline = [s["module"] for s in summaries]
+    model = model or DEFAULT_MODEL
 
     from openai import OpenAI  # lazy import: only needed when this is actually called
 
     client = OpenAI()
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": _build_prompt(modules)}],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
-    except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
-        raise RuntimeError(f"OpenAI API call failed: {e}") from e
+    out: dict[str, dict] = {}
+    for i in range(0, len(summaries), _BATCH_SIZE):
+        batch = summaries[i:i + _BATCH_SIZE]
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": _build_prompt(batch, outline)}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=_MAX_TOKENS_PER_BATCH,
+            )
+        except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
+            raise RuntimeError(f"OpenAI API call failed: {e}") from e
 
-    raw = response.choices[0].message.content or "{}"
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
+        raw = response.choices[0].message.content or "{}"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
+        entries = parsed.get("modules", {})
+        if not isinstance(entries, dict):
+            raise RuntimeError("Model's response had an unexpected shape (modules wasn't an object).")
 
-    labels = parsed.get("labels", {})
-    if not isinstance(labels, dict):
-        raise RuntimeError("Model's response had an unexpected shape (labels wasn't an object).")
-
-    return {
-        module: name.strip()
-        for module, name in labels.items()
-        if module in known_modules and isinstance(name, str) and name.strip()
-    }
+        for module, value in entries.items():
+            cleaned = _clean_entry(value) if module in known else None
+            if cleaned:
+                out[module] = cleaned
+    return out

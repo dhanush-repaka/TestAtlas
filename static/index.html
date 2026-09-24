@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=31" />
+<link rel="stylesheet" href="static/styles.css?v=32" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -180,7 +180,8 @@
           <p class="muted small">Uses an LLM (OpenAI) to write <b>functional test cases</b> in Azure DevOps shape — a title, description, priority, preconditions, and steps that each pair an action with its expected result. They're user scenarios (or, for a library, how a consumer uses its public interface), not unit tests; for web UIs the model is given the real button labels, headings and messages found in the code so steps say what's actually on screen. Built from this repo's documents and one module at a time, as reviewable records — not runnable code — so treat them as a first draft. Each module you generate is its own metered OpenAI call, triggered individually — nothing runs in bulk.</p>
           <p class="muted small" id="testCaseDocsIncluded"></p>
           <p class="muted small is-hidden" id="testGenUnavailableHint">Not configured on this deployment (no <code>OPENAI_API_KEY</code>) — there's no free manual fallback for this feature yet.</p>
-          <input type="search" id="moduleGenSearch" class="module-gen-search" placeholder="Filter modules by name…" />
+          <div id="moduleNamesBanner" class="module-names-banner is-hidden"></div>
+          <input type="search" id="moduleGenSearch" class="module-gen-search" placeholder="Filter modules by name or description…" />
           <div id="moduleGenList" class="module-gen-list-scroll"></div>
         </div>
 
@@ -316,6 +317,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=36"></script>
+  <script src="static/app.js?v=37"></script>
 </body>
 </html>

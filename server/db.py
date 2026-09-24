@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS module_labels (
     repo_id TEXT NOT NULL,
     module TEXT NOT NULL,
     display_name TEXT NOT NULL,
+    kind TEXT,                        -- 'feature' (a user can see/use it) | 'supporting' (behind the scenes); NULL on older rows = feature
+    description TEXT,                 -- one plain-English sentence for a non-technical reader
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repo_id, module),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
@@ -168,6 +170,11 @@ _REPO_COLUMN_MIGRATIONS = {
     "github_pat_enc": "TEXT",
 }
 
+_MODULE_LABELS_COLUMN_MIGRATIONS = {
+    "kind": "TEXT",         # added when names became screen/feature-oriented for a non-technical audience
+    "description": "TEXT",
+}
+
 _TEST_CASES_COLUMN_MIGRATIONS = {
     "module": "TEXT",  # added when test-case generation moved from repo-wide to per-module
     # added when test cases became functional / ADO-shaped (steps are now {action, expected} objects,
@@ -193,6 +200,7 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate_columns(conn, "repos", _REPO_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "test_cases", _TEST_CASES_COLUMN_MIGRATIONS)
+        _migrate_columns(conn, "module_labels", _MODULE_LABELS_COLUMN_MIGRATIONS)
         # The Playwright+BDD parser was retired -- any repo still configured
         # for it has no parser left to run; move it to the one supported
         # framework rather than leave it permanently broken.
@@ -498,24 +506,41 @@ def list_test_cases(repo_id: str) -> list[dict]:
 
 # --------------------------------------------------------------------------- module labels
 
-def set_module_labels(repo_id: str, labels: dict[str, str]) -> None:
-    """Upserts a friendly display name for each (repo_id, module) pair given.
+def set_module_labels(repo_id: str, labels: dict) -> None:
+    """Upserts a friendly label for each (repo_id, module) pair given. A value is
+    either a plain name (str -- the original form) or {name, kind, description}.
     Independent of any run -- see module_labels' schema comment for why."""
     ts = now()
     with get_conn() as conn:
-        for module, display_name in labels.items():
+        for module, value in labels.items():
+            info = {"name": value} if isinstance(value, str) else value
             conn.execute(
-                """INSERT INTO module_labels (repo_id, module, display_name, updated_at)
-                   VALUES (?,?,?,?)
+                """INSERT INTO module_labels (repo_id, module, display_name, kind, description, updated_at)
+                   VALUES (?,?,?,?,?,?)
                    ON CONFLICT(repo_id, module) DO UPDATE SET display_name = excluded.display_name,
+                                                               kind = excluded.kind,
+                                                               description = excluded.description,
                                                                updated_at = excluded.updated_at""",
-                (repo_id, module, display_name, ts),
+                (repo_id, module, info["name"], info.get("kind"), info.get("description"), ts),
             )
 
 
 def get_module_labels(repo_id: str) -> dict[str, str]:
+    """{module: display name} -- what most callers want."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT module, display_name FROM module_labels WHERE repo_id = ?", (repo_id,)
         ).fetchall()
     return {r["module"]: r["display_name"] for r in rows}
+
+
+def get_module_label_details(repo_id: str) -> dict[str, dict]:
+    """{module: {name, kind, description}}; older rows have no kind, which means a feature."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT module, display_name, kind, description FROM module_labels WHERE repo_id = ?", (repo_id,)
+        ).fetchall()
+    return {
+        r["module"]: {"name": r["display_name"], "kind": r["kind"] or "feature", "description": r["description"]}
+        for r in rows
+    }

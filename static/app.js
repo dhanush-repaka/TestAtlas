@@ -4,7 +4,8 @@ let activeRepoId = null;
 let activeRuns = [];
 let view = "dashboard"; // "dashboard" | "repo"
 
-let activeModuleLabels = {}; // {raw module name -> friendly display name}, per repo
+let activeModuleInfo = {};   // {raw module name -> {name, kind: "feature"|"supporting", description}}, per repo
+let activeModuleLabels = {}; // derived from activeModuleInfo: {raw module name -> friendly display name}
 let moduleNamingAvailable = null; // null = not checked yet; deployment-wide, checked once
 
 // The raw module name (a dotted package path -- kg/dev_graph_builder.py's
@@ -13,6 +14,11 @@ let moduleNamingAvailable = null; // null = not checked yet; deployment-wide, ch
 // technical and non-technical readers both get what they need.
 function moduleDisplayName(raw) {
   return activeModuleLabels[raw] || raw;
+}
+
+function setModuleInfo(info) {
+  activeModuleInfo = info || {};
+  activeModuleLabels = Object.fromEntries(Object.entries(activeModuleInfo).map(([raw, v]) => [raw, v.name]));
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -200,7 +206,7 @@ async function showRepoDetail(id) {
     : repo.source_type === "upload" ? "Uploaded folder · source files only, snapshot from your computer"
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
-  activeModuleLabels = {};
+  setModuleInfo({});
   await loadModuleLabels();
   await loadRuns();
   await loadDocsPanel();
@@ -215,8 +221,9 @@ async function loadModuleLabels() {
       .then((c) => c.automatic_available)
       .catch(() => false);
   }
-  activeModuleLabels = await api(`/repos/${repoId}/module-labels`).catch(() => ({}));
+  const info = await api(`/repos/${repoId}/module-labels`).catch(() => ({}));
   if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  setModuleInfo(info);
   renderModuleNamingControl();
 }
 
@@ -226,10 +233,12 @@ async function generateModuleLabels(btn) {
   btn.textContent = "Naming modules…";
   try {
     const result = await api(`/repos/${activeRepoId}/module-labels/generate`, { method: "POST" });
-    activeModuleLabels = { ...activeModuleLabels, ...result.labels };
-    renderModuleNamingControl(); // updates the button's own label to "Re-generate…" now that labels exist
+    setModuleInfo({ ...activeModuleInfo, ...result.modules });
+    renderModuleNamingControl(); // updates the button's own label to "Re-generate…" now that names exist
+    renderModuleNamesBanner();
     renderOverview();
     renderModuleGenList();
+    populateTestCaseModuleFilter();
     renderTestCaseList();
     toast(`Named ${result.applied} module${result.applied === 1 ? "" : "s"}`, "ok");
   } catch (e) {
@@ -243,7 +252,7 @@ function renderModuleNamingControl() {
   const el = $("#moduleNamingControl");
   if (!moduleNamingAvailable) { el.innerHTML = ""; return; }
   const hasAny = Object.keys(activeModuleLabels).length > 0;
-  el.innerHTML = `<button type="button" class="btn btn-sm" id="generateModuleLabelsBtn">${hasAny ? "Re-generate friendly names" : "Generate friendly module names"}</button>`;
+  el.innerHTML = `<button type="button" class="btn btn-sm" id="generateModuleLabelsBtn">${hasAny ? "Re-generate plain-English names" : "Give modules plain-English names"}</button>`;
   $("#generateModuleLabelsBtn").addEventListener("click", (ev) => generateModuleLabels(ev.target));
 }
 
@@ -1090,41 +1099,73 @@ async function loadTestCasesPanel() {
   renderTestCaseList();
 }
 
-function renderModuleGenList() {
-  const el = $("#moduleGenList");
-  const searchInput = $("#moduleGenSearch");
-  if (!testGenAvailable) {
-    el.innerHTML = "";
-    searchInput.classList.add("is-hidden");
-    return;
-  }
-  const query = searchInput.value.trim().toLowerCase();
-  const moduleScores = (activeRuns[0]?.stats?.module_scores || []).filter(
-    (m) =>
-      !isTestModuleName(m.module) &&
-      (!query || m.module.toLowerCase().includes(query) || moduleDisplayName(m.module).toLowerCase().includes(query))
-  );
-  searchInput.classList.toggle("is-hidden", !(activeRuns[0]?.stats?.module_scores || []).length);
-  if (!moduleScores.length) {
-    el.innerHTML = `<p class="muted small">${query ? "No modules match that filter." : "No modules to generate for yet — run analysis first."}</p>`;
-    return;
-  }
-  el.innerHTML = moduleScores
-    .map((m) => {
-      const count = activeTestCases.filter((c) => c.module === m.module).length;
-      return `
+// Shown on the Test Cases tab while modules still carry raw folder names -- that's
+// the list a non-technical reader is looking at, so this is where the fix is offered.
+function renderModuleNamesBanner() {
+  const el = $("#moduleNamesBanner");
+  const hasModules = (activeRuns[0]?.stats?.module_scores || []).length > 0;
+  const needsNames = testGenAvailable && moduleNamingAvailable && hasModules && Object.keys(activeModuleInfo).length === 0;
+  el.classList.toggle("is-hidden", !needsNames);
+  if (!needsNames) { el.innerHTML = ""; return; }
+  el.innerHTML = `
+    <div>
+      <b>These module names come straight from the code</b> (like <code>components.cart</code>) — hard to follow unless you've read it.
+      Get plain-English names for the screens and features instead — "Shopping Cart", "Product Page" — plus a one-line description of each.
+    </div>
+    <button type="button" class="btn btn-primary btn-sm" id="nameModulesBtn">Name modules in plain English</button>`;
+}
+
+function moduleGenRow(m) {
+  const info = activeModuleInfo[m.module];
+  const count = activeTestCases.filter((c) => c.module === m.module).length;
+  const counts = `${m.file_count} file${m.file_count === 1 ? "" : "s"} · ${m.class_count} classes · ${m.function_count} functions`;
+  return `
       <div class="module-gen-row">
         <div class="module-gen-info">
-          <b>${escapeHtml(moduleDisplayName(m.module))}</b>${activeModuleLabels[m.module] ? `<span class="module-raw-name">${escapeHtml(m.module)}</span>` : ""}
-          <span class="small muted">${m.file_count} file${m.file_count === 1 ? "" : "s"} · ${m.class_count} classes · ${m.function_count} functions</span>
+          <div class="module-gen-title"><b>${escapeHtml(moduleDisplayName(m.module))}</b>${info ? `<span class="module-raw-name" title="${escapeHtml(counts)}">${escapeHtml(m.module)}</span>` : ""}</div>
+          <span class="small muted">${escapeHtml(info?.description || counts)}</span>
         </div>
         <div class="module-gen-actions">
           <span class="small muted">${count ? `${count} generated` : ""}</span>
           <button type="button" class="btn btn-sm module-gen-btn" data-module="${escapeHtml(m.module)}">${count ? "Regenerate" : "Generate"}</button>
         </div>
       </div>`;
-    })
-    .join("");
+}
+
+function renderModuleGenList() {
+  const el = $("#moduleGenList");
+  const searchInput = $("#moduleGenSearch");
+  renderModuleNamesBanner();
+  if (!testGenAvailable) {
+    el.innerHTML = "";
+    searchInput.classList.add("is-hidden");
+    return;
+  }
+  const query = searchInput.value.trim().toLowerCase();
+  const matches = (m) => {
+    const info = activeModuleInfo[m.module];
+    return !query || m.module.toLowerCase().includes(query) || moduleDisplayName(m.module).toLowerCase().includes(query) ||
+      (info?.description || "").toLowerCase().includes(query);
+  };
+  const all = activeRuns[0]?.stats?.module_scores || [];
+  const modules = all.filter((m) => !isTestModuleName(m.module) && matches(m));
+  searchInput.classList.toggle("is-hidden", !all.length);
+  if (!modules.length) {
+    el.innerHTML = `<p class="muted small">${query ? "No modules match that filter." : "No modules to generate for yet — run analysis first."}</p>`;
+    return;
+  }
+  // Features first. Modules that only work behind the scenes (data access, config, helpers) have no
+  // visible behavior to test, so they're tucked into a collapsed group rather than listed beside real features.
+  const supporting = modules.filter((m) => activeModuleInfo[m.module]?.kind === "supporting");
+  const features = modules.filter((m) => activeModuleInfo[m.module]?.kind !== "supporting");
+  el.innerHTML =
+    features.map(moduleGenRow).join("") +
+    (supporting.length
+      ? `<details class="module-gen-supporting" ${query ? "open" : ""}>
+           <summary>Behind the scenes (${supporting.length}) <span class="muted small">— no directly visible behavior, so usually nothing to test functionally</span></summary>
+           ${supporting.map(moduleGenRow).join("")}
+         </details>`
+      : "");
 }
 
 async function runTestGenerationForModule(moduleName, btn) {
@@ -1484,6 +1525,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (btn) runTestGenerationForModule(btn.dataset.module, btn);
   });
   $("#moduleGenSearch").addEventListener("input", renderModuleGenList);
+  $("#moduleNamesBanner").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("#nameModulesBtn");
+    if (btn) generateModuleLabels(btn);
+  });
   $("#testCaseFilterModuleSelect").addEventListener("change", renderTestCaseList);
   $("#testCaseFilterCategorySelect").addEventListener("change", renderTestCaseList);
 });

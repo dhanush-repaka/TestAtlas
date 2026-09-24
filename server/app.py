@@ -653,7 +653,8 @@ def api_run_test_generation(repo_id: str, module: str):
     if not run or not run.get("graph_path"):
         raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
     g = load_graph(run["graph_path"])
-    context = module_test_context(g, docs, module, display_name=db.get_module_labels(repo_id).get(module))
+    label = db.get_module_label_details(repo_id).get(module) or {}
+    context = module_test_context(g, docs, module, display_name=label.get("name"), description=label.get("description"))
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:
@@ -686,15 +687,17 @@ def api_test_generation_config():
 def api_get_module_labels(repo_id: str):
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    return db.get_module_labels(repo_id)
+    return db.get_module_label_details(repo_id)   # {module: {name, kind, description}}
 
 
 @api.post("/repos/{repo_id}/module-labels/generate")
 def api_generate_module_labels(repo_id: str):
-    """Names every module in this repo's latest run with a friendly,
-    business-English display name via one live OpenAI call (see
-    server/llm_module_naming.py) -- purely cosmetic, the real dotted-path
-    module name underneath is unchanged. Unlike test cases/gap findings,
+    """Names every module in this repo's latest run for a NON-TECHNICAL reader --
+    the screen or feature it powers ("Shopping Cart", "Product Page"), whether it
+    is a feature or works behind the scenes, and a one-sentence description --
+    via live OpenAI calls (see server/llm_module_naming.py; batched for large
+    repos). Purely cosmetic, the real dotted-path module name underneath is
+    unchanged. Unlike test cases/gap findings,
     this doesn't replace anything: existing labels for modules the model
     renames again are just overwritten, and labels for modules that no
     longer exist are left in place (harmless, unused until that module
@@ -707,7 +710,7 @@ def api_generate_module_labels(repo_id: str):
     if not run or not run.get("graph_path"):
         raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
     g = load_graph(run["graph_path"])
-    context = gap_analysis_context(g, [], require_docs=False)
+    context = gap_analysis_context(g, [], require_docs=False, include_ui_text=True)  # on-screen text is the best naming clue
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:
@@ -715,7 +718,7 @@ def api_generate_module_labels(repo_id: str):
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     db.set_module_labels(repo_id, labels)
-    return {"applied": len(labels), "labels": labels}
+    return {"applied": len(labels), "modules": labels}
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
