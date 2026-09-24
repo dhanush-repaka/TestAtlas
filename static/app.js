@@ -22,7 +22,10 @@ const ICON_LOCAL = `<svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-
 const ICON_ADO = `<svg class="ic" viewBox="0 0 24 24"><path d="M7 18a4 4 0 01-1-7.87A5 5 0 0116 8a4.5 4.5 0 011 8.9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 const ICON_GITHUB = `<svg class="ic" viewBox="0 0 24 24"><path d="M12 2a10 10 0 00-3.16 19.5c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.15-1.11-1.46-1.11-1.46-.9-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 015 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .26.18.58.69.48A10 10 0 0012 2z" fill="currentColor"/></svg>`;
 
+const ICON_UPLOAD = `<svg class="ic" viewBox="0 0 24 24"><path d="M12 16V4M12 4l-4 4M12 4l4 4M5 16v3a1 1 0 001 1h12a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
 function sourceIcon(sourceType) {
+  if (sourceType === "upload") return ICON_UPLOAD;
   if (sourceType === "local") return ICON_LOCAL;
   if (sourceType === "github_git") return ICON_GITHUB;
   return ICON_ADO;
@@ -148,6 +151,7 @@ function repoTileHtml(repo, latestRun) {
   const accentColor = { ok: "var(--ok)", warn: "var(--warn)", danger: "var(--danger)", none: "var(--border)" }[bucket];
   const meta =
     repo.source_type === "local" ? repo.local_path || ""
+    : repo.source_type === "upload" ? "Uploaded folder"
     : repo.source_type === "github_git" ? `${repo.github_owner}/${repo.github_repo}`
     : `${repo.ado_org}/${repo.ado_project}/${repo.ado_repo}`;
   const stats = latestRun && latestRun.status === "success" ? latestRun.stats || {} : null;
@@ -193,6 +197,7 @@ async function showRepoDetail(id) {
   $("#repoSourceChip").innerHTML = sourceIcon(repo.source_type);
   $("#repoSubtitle").textContent =
     repo.source_type === "local" ? `Local folder · ${repo.local_path}`
+    : repo.source_type === "upload" ? "Uploaded folder · Python files only, snapshot from your computer"
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
   activeModuleLabels = {};
@@ -584,6 +589,7 @@ function openRepoModal(repo = null) {
   $("#adoTestResult").textContent = "";
   $("#githubTestResult").textContent = "";
   editingRepoId = repo ? repo.id : null;
+  resetUploadSelection();
   $("#repoModalTitle").textContent = repo ? "Repo settings" : "Add repo";
   $("#repoSubmitBtn").textContent = repo ? "Save changes" : "Save repo";
 
@@ -592,6 +598,8 @@ function openRepoModal(repo = null) {
     setSourceType(repo.source_type);
     if (repo.source_type === "local") {
       $("#repoForm [name=local_path]").value = repo.local_path || "";
+    } else if (repo.source_type === "upload") {
+      $("#uploadSummary").textContent = "A folder is already uploaded. Choose a folder only if you want to replace it with a newer snapshot — leave this empty to just save other changes.";
     } else if (repo.source_type === "github_git") {
       $("#githubUrlInput").value = `https://github.com/${repo.github_owner}/${repo.github_repo}`;
       $("#repoForm [name=github_branch]").value = repo.github_branch || "main";
@@ -615,6 +623,7 @@ function setSourceType(value) {
   $("#sourceTypeInput").value = value;
   $all("#sourceSegmented .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === value));
   $("#localFields").hidden = value !== "local";
+  $("#uploadFields").hidden = value !== "upload";
   $("#adoFields").hidden = value !== "ado_git";
   $("#githubFields").hidden = value !== "github_git";
 }
@@ -650,6 +659,132 @@ async function browseForFolder() {
   }
 }
 
+// --------------------------------------------------------------------------- folder upload
+//
+// "Upload" source: analyze a folder from THIS computer even when the server is
+// somewhere else (the hosted site) -- the browser sends the folder's Python
+// files, the server stores them as a snapshot (server/uploads.py). Only .py
+// files are sent (all the parser reads), in batches because one request can't
+// carry thousands of files. The server re-validates everything; the filtering
+// here just avoids uploading junk.
+
+// Keep in sync with kg/python_ast_parser.py's _IGNORED_DIR_NAMES.
+const UPLOAD_IGNORED_DIRS = new Set([
+  ".git", "__pycache__", "node_modules", ".venv", "venv", "env",
+  "build", "dist", ".tox", ".mypy_cache", ".pytest_cache", "site-packages",
+]);
+const UPLOAD_BATCH_MAX_FILES = 150;
+const UPLOAD_BATCH_MAX_BYTES = 6 * 1024 * 1024; // well under any proxy's request-size limit
+
+let pendingUploadFolder = { name: "", files: [] }; // files: [{ file, path }], path relative to the chosen folder
+
+function formatBytes(n) {
+  return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024)).toLocaleString()} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resetUploadSelection() {
+  pendingUploadFolder = { name: "", files: [] };
+  $("#uploadFolderInput").value = "";
+  const summary = $("#uploadSummary");
+  if (summary.dataset.defaultText === undefined) summary.dataset.defaultText = summary.innerHTML;
+  summary.innerHTML = summary.dataset.defaultText;
+}
+
+function handleUploadFolderInput(ev) {
+  const files = Array.from(ev.target.files || []);
+  if (!files.length) { resetUploadSelection(); return; }
+
+  const root = (files[0].webkitRelativePath || "").split("/")[0] || "";
+  const picked = [];
+  let skipped = 0;
+  let bytes = 0;
+  for (const f of files) {
+    const rel = (f.webkitRelativePath || f.name).split("/").slice(1); // drop the picked folder's own name
+    const isPython = rel.length > 0 && /\.py$/i.test(rel[rel.length - 1]);
+    if (!isPython || rel.some((part) => UPLOAD_IGNORED_DIRS.has(part))) { skipped++; continue; }
+    picked.push({ file: f, path: rel.join("/") });
+    bytes += f.size;
+  }
+  pendingUploadFolder = { name: root, files: picked };
+
+  const summary = $("#uploadSummary");
+  if (!picked.length) {
+    summary.textContent = `No Python files found in “${root}”. Pick the folder that contains your code.`;
+    return;
+  }
+  summary.textContent =
+    `${picked.length.toLocaleString()} Python file${picked.length === 1 ? "" : "s"} (${formatBytes(bytes)}) from “${root}” will be uploaded` +
+    (skipped ? ` — ${skipped.toLocaleString()} other files skipped.` : ".");
+  if (!$("#repoNameInput").value.trim() && root) $("#repoNameInput").value = root;
+}
+
+async function uploadPendingFolder(repoId, onProgress) {
+  const batches = [];
+  let cur = [];
+  let curBytes = 0;
+  for (const item of pendingUploadFolder.files) {
+    if (cur.length && (cur.length >= UPLOAD_BATCH_MAX_FILES || curBytes + item.file.size > UPLOAD_BATCH_MAX_BYTES)) {
+      batches.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(item);
+    curBytes += item.file.size;
+  }
+  if (cur.length) batches.push(cur);
+
+  let saved = 0;
+  const skipped = {};
+  for (let i = 0; i < batches.length; i++) {
+    onProgress(i + 1, batches.length);
+    const fd = new FormData();
+    fd.append("reset", i === 0 ? "true" : "false"); // the first batch replaces any previous snapshot
+    for (const { file, path } of batches[i]) fd.append("files", file, path); // 3rd arg = the path relative to the folder
+    const r = await api(`/repos/${repoId}/upload-files`, { method: "POST", body: fd, headers: {} });
+    saved += r.saved;
+    for (const [reason, n] of Object.entries(r.skipped || {})) skipped[reason] = (skipped[reason] || 0) + n;
+  }
+  return { saved, skipped };
+}
+
+async function submitUploadRepo(payload) {
+  const hasFiles = pendingUploadFolder.files.length > 0;
+  const alreadyUpload = editingRepoId && repos.find((r) => r.id === editingRepoId)?.source_type === "upload";
+  if (!hasFiles && !alreadyUpload) { toast("Choose a folder to upload first", "error"); return; }
+
+  const btn = $("#repoSubmitBtn");
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  let createdId = null;
+  try {
+    let repo;
+    if (editingRepoId) {
+      repo = await api(`/repos/${editingRepoId}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      repo = await api("/repos", { method: "POST", body: JSON.stringify(payload) });
+      createdId = repo.id;
+    }
+    let result = null;
+    if (hasFiles) result = await uploadPendingFolder(repo.id, (i, n) => { btn.textContent = `Uploading ${i} of ${n}…`; });
+    closeRepoModal();
+    await loadRepos();
+    showRepoDetail(repo.id);
+    if (result) {
+      const extra = Object.values(result.skipped).reduce((a, b) => a + b, 0);
+      toast(`Uploaded ${result.saved.toLocaleString()} Python file${result.saved === 1 ? "" : "s"}${extra ? ` (${extra} skipped)` : ""} — run analysis to build the graph`, "ok");
+    } else {
+      toast("Repo settings saved", "ok");
+    }
+  } catch (e) {
+    // A brand-new repo whose upload failed would just be an empty shell -- don't leave it behind.
+    if (createdId) await api(`/repos/${createdId}`, { method: "DELETE" }).catch(() => {});
+    toast(`Upload failed: ${e.message}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 async function submitRepoForm(ev) {
   ev.preventDefault();
   const form = ev.target;
@@ -658,6 +793,7 @@ async function submitRepoForm(ev) {
     name: fd.get("name"),
     source_type: fd.get("source_type"),
   };
+  if (payload.source_type === "upload") return submitUploadRepo(payload);
   if (payload.source_type === "local") {
     payload.local_path = fd.get("local_path");
   } else if (payload.source_type === "github_git") {
@@ -1255,6 +1391,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#repoForm").addEventListener("submit", submitRepoForm);
   $all("#sourceSegmented .seg-btn").forEach((b) => b.addEventListener("click", () => setSourceType(b.dataset.value)));
   $("#browseFolderBtn").addEventListener("click", browseForFolder);
+  $("#chooseUploadFolderBtn").addEventListener("click", () => $("#uploadFolderInput").click());
+  $("#uploadFolderInput").addEventListener("change", handleUploadFolderInput);
   $("#testAdoBtn").addEventListener("click", testAdoFromModal);
   $("#testGithubBtn").addEventListener("click", testGithubFromModal);
 

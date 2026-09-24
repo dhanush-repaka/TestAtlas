@@ -44,7 +44,7 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
 
 ## What you can do in the UI
 
-- **Add repo** (top bar) — three source types:
+- **Add repo** (top bar) — four source types:
   - **Local folder**: point at a checkout already on disk -- type/paste the
     path, or click **Browse…** to pick it in your OS's own folder dialog
     (macOS, Windows, or Linux with `zenity`/`kdialog`). A web page can never
@@ -54,13 +54,29 @@ add an ADO or GitHub repo (not needed for "Local folder" repos).
     only to a same-machine (loopback) client, and never appears on a
     deployed instance like Fly, where you'd type the path of something
     already on that server instead.
+  - **Upload**: for a deployed instance, where a "Local folder" path would
+    point at the *server's* disk rather than your files. Pick a folder on
+    your computer and the browser uploads its Python files (in batches, since
+    one request can't carry thousands); they're stored as a snapshot in the
+    repo's own workspace directory and analyzed like any other checkout.
+    Only `.py` files are ever sent or stored -- that's all the parser reads --
+    with the parser's ignore list (`.git`, `node_modules`, virtualenvs, ...)
+    applied both in the browser and again on the server, so nothing else
+    reaches the volume. It's a snapshot, not a live link: to pick up later
+    changes, open Settings and upload the folder again (that replaces the
+    old snapshot). The server treats filenames as untrusted input: paths are
+    normalized and rejected if absolute, drive-lettered, or containing `..`,
+    and there are caps on per-file size (2 MB), file count (20,000) and total
+    size (200 MB) per repo, sized for a small machine. Deleting the repo
+    deletes its uploaded files too. Not a substitute for GitHub/Azure DevOps
+    sources when you want the graph to track a repo over time.
   - **GitHub**: paste a repo URL (`https://github.com/owner/repo`). Public repos
     need no token at all; private ones need a PAT with `repo` (classic) or
     `Contents: Read` (fine-grained) scope.
   - **Azure DevOps**: paste the repo's clone URL + a PAT with **Code (Read)**
     scope. "Test connection" validates either before you save.
   - Add as many repos as you want — each is analyzed and versioned independently.
-- **Run analysis** — clones/pulls (ADO/GitHub) or reads (local) the repo,
+- **Run analysis** — clones/pulls (ADO/GitHub), reads (local), or uses the uploaded snapshot of, the repo,
   parses every `.py` file, builds the graph, scores modules, computes findings,
   and stores a timestamped **run**. Syncs to Neo4j automatically if configured.
 - **Overview** — node/edge/module/file counts, the actual module list (name,
@@ -200,6 +216,7 @@ server/
   app.py                FastAPI routes
   doc_extract.py         extracts text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt files
   folder_picker.py       opens the OS "choose a folder" dialog on the server's own machine
+  uploads.py             stores a browser-uploaded folder (Python files only) as a repo's source, with strict path/size validation
   llm_gap_analysis.py    optional: doc-vs-code comparison via a live OpenAI API
                           call (OPENAI_API_KEY) -- one of three metered features here
   llm_test_generation.py optional: designs test cases via a live OpenAI API

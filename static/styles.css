@@ -289,9 +289,9 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .field-group[hidden] { display: none; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-.segmented { display: flex; gap: 4px; background: var(--panel-2); padding: 4px; border-radius: var(--radius); border: 1px solid var(--border-soft); }
+.segmented { display: flex; flex-wrap: wrap; gap: 4px; background: var(--panel-2); padding: 4px; border-radius: var(--radius); border: 1px solid var(--border-soft); }
 .seg-btn {
-  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
   background: none; border: none; color: var(--muted); padding: 8px 10px; border-radius: 7px;
   font-size: 12.5px; font-weight: 650; font-family: inherit; cursor: pointer;
 }

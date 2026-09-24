@@ -24,7 +24,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS repos (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    source_type TEXT NOT NULL,        -- 'local' | 'ado_git' | 'github_git'
+    source_type TEXT NOT NULL,        -- 'local' | 'ado_git' | 'github_git' | 'upload'
     framework TEXT NOT NULL DEFAULT 'python_devcode',  -- reserved for future non-Python parsers
     local_path TEXT,
     ado_org TEXT,

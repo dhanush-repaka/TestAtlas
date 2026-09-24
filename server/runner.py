@@ -32,6 +32,16 @@ def resolve_source_dir(repo: dict) -> Path:
             raise RuntimeError(f"local_path does not exist or is not a directory: {path}")
         return path
 
+    if repo["source_type"] == "upload":
+        # A folder the user uploaded from their browser (server/uploads.py) --
+        # already sitting in this repo's workspace dir, no clone needed.
+        dest = WORKSPACE_DIR / repo["id"]
+        if not dest.is_dir() or not any(dest.rglob("*.py")):
+            raise RuntimeError(
+                "No folder has been uploaded for this repo yet -- open Settings and choose a folder to upload."
+            )
+        return dest
+
     if repo["source_type"] == "ado_git":
         pat = repo.get("ado_pat") or ""
         if not pat:

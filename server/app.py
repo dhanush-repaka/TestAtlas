@@ -10,6 +10,7 @@ from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from ado import client as ado_client
@@ -21,7 +22,7 @@ from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation
+from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation, uploads
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -96,7 +97,7 @@ async def login_submit(request: Request):
 
 class RepoIn(BaseModel):
     name: str
-    source_type: str  # 'local' | 'ado_git' | 'github_git'
+    source_type: str  # 'local' | 'ado_git' | 'github_git' | 'upload' (files sent via POST /repos/{id}/upload-files)
     local_path: Optional[str] = None
     ado_url: Optional[str] = None  # e.g. https://dev.azure.com/{org}/{project}/_git/{repo}
     ado_branch: Optional[str] = "main"
@@ -168,8 +169,8 @@ def api_list_repos():
 
 @api.post("/repos")
 def api_create_repo(payload: RepoIn):
-    if payload.source_type not in ("local", "ado_git", "github_git"):
-        raise HTTPException(400, "source_type must be 'local', 'ado_git', or 'github_git'")
+    if payload.source_type not in ("local", "ado_git", "github_git", "upload"):
+        raise HTTPException(400, "source_type must be 'local', 'ado_git', 'github_git', or 'upload'")
     if payload.source_type == "local" and not payload.local_path:
         raise HTTPException(400, "local_path is required for source_type='local'")
     if payload.source_type == "ado_git" and not all([payload.ado_url, payload.ado_pat]):
@@ -191,10 +192,43 @@ def api_update_repo(repo_id: str, payload: RepoUpdate):
 
 @api.delete("/repos/{repo_id}")
 def api_delete_repo(repo_id: str):
-    if not db.get_repo(repo_id):
+    repo = db.get_repo(repo_id)
+    if not repo:
         raise HTTPException(404, "repo not found")
     db.delete_repo(repo_id)
+    if repo["source_type"] == "upload":
+        uploads.remove(repo_id)  # the uploaded snapshot has no other owner -- don't leave it on the volume
     return {"ok": True}
+
+
+@api.post("/repos/{repo_id}/upload-files")
+async def api_upload_repo_files(repo_id: str, files: list[UploadFile] = File(...), reset: bool = Form(False)):
+    """Receives one batch of a browser-side folder upload (source_type
+    'upload' repos only). Each part's *filename* carries the file's path
+    relative to the chosen folder. Sent in batches because a real repo can
+    have more files than one multipart request will accept; `reset` is set on
+    a re-upload's first batch to replace the previous snapshot. See
+    server/uploads.py for what's accepted and why it's strict."""
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    if repo["source_type"] != "upload":
+        raise HTTPException(400, "this repo's source isn't an uploaded folder")
+
+    items: list[tuple[str, bytes]] = []
+    oversized = 0
+    for f in files:
+        if f.size is not None and f.size > uploads.MAX_FILE_BYTES:
+            oversized += 1  # counted, not read into memory
+            continue
+        items.append((f.filename or "", await f.read()))
+    try:
+        result = await run_in_threadpool(uploads.save_files, repo_id, items, reset)
+    except uploads.UploadTooLarge as e:
+        raise HTTPException(413, str(e))
+    if oversized:
+        result["skipped"]["too_large"] = result["skipped"].get("too_large", 0) + oversized
+    return result
 
 
 @api.post("/repos/{repo_id}/test-connection")
@@ -210,6 +244,13 @@ def api_test_connection(repo_id: str):
         return {
             "ok": bool(py_files),
             "message": f"Found .py files: {'yes' if py_files else 'none'}",
+        }
+    if repo["source_type"] == "upload":
+        count, size = uploads.dir_stats(uploads.upload_dir(repo_id))
+        return {
+            "ok": count > 0,
+            "message": f"{count:,} Python file{'s' if count != 1 else ''} uploaded ({size / 1024:,.0f} KB)"
+            if count else "Nothing uploaded yet -- open Settings and choose a folder to upload.",
         }
     if repo["source_type"] == "github_git":
         ok, message = github_client.test_connection(
