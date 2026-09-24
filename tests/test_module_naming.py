@@ -115,6 +115,17 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(out["lib.shopify.queries"]["name"], "Product Data Retrieval")
         self.assertEqual(out["next.config"]["name"], "Site Settings")
 
+    def test_the_root_route_folder_with_a_page_file_is_the_home_page(self):
+        root = mod("app", [{"file": "app.page", "purpose": None, "classes": [], "functions": ["HomePage"]}])
+        nested = mod("app.search", [{"file": "app.search.page", "purpose": None, "classes": [], "functions": ["SearchPage"]}])
+        no_page = mod("app", [{"file": "app.robots", "purpose": None, "classes": [], "functions": ["robots"]}])
+        out, _ = self._run([{"modules": {"app": {"name": "Site Layout", "kind": "supporting"},
+                                         "app.search": {"name": "Search Page", "kind": "feature"}}}], [root, nested])
+        self.assertEqual((out["app"]["name"], out["app"]["kind"]), ("Home Page", "feature"))
+        self.assertEqual(out["app.search"]["name"], "Search Page")             # only the ROOT route folder
+        out, _ = self._run([{"modules": {"app": {"name": "Crawler Files", "kind": "supporting"}}}], [no_page])
+        self.assertEqual(out["app"]["name"], "Crawler Files")                  # no page file, no home page
+
     def test_no_second_call_when_every_name_is_plain(self):
         _, client = self._run([{"modules": {"components.cart": {"name": "Shopping Cart"}}}], [CART])
         self.assertEqual(client.chat.completions.create.call_count, 1)

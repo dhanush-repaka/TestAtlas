@@ -267,19 +267,28 @@ The graph schema itself doesn't change for this — it's a rollup computed from
 `domain`, not new node types or edges, so it works the same locally and once
 synced to Neo4j.
 
-**Friendly display names**: `domain` itself stays a technical, stable
-identifier (a dotted package path like `kg` or `src.itsdangerous.signer`) --
-it's the key everything else keys off of (per-module test generation, doc
-gap grouping, Compare Runs). A separate "Generate friendly module names"
-button (Overview tab, gated on `OPENAI_API_KEY`, `server/llm_module_naming.py`)
-makes one live OpenAI call naming every module in a repo at once (e.g. `kg`
--> "Knowledge Graph Engine") for a non-technical audience, purely as a
-cosmetic label shown next to the raw name everywhere modules appear. Unlike
-per-run domain overrides above (which the graph itself carries, and a fresh
-`Run analysis` wipes), friendly names live in their own table keyed by
-`(repo_id, module)` -- not tied to any run -- so they survive re-analysis
-indefinitely without needing to be regenerated. Falls back to the raw
-technical name anywhere a module hasn't been named yet.
+**Plain-English module names**: `domain` itself stays a technical, stable
+identifier (a dotted package path like `components.cart` or
+`app.product.[handle]`) -- it's the key everything else keys off of
+(per-module test generation, doc gap grouping, Compare Runs). A separate
+"Give modules plain-English names" button (Overview tab, gated on
+`OPENAI_API_KEY`, `server/llm_module_naming.py`) names every module for a
+non-technical business analyst: the SCREEN or FEATURE it powers, in the words
+someone using the running product would say ("Shopping Cart", "Product Page",
+"Navigation Bar", "Home Page"), plus a one-sentence description and a `kind`
+-- *feature* (something a person sees or uses) or *supporting* (data access,
+settings, helpers -- tucked under "Behind the scenes"). The model is given real
+clues: the on-screen text extracted from JSX (button labels, headings,
+messages), file names, and how route folders map to pages (`app/product/[handle]`
+= the page for one product). Names are checked, not trusted: any that still use
+developer words ("Queries", "Config", "Library") are re-asked, and the root
+route folder's `page` file is always the Home Page. The name and description
+also go into that module's test-case prompt.
+Names live in their own table keyed by `(repo_id, module)` -- not tied to a
+run -- so they survive re-analysis, and fall back to the raw technical name
+wherever a module hasn't been named yet. Limit: modules are folders, so a
+screen split across folders shows as separate entries, and things like
+product collections ("Shirts") are store data, not code, so they can't appear.
 
 ## Architecture
 

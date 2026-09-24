@@ -49,6 +49,7 @@ _MAX_FILES = 8
 # module is always named with the whole app in view.
 _BATCH_SIZE = 60
 _MAX_TOKENS_PER_BATCH = 8000
+_RENAME_ROUNDS = 2  # re-asks for names that still sound like code
 
 
 def _leaf(file_label: str, module: str) -> str:
@@ -143,6 +144,17 @@ def _dev_speak(name: str) -> bool:
     return bool(_DEV_WORDS.search(name))
 
 
+# The folder that holds the site's root route (Next.js `app/`, `src/app/`, `pages/`): its
+# `page` (or `index`) file IS the home page. gpt-4o-mini kept calling it "Site Layout" or
+# "Application" even with that rule in the prompt, and it's the one screen every BA looks
+# for first -- so this is decided from the file names, not left to the model.
+_ROUTE_ROOTS = {"app", "pages"}
+
+
+def _is_home_page_module(summary: dict) -> bool:
+    return summary["module"].rsplit(".", 1)[-1] in _ROUTE_ROOTS and any(f in ("page", "index") for f in summary.get("files", []))
+
+
 def _build_rename_prompt(batch: list[dict], outline: list[str], current: dict[str, str]) -> str:
     listed = "\n".join(f'  - "{m}" is currently called "{n}"' for m, n in current.items())
     return _build_prompt(batch, outline) + f"""
@@ -208,10 +220,17 @@ def generate_module_names(context: dict, model: str | None = None) -> dict[str, 
 
     # Verify, don't trust: re-ask once, for just the names that still sound like code.
     by_module = {s["module"]: s for s in summaries}
-    offenders = [m for m, e in out.items() if _dev_speak(e["name"])]
-    for i in range(0, len(offenders), _BATCH_SIZE):
-        chunk = offenders[i:i + _BATCH_SIZE]
-        prompt = _build_rename_prompt([by_module[m] for m in chunk], outline, {m: out[m]["name"] for m in chunk})
-        for module, entry in _ask(client, model, prompt, set(chunk)).items():
-            out[module] = entry  # even a second-try name that's still imperfect beats the first
+    for _ in range(_RENAME_ROUNDS):
+        offenders = [m for m, e in out.items() if _dev_speak(e["name"])]
+        if not offenders:
+            break
+        for i in range(0, len(offenders), _BATCH_SIZE):
+            chunk = offenders[i:i + _BATCH_SIZE]
+            prompt = _build_rename_prompt([by_module[m] for m in chunk], outline, {m: out[m]["name"] for m in chunk})
+            for module, entry in _ask(client, model, prompt, set(chunk)).items():
+                out[module] = entry  # a retry that's still imperfect beats the first try
+
+    for module, entry in out.items():
+        if _is_home_page_module(by_module[module]) and "home" not in entry["name"].lower():
+            entry.update(name="Home Page", kind="feature")
     return out
