@@ -125,8 +125,8 @@ def screen_parts(g: nx.MultiDiGraph, module: str, labels: dict[str, dict] | None
     other folders), so a module's own contents alone describe almost none of what
     a user sees on it. CALLS edges (JSX tags count as calls -- kg/ts_parser.py)
     say which parts it renders.
-    Parts in modules the labels mark `supporting` (data access, config) are left
-    out: they draw nothing. Each part is {name, module, display_name?, ui_text?}."""
+    Non-component parts in modules the labels mark `supporting` (data access,
+    config) are left out: they draw nothing. Each part is {name, module, display_name?, ui_text?}."""
     labels = labels or {}
     file_of: dict[str, str] = {}
     for u, v, d in g.edges(data=True):
@@ -151,9 +151,13 @@ def screen_parts(g: nx.MultiDiGraph, module: str, labels: dict[str, dict] | None
             other = domain(callee)
             if e.get("relation") != "CALLS" or not other or other == module:
                 continue
-            if labels.get(other, {}).get("kind") == "supporting":
-                continue
             name = g.nodes[callee]["label"]
+            # A `supporting` label means the module mostly draws nothing -- but the naming
+            # model also files mixed folders there (a `components` folder with a Carousel
+            # in it), so a JSX component (PascalCase, in a TS/JS file) always counts.
+            is_component = name[:1].isupper() and g.nodes[file_of[callee]].get("language") in ("typescript", "javascript")
+            if labels.get(other, {}).get("kind") == "supporting" and not is_component:
+                continue
             if name in parts:
                 continue
             part = {"name": name, "module": other}

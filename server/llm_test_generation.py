@@ -120,7 +120,7 @@ def _target_case_count(context: dict) -> int:
     # on the page, and each on-screen string is something a user reads.
     parts = context.get("parts") or []
     ui_strings = sum(len(f.get("ui_text", [])) for m in context["modules"] for f in m["files"] if not _is_test_file(f["file"]))
-    wanted = real_units * 0.4 + len(parts) * 1.0 + ui_strings * 0.5
+    wanted = real_units * 0.4 + len(parts) * 1.5 + ui_strings * 0.5
     floor = _FEATURE_FLOOR if context.get("kind") == "feature" else 3
     return max(floor, min(HARD_CASE_CAP, round(wanted)))
 

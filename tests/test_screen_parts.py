@@ -41,8 +41,15 @@ class ScreenPartsTests(unittest.TestCase):
 
     def test_supporting_modules_are_left_out_when_labelled_and_own_module_never_appears(self):
         parts = {p["name"] for p in screen_parts(self.g, "app", {"lib": {"kind": "supporting"}})}
-        self.assertEqual(parts, {"Carousel", "Footer"})
+        self.assertEqual(parts, {"Carousel", "Footer"})     # getItems lives in the supporting `lib`
         self.assertNotIn("HomePage", {p["name"] for p in screen_parts(self.g, "app")})
+
+    def test_a_component_in_a_module_labelled_supporting_still_counts(self):
+        # the naming model filed a mixed `components` folder as "supporting"; its Carousel is still on screen
+        labels = {"components": {"kind": "supporting"}, "lib": {"kind": "supporting"}}
+        names = {p["name"] for p in screen_parts(self.g, "app", labels)}
+        self.assertIn("Carousel", names)        # PascalCase component -> kept
+        self.assertNotIn("getItems", names)     # camelCase data function in a supporting module -> dropped
 
     def test_context_carries_parts_and_kind(self):
         labels = {"app": {"name": "Home Page", "kind": "feature"}, "components.layout": {"name": "Page Footer", "kind": "feature"}}
