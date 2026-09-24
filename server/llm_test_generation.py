@@ -176,7 +176,7 @@ A functional test case verifies that a feature works from the OUTSIDE, the way a
 - If the module has a user interface: write from the user's side of the screen -- pages, buttons, forms, messages. Where "ui_text" is listed, those are the REAL strings on screen: quote them verbatim in your steps (click "Add To Cart"). Do NOT invent label or message text that isn't listed; when you need to refer to something whose exact wording you weren't given, describe it instead ("the checkout button", "the search field", "an error message saying the email is invalid").
 - Do not assume the UI offers an action in a state where it plausibly doesn't. If ui_text shows an empty-state message ("Your cart is empty.") and no control for the action you're imagining, the expected result for that state is the message itself -- not an error triggered by a button that likely isn't there.
 - If the module has no UI (a library, API or service): write from the consumer's side of its public interface -- what they call or send, and the observable result or response.
-- Describe everything the way a person using the product would, never the way the code names it. Titles and steps must not contain the words function, method, class, handler, endpoint or API, nor code identifiers such as getCart -- say "the shopping cart", "the search box". A case about a code unit ("Verify that the sitemap function is accessible") is a unit test and will be rejected.
+- If the module has a user interface, describe everything the way a person using the product would, never the way the code names it. Titles and steps must not contain the words function, method, class, handler, endpoint or API, nor code identifiers such as getCart -- say "the shopping cart", "the search box". A case about a code unit ("Verify that the sitemap function is accessible") is a unit test and will be rejected.
 - Files that only produce machine-readable output for search engines or crawlers (robots, sitemap, manifest, social-preview images) or that are API routes are not screens: write no cases for them.
 - If the module has no user- or consumer-visible behavior of its own (pure types, config or constants, internal plumbing, or it is itself test code such as a `tests` package or `*.test`/`*.spec` files), respond with {{"test_cases": []}}. Do not force scenarios out of internals.
 
@@ -276,13 +276,18 @@ _CODE_WORDS = re.compile(r"\b(functions?|methods?|class(?:es)?|handlers?|endpoin
 _IDENTIFIER = re.compile(r"\b[a-z]+(?:[A-Z][a-z0-9]+)+\b")      # getCart, addItem -- never a phrase a user would say
 
 
+def _has_ui(context: dict) -> bool:
+    """A module with a screen: on-screen text was found in it, or it renders other parts."""
+    return bool(context.get("parts")) or any(f.get("ui_text") for m in context["modules"] for f in m["files"])
+
+
 def _code_speak(title: str, steps: list[dict]) -> str | None:
     text = " ".join([title] + [f'{s["action"]} {s["expected"]}' for s in steps])
     m = _CODE_WORDS.search(text) or _IDENTIFIER.search(text)
     return m.group(0) if m else None
 
 
-def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
+def _check_case(c, canon: dict[str, str], ui: bool = False) -> tuple[dict | None, str | None]:
     """One raw model case -> (validated case, None), or (None, why it was
     rejected). A usable functional case needs a title, a known category, and at
     least MIN_STEPS steps that EACH have an action and their own expected
@@ -311,7 +316,9 @@ def _check_case(c, canon: dict[str, str]) -> tuple[dict | None, str | None]:
         steps.append({"action": action, "expected": expected})
     if len(steps) < MIN_STEPS:
         return None, "no steps"
-    code_word = _code_speak(title, steps)
+    # Only for a module with a screen. For a library or API the consumer's side of it IS code
+    # ("the /users endpoint returns 404"), so those words are exactly right there.
+    code_word = _code_speak(title, steps) if ui else None
     if code_word:
         return None, f'reads like a unit test -- mentions "{code_word}"'
 
@@ -466,12 +473,13 @@ def generate_test_cases(context: dict, model: str | None = None) -> GenerationRe
     max_tokens = min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + target * _TOKENS_PER_CASE)
 
     canon = _known_code_names(context)
+    ui = _has_ui(context)
     result = GenerationResult(cases=[])
 
     def take(raw_cases: list) -> None:
         seen = {c["title"].lower() for c in result.cases}
         for raw in raw_cases[:HARD_CASE_CAP]:
-            case, why = _check_case(raw, canon)
+            case, why = _check_case(raw, canon, ui)
             if case is None:
                 result.dropped.append(why or "invalid")
             elif case["title"].lower() not in seen and len(result.cases) < HARD_CASE_CAP:
@@ -493,7 +501,7 @@ def generate_test_cases(context: dict, model: str | None = None) -> GenerationRe
         prompt = _build_deepen_prompt(context, thin, must)
         by_title = {c["title"].lower(): i for i, c in enumerate(result.cases)}
         for raw in _ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
-            case, _ = _check_case(raw, canon)
+            case, _ = _check_case(raw, canon, ui)
             i = by_title.get(case["title"].lower()) if case else None
             if i is not None and len(case["steps"]) > len(result.cases[i]["steps"]):
                 result.cases[i] = case

@@ -131,12 +131,20 @@ class PromptAndCountTests(unittest.TestCase):
         step = [{"action": "Open the page", "expected": "It loads"}]
         for title in ("Verify that the robots function is accessible", "Verify that getCart returns an empty cart",
                       "Verify that the sitemap endpoint responds", "Verify that the API handler rejects bad input"):
-            case, why = gen._check_case(good_case(title=title, steps=step), {})
+            case, why = gen._check_case(good_case(title=title, steps=step), {}, ui=True)
             self.assertIsNone(case, title)
             self.assertIn("unit test", why)
         case, _ = gen._check_case(good_case(title="Verify that the cart shows an empty message",
                                             steps=[{"action": 'Click "Add To Cart"', "expected": "The cart opens"}]), {})
         self.assertIsNotNone(case)                                              # ordinary wording still passes
+
+    def test_code_words_are_fine_for_a_module_with_no_screen(self):
+        # a Python API / library: the consumer's side of it is code, so "endpoint" and "API" are the right words
+        case, _ = gen._check_case(good_case(title="Verify that the /users endpoint returns 404 for an unknown id",
+                                            steps=[{"action": "Send GET /users/999", "expected": "The API responds 404"}]), {}, ui=False)
+        self.assertIsNotNone(case)
+        self.assertTrue(gen._has_ui(CONTEXT))                                   # CONTEXT has on-screen text
+        self.assertFalse(gen._has_ui({"modules": [{"module": "api", "files": [{"file": "api.x", "functions": ["f"], "classes": []}]}]}))
 
     def test_prompt_describes_contains_and_loads_and_forbids_code_words(self):
         ctx = {**CONTEXT, "parts": [{"name": "Navbar", "module": "components", "contains": ["MobileMenu", "Search"], "loads": ["getMenu"]}]}
