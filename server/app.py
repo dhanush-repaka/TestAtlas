@@ -8,7 +8,7 @@ from typing import Optional
 import networkx as nx
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -23,7 +23,7 @@ from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_g
 from kg.graph_io import load_graph, save_graph
 from kg.repo_parser import has_source_files
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation, uploads
+from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation, test_export, uploads
 from .diff import diff_runs
 from .runner import run_analysis
 
@@ -676,6 +676,29 @@ def api_list_test_cases(repo_id: str):
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
     return db.list_test_cases(repo_id)
+
+
+@api.get("/repos/{repo_id}/test-cases/export")
+def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", category: str = ""):
+    """Downloads the repo's generated test cases as a file -- `csv` (Azure DevOps Test
+    Plans import shape, opens in Excel), `md` (readable document) or `json`. `module`
+    and `category` narrow it the same way the Test Cases tab's filters do."""
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    if format not in test_export.FORMATS:
+        raise HTTPException(400, f"format must be one of: {', '.join(test_export.FORMATS)}")
+    cases = [c for c in db.list_test_cases(repo_id)
+             if (not module or c.get("module") == module) and (not category or c.get("category") == category)]
+    if not cases:
+        raise HTTPException(404, "no test cases to export -- generate some first")
+    labels = db.get_module_label_details(repo_id)
+    body = {"csv": lambda: test_export.to_csv(cases, labels),
+            "md": lambda: test_export.to_markdown(cases, labels, repo["name"]),
+            "json": lambda: test_export.to_json(cases, labels)}[format]()
+    media_type, ext = test_export.FORMATS[format]
+    return Response(body, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{test_export.filename(repo["name"], ext)}"'})
 
 
 @api.get("/test-generation/config")

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=32" />
+<link rel="stylesheet" href="static/styles.css?v=33" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -196,6 +196,12 @@
               <option value="error_handling">Error handling</option>
             </select>
           </label>
+          <span class="export-group" id="testCaseExport" role="group" aria-label="Export the test cases shown">
+            <span class="small muted">Export</span>
+            <a class="btn btn-sm" data-format="csv" href="#" title="Azure DevOps Test Plans import format — also opens in Excel">CSV (Azure DevOps)</a>
+            <a class="btn btn-sm" data-format="md" href="#" title="A readable document">Markdown</a>
+            <a class="btn btn-sm" data-format="json" href="#" title="Everything, for scripts and other tools">JSON</a>
+          </span>
         </div>
         <div id="testCaseListAll"></div>
       </section>
@@ -317,6 +323,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=38"></script>
+  <script src="static/app.js?v=39"></script>
 </body>
 </html>

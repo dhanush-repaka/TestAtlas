@@ -461,3 +461,8 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
   .tile-grid { grid-template-columns: 1fr; }
   .modal { width: calc(100vw - 32px); }
 }
+
+/* Test-case export links, at the right of the filter row */
+.export-group { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.export-group a.btn { text-decoration: none; }
+.export-group a.is-disabled { opacity: .45; pointer-events: none; }

@@ -1217,10 +1217,28 @@ function populateTestCaseModuleFilter() {
   sel.value = modules.includes(prev) ? prev : "";
 }
 
+// The export links follow the module/category filters above them, so "export what I'm looking at" is one click.
+// Plain links (the session cookie rides along), so the browser does the download and no data passes through JS.
+function updateExportLinks(count) {
+  const params = new URLSearchParams();
+  const mod = $("#testCaseFilterModuleSelect").value;
+  const cat = $("#testCaseFilterCategorySelect").value;
+  if (mod) params.set("module", mod);
+  if (cat) params.set("category", cat);
+  for (const a of $all("#testCaseExport a")) {
+    params.set("format", a.dataset.format);
+    a.href = `${API}/repos/${activeRepoId}/test-cases/export?${params}`;
+    a.classList.toggle("is-disabled", !count);
+    a.setAttribute("aria-disabled", String(!count));
+  }
+  $("#testCaseExport").classList.toggle("is-hidden", !activeTestCases.length);
+}
+
 function renderTestCaseList() {
   const modFilter = $("#testCaseFilterModuleSelect").value;
   const catFilter = $("#testCaseFilterCategorySelect").value;
   const rows = activeTestCases.filter((c) => (!modFilter || c.module === modFilter) && (!catFilter || c.category === catFilter));
+  updateExportLinks(rows.length);
   const el = $("#testCaseListAll");
   if (!rows.length) {
     el.innerHTML = `<p class="muted small">${activeTestCases.length ? "No test cases match this filter." : "No test cases yet — generate a module above."}</p>`;
