@@ -67,6 +67,32 @@ Everything in `.env` is optional. The ones that matter for a pilot:
 | `OPENAI_BASE_URL` | Send those calls to an OpenAI-compatible endpoint you control (an internal gateway) instead of `api.openai.com`. |
 | `DATA_ROOT` | Where the database, run history, saved-token key and cloned repos live. Point it at a backed-up path. |
 
+A sample `.env` for a shared pilot server (all values below are placeholders — use
+your own; the full commented template is [.env.example](.env.example)):
+
+```bash
+# Access
+TESTATLAS_PASSWORD=change-me-to-a-long-passphrase
+TESTATLAS_SECRET=paste-a-random-string-here      # python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# AI features (optional)
+OPENAI_API_KEY=sk-your-key-here
+OPENAI_TEST_MODEL=gpt-4o-mini
+# OPENAI_BASE_URL=https://ai-gateway.yourcompany.com/v1   # only if using an internal gateway
+
+# Where data lives
+DATA_ROOT=/var/lib/testatlas
+
+# Leave commented out unless you need them
+# BASE_PATH=/testatlas
+# NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+# NEO4J_USER=neo4j
+# NEO4J_PASSWORD=
+```
+
+For a quick solo trial on your own laptop, one line is enough:
+`OPENAI_API_KEY=sk-your-key-here` (no login, data stays in the app folder).
+
 **How it stays safe:**
 
 - **Real environment variables always win** over `.env` (`server/env_file.py`).
