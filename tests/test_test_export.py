@@ -35,9 +35,20 @@ class CsvTests(unittest.TestCase):
         self.assertEqual((head[col["Step Action"]], head[col["Step Expected"]]), ('Click "Add To Cart"', "The cart shows 1 item"))
         self.assertEqual(head[col["Priority"]], "1")
         self.assertIn("Preconditions: A product page is open", head[col["Description"]])
+        self.assertIn("Code traceability: module components.cart; covers AddToCart", head[col["Description"]])
         self.assertEqual(head[col["Tags"]], "Shopping Cart; Happy path; Add to cart")     # plain-English module name, not the dotted one
         for step, n in ((s2, "2"), (s3, "3")):                                            # later steps carry no case fields
             self.assertEqual((step[col["Work Item Type"]], step[col["Title"]], step[col["Test Step"]]), ("", "", n))
+
+    def test_traceability_lists_module_and_covered_code_and_degrades_gracefully(self):
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        many = {**CASE, "covers": ["AddToCart", "CartService.addItem", "CartModal"]}
+        self.assertIn("covers AddToCart, CartService.addItem, CartModal", rows(ex.to_csv([many], LABELS))[1][col["Description"]])
+        none = {**CASE, "covers": []}
+        d = rows(ex.to_csv([none], LABELS))[1][col["Description"]]
+        self.assertTrue(d.endswith("Code traceability: module components.cart"))         # module still traced
+        bare = {"title": "t", "category": "happy_path", "steps": [{"action": "a", "expected": "e"}]}
+        self.assertEqual(rows(ex.to_csv([bare], LABELS))[1][col["Description"]], "")     # nothing to trace, nothing added
 
     def test_bom_for_excel_and_commas_quotes_newlines_survive(self):
         tricky = {**CASE, "title": 'Verify "quoted", commas', "steps": [{"action": "Line one\nline two", "expected": "a, b"}]}
@@ -60,7 +71,7 @@ class MarkdownAndJsonTests(unittest.TestCase):
     def test_markdown_groups_by_module_name_with_a_steps_table(self):
         md = ex.to_markdown([CASE, LEGACY], LABELS, "commerce")
         for needle in ("# Test cases: commerce", "## Shopping Cart", "_Add and remove items._", "### Verify that a shopper can add a product",
-                       "**Preconditions:** A product page is open", "| 1 | Click \"Add To Cart\" | The cart shows 1 item |", "Priority 1 · Happy path · Add to cart"):
+                       "**Preconditions:** A product page is open", "_Code traceability: module components.cart; covers AddToCart_", "| 1 | Click \"Add To Cart\" | The cart shows 1 item |", "Priority 1 · Happy path · Add to cart"):
             self.assertIn(needle, md)
         self.assertEqual(md.count("## Shopping Cart"), 1)
 

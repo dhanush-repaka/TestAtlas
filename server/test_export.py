@@ -58,10 +58,26 @@ def _safe_cell(value) -> str:
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
+def _traceability(case: dict) -> str:
+    """Which code this case exercises: the module's technical (dotted) name -- the display
+    name in Tags is for people, this is what to search for in the repo -- and the real
+    function/class/`Class.method` names the model cited. Empty if the case cites nothing."""
+    covers = [c for c in (case.get("covers") or []) if c]
+    module = case.get("module") or ""
+    if not covers and not module:
+        return ""
+    line = f"Code traceability: module {module}" if module else "Code traceability:"
+    return f"{line}; covers {', '.join(covers)}" if covers else line
+
+
 def _description(case: dict) -> str:
+    """Description for the CSV. Traceability rides here rather than in a new column:
+    Description is a field every ADO test case has, so the import can't reject it the way
+    it may reject an unrecognised column."""
     parts = [str(case.get("description") or "").strip()]
     if (case.get("preconditions") or "").strip():
         parts.append(f"Preconditions: {case['preconditions'].strip()}")
+    parts.append(_traceability(case))
     return "\n".join(p for p in parts if p)
 
 
@@ -103,6 +119,8 @@ def to_markdown(cases: list[dict], labels: dict, repo_name: str) -> str:
                 lines += [c["description"].strip(), ""]
             if (c.get("preconditions") or "").strip():
                 lines += [f"**Preconditions:** {c['preconditions'].strip()}", ""]
+            if _traceability(c):
+                lines += [f"_{_traceability(c)}_", ""]
             lines += ["| # | Action | Expected result |", "|---|--------|-----------------|"]
             lines += [f"| {n} | {_md_cell(s['action'])} | {_md_cell(s['expected'])} |" for n, s in enumerate(_steps(c), 1)]
             lines.append("")
