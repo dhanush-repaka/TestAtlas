@@ -88,6 +88,9 @@ messages) and any documents you added — not source-code bodies. With no
 `OPENAI_API_KEY` (or `OPENAI_BASE_URL` pointing inside your network) nothing
 leaves at all.
 
+For a step-by-step guide (install, first run, sharing with colleagues, backups,
+Docker, troubleshooting, a pilot security checklist) see **[LOCAL_SETUP.md](LOCAL_SETUP.md)**.
+
 With Docker, pass the same file: `docker run --env-file .env -p 8000:8000 -v testatlas_persist:/app/persist testatlas`.
 
 ## What you can do in the UI
