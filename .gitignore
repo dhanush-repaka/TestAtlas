@@ -6,3 +6,5 @@ data/
 workspace/
 secret.key
 .env
+.env.*
+!.env.example

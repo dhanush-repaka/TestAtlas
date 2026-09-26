@@ -45,6 +45,51 @@ Open **http://127.0.0.1:8123**. That's it — no API keys, no signup, no Neo4j
 required to use the core features. `git` needs to be on `PATH` if you plan to
 add an ADO or GitHub repo (not needed for "Local folder" repos).
 
+## Running it in your own environment (pilots)
+
+To run TestAtlas on a machine you control — a laptop, or a server inside a
+company network — keep the settings and secrets in a `.env` file next to the
+app instead of on the command line:
+
+```bash
+cp .env.example .env
+chmod 600 .env          # it will hold an API key -- keep it readable by you only
+$EDITOR .env            # fill in what you need; every setting is documented inside
+./.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8123
+```
+
+Everything in `.env` is optional. The ones that matter for a pilot:
+
+| Setting | What it does |
+|---|---|
+| `TESTATLAS_PASSWORD` | Login for the whole app. Leave empty only if it's reachable from your own machine. **Set it for any shared server** and bind with `--host 0.0.0.0` only behind your network's access controls. |
+| `OPENAI_API_KEY` | Turns on plain-English module names, test-case generation and gap analysis. Without it everything else still works. |
+| `OPENAI_BASE_URL` | Send those calls to an OpenAI-compatible endpoint you control (an internal gateway) instead of `api.openai.com`. |
+| `DATA_ROOT` | Where the database, run history, saved-token key and cloned repos live. Point it at a backed-up path. |
+
+**How it stays safe:**
+
+- **Real environment variables always win** over `.env` (`server/env_file.py`).
+  Nothing in the file can override what a platform or your shell already set, and
+  with no `.env` present nothing changes. This is why the hosted deployment,
+  which uses platform secrets, is unaffected by this file.
+- `.env` is git-ignored **and excluded from the Docker image** (`.dockerignore`),
+  so a local `.env` can't be committed or baked into a deployed image. Only
+  `.env.example` (no values) is tracked.
+- At startup TestAtlas prints only the *names* of what it loaded, never values,
+  and warns if the file is readable by other users.
+- Azure DevOps / GitHub tokens are not set here: they're entered per repo in the
+  UI and stored encrypted under `DATA_ROOT`.
+
+**What leaves the machine:** analysis, the graph, findings and everything you
+browse stay local (apart from fetching repos from your Git host). Only the three AI features call out, and only with module,
+file and function names, the on-screen text found in the code (button labels,
+messages) and any documents you added — not source-code bodies. With no
+`OPENAI_API_KEY` (or `OPENAI_BASE_URL` pointing inside your network) nothing
+leaves at all.
+
+With Docker, pass the same file: `docker run --env-file .env -p 8000:8000 -v testatlas_persist:/app/persist testatlas`.
+
 ## What you can do in the UI
 
 - **Add repo** (top bar) — four source types:
