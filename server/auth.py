@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import os
 import time
+from urllib.parse import quote
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
@@ -61,6 +62,21 @@ def verify_session_token(token: str | None) -> bool:
         return False
 
 
+def safe_next_path(raw: str | None, base_path: str) -> str:
+    """Where to send someone after they log in -- the deep link they actually
+    asked for (a shared repo/tab URL, a bookmark) rather than always the
+    dashboard. Only ever a path inside this app: must start with the app's own
+    root ("{base_path}/"), ruling out a scheme ("https://evil") and a
+    protocol-relative host ("//evil.com", which also starts with "/" -- an
+    unauthenticated visitor's `next` is attacker-controlled input, and honoring
+    it blindly would let a crafted login link redirect a fresh session
+    anywhere). Falls back to the app root for anything else, including empty."""
+    root = f"{base_path}/"
+    if raw and raw.startswith(root) and not raw.startswith("//"):
+        return raw
+    return root
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """Redirects (pages) or 401s (everything else) any request without a
     valid session cookie, except the login page and its own form submission.
@@ -82,5 +98,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         accepts_html = "text/html" in request.headers.get("accept", "")
         if accepts_html and request.method == "GET":
-            return RedirectResponse(url=self.login_path)
+            # Carry the page they actually asked for through the login form, so a
+            # shared deep link (a specific repo/tab) lands there after signing in
+            # instead of always dropping back to the dashboard. (request.url.path
+            # is never self.login_path here -- that case already returned above.)
+            return RedirectResponse(url=f"{self.login_path}?next={quote(request.url.path, safe='')}")
         return Response(status_code=401, content="Not authenticated")

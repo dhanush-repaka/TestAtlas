@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import html
 import os
 import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import networkx as nx
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -70,28 +72,38 @@ LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <h1>◆ TestAtlas</h1>
   {error_html}
   <input type="password" name="password" placeholder="Password" autofocus required>
+  {next_field}
   <button type="submit">Sign in</button>
 </form>
 </body></html>"""
 
 
 @app.get(f"{BASE_PATH}/login", response_class=HTMLResponse)
-def login_page(error: bool = False):
+def login_page(error: bool = False, next_path: str = Query("", alias="next")):
     error_html = '<div class="err">Wrong password.</div>' if error else ""
-    return LOGIN_PAGE.format(login_path=f"{BASE_PATH}/login", error_html=error_html)
+    # `next` only ever reaches here as attacker-controlled input (an unauthenticated
+    # visitor's own query string) -- carried through as a hidden field so it survives
+    # the POST, escaped for safe use inside an HTML attribute, validated for real
+    # (same-app path only) once it comes back in login_submit below.
+    next_field = f'<input type="hidden" name="next" value="{html.escape(next_path)}">' if next_path else ""
+    return LOGIN_PAGE.format(login_path=f"{BASE_PATH}/login", error_html=error_html, next_field=next_field)
 
 
 @app.post(f"{BASE_PATH}/login")
 async def login_submit(request: Request):
     form = await request.form()
+    next_raw = str(form.get("next") or "")
     if auth.check_password(form.get("password", "")):
-        resp = RedirectResponse(url=f"{BASE_PATH}/", status_code=303)
+        resp = RedirectResponse(url=auth.safe_next_path(next_raw, BASE_PATH), status_code=303)
         resp.set_cookie(
             auth.COOKIE_NAME, auth.make_session_token(),
             max_age=auth.SESSION_TTL_SECONDS, httponly=True, samesite="lax",
         )
         return resp
-    return RedirectResponse(url=f"{BASE_PATH}/login?error=1", status_code=303)
+    retry_url = f"{BASE_PATH}/login?error=1"
+    if next_raw:
+        retry_url += f"&next={quote(next_raw, safe='')}"
+    return RedirectResponse(url=retry_url, status_code=303)
 
 
 # --------------------------------------------------------------------------- schemas
@@ -815,3 +827,18 @@ if BASE_PATH:
         # (stripping "testatlas" instead of appending to it), so redirect instead of
         # serving the same HTML at both.
         return RedirectResponse(url=f"{BASE_PATH}/")
+
+
+@app.get(f"{BASE_PATH}/{{_rest:path}}", response_class=HTMLResponse, include_in_schema=False)
+def spa_fallback(_rest: str):
+    """The front end now reads/writes real paths (static/app.js's tiny router --
+    "/repo/<id>/<tab>"), so those need to resolve on a hard reload, a bookmark, or
+    a shared link, not just when reached by clicking inside the already-loaded
+    page. FastAPI/Starlette matches routes in registration order, so this always
+    comes LAST: a request for anything registered above (/api/..., /static/...,
+    /login, the bare "/") matches its own specific route first and never reaches
+    here. Anything else still under this app's prefix -- including a stale or
+    made-up repo id -- gets the same SPA shell; the client-side router decides
+    what that path means and falls back to the dashboard if it doesn't resolve,
+    exactly like an unmatched client-side route in any other SPA."""
+    return _INDEX_HTML

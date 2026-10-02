@@ -201,17 +201,79 @@ function repoTileHtml(repo, latestRun) {
     </div>`;
 }
 
+// --------------------------------------------------------------------------- router
+//
+// Keeps the URL in sync with what's on screen ("/repo/<id>/<tab>") so a repo and
+// tab can be bookmarked, shared, reached with the back/forward buttons, or just
+// survive a reload -- none of which worked before (the app never touched the URL
+// at all; every view lived only in `view`/`activeRepoId`/in-memory state). The
+// server has a matching catch-all (server/app.py's spa_fallback) that serves this
+// same page for any such path, so a hard reload or a freshly-opened link lands
+// here and this router then reads the URL back into the view.
+
+function basePathname() {
+  return new URL(document.baseURI).pathname; // e.g. "/testatlas/" or "/" -- always trailing-slashed
+}
+
+function routePath(repoId, tab) {
+  const rel = repoId ? `repo/${encodeURIComponent(repoId)}/${tab || "overview"}` : "";
+  return new URL(rel, document.baseURI).pathname;
+}
+
+function parseRoute(pathname) {
+  const base = basePathname();
+  const rel = pathname.startsWith(base) ? pathname.slice(base.length) : "";
+  const parts = rel.split("/").filter(Boolean);
+  if (parts[0] !== "repo" || !parts[1]) return { repoId: null, tab: null };
+  const tab = $all(".tab").some((t) => t.dataset.tab === parts[2]) ? parts[2] : "overview";
+  return { repoId: decodeURIComponent(parts[1]), tab };
+}
+
+// Pushes (or replaces) a history entry for wherever we're navigating TO. Called by
+// user-driven navigation (showDashboard, showRepoDetail, a tab click) -- never by
+// the router itself syncing the view to a URL that's already current (initial
+// load, popstate), since in that case the address bar is already right and
+// pushing again would just litter the back-button history. Title is separate
+// (setTitle below): it has to update in EVERY case, including the ones where
+// there's no history entry to push.
+function navigate(repoId, tab, { replace = false } = {}) {
+  const path = routePath(repoId, tab);
+  if (path === location.pathname && !replace) return; // already there (e.g. re-clicking the active tab)
+  history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
+
+function setTitle(repoId) {
+  document.title = repoId ? `${(repos.find((r) => r.id === repoId) || {}).name || "Repo"} — TestAtlas` : "TestAtlas";
+}
+
+// Reads the current URL and shows whatever it points to -- called on page load and
+// on popstate (the back/forward buttons; the browser has already changed the URL
+// by the time this fires, this just catches the view up to it). A repo id the URL
+// names that isn't -- or no longer is -- in `repos` falls back to the dashboard,
+// same as any SPA hitting an unresolvable route, rather than a dead page.
+function applyRoute() {
+  const route = parseRoute(location.pathname);
+  if (route.repoId && repos.some((r) => r.id === route.repoId)) {
+    showRepoDetail(route.repoId, route.tab, { updateHistory: false });
+  } else {
+    if (route.repoId) toast("That repo link no longer resolves — showing all repos.", "error");
+    showDashboard({ updateHistory: false });
+  }
+}
+
 // --------------------------------------------------------------------------- views
 
-function showDashboard() {
+function showDashboard(opts = {}) {
   view = "dashboard";
   activeRepoId = null;
   $("#dashboardView").hidden = false;
   $("#repoView").hidden = true;
   renderDashboard();
+  setTitle(null);
+  if (opts.updateHistory !== false) navigate(null, null, { replace: !!opts.replace });
 }
 
-async function showRepoDetail(id) {
+async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   view = "repo";
   activeRepoId = id;
   $("#dashboardView").hidden = true;
@@ -224,6 +286,11 @@ async function showRepoDetail(id) {
     : repo.source_type === "upload" ? "Uploaded folder · source files only, snapshot from your computer"
     : repo.source_type === "github_git" ? `GitHub · ${repo.github_owner}/${repo.github_repo} (${repo.github_branch})`
     : `Azure DevOps · ${repo.ado_org}/${repo.ado_project}/${repo.ado_repo} (${repo.ado_branch})`;
+  // Show the requested tab right away (before the awaits below) -- a deep link to
+  // "graph" shouldn't flash Overview first while findings/docs/gaps/tests load.
+  activateTab(tab);
+  setTitle(id);
+  if (opts.updateHistory !== false) navigate(id, tab, { replace: !!opts.replace });
   setModuleInfo({});
   await loadModuleLabels();
   await loadRuns();
@@ -567,14 +634,25 @@ function renderDiff(d) {
 
 // --------------------------------------------------------------------------- tabs
 
+function activateTab(tabName) {
+  const tab = $all(".tab").find((t) => t.dataset.tab === tabName);
+  if (!tab) return;
+  $all(".tab").forEach((t) => t.classList.remove("active"));
+  tab.classList.add("active");
+  $all(".tab-panel").forEach((p) => (p.hidden = true));
+  $(`#panel-${tabName}`).hidden = false;
+  if (tabName !== "insights") clearTimeout(_insightsPollTimer);
+}
+
+function currentTabName() {
+  return $(".tab.active")?.dataset.tab || "overview";
+}
+
 function initTabs() {
   $all(".tab").forEach((tab) =>
     tab.addEventListener("click", () => {
-      $all(".tab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      $all(".tab-panel").forEach((p) => (p.hidden = true));
-      $(`#panel-${tab.dataset.tab}`).hidden = false;
-      if (tab.dataset.tab !== "insights") clearTimeout(_insightsPollTimer);
+      activateTab(tab.dataset.tab);
+      navigate(activeRepoId, tab.dataset.tab); // reflect the tab switch in the URL too
     })
   );
 }
@@ -1525,14 +1603,16 @@ function wireDocsList() {
 
 // --------------------------------------------------------------------------- wire up
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
   applyTheme(document.documentElement.dataset.theme || "dark");
-  loadRepos();
+  await loadRepos(); // `repos` has to be populated before applyRoute() can tell a "/repo/<id>" URL is real
+  applyRoute();
+  window.addEventListener("popstate", applyRoute);
   loadSystemConfig();
 
   $("#themeToggle").addEventListener("click", toggleTheme);
-  $("#backToDashboard").addEventListener("click", showDashboard);
+  $("#backToDashboard").addEventListener("click", () => showDashboard());
   $("#addRepoBtn").addEventListener("click", () => openRepoModal());
   $("#cancelRepoBtn").addEventListener("click", closeRepoModal);
   $("#repoModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "repoModalBackdrop") closeRepoModal(); });
