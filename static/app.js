@@ -49,12 +49,13 @@ const ICON_ALERT = `<svg class="ic" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.
 const ICON_CHECK = `<svg class="ic" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_CRITICAL = `<svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 
-// Keep in sync with kg/visualize.py COLORS
-const NODE_COLORS = {
-  Feature: "#8e44ad", Scenario: "#2980b9", Step: "#7f8c8d", StepDefinition: "#16a085",
-  Fixture: "#d35400", PageClass: "#c0392b", Method: "#27ae60", Locator: "#f39c12",
-  TestData: "#95a5a6", TestCase: "#3498db",
-};
+// Keep in sync with kg/visualize.py's EDGE_STYLE -- the one part of the graph's
+// encoding that IS a fixed color, so a swatch legend is honest here. Node color
+// is NOT fixed per type (kg/visualize.py hashes a color per business module, so
+// the same module reads as one cluster however many files it spans) -- there's
+// no small fixed set of "node colors" a legend could list, so GRAPH_LEGEND_HTML
+// below explains that encoding in words instead of making up swatches for it.
+const EDGE_COLORS = { IMPORTS: "#8e44ad", DEFINES: "#c9cedb", CALLS: "#2980b9" };
 
 function toast(msg, kind = "") {
   const el = $("#toast");
@@ -403,9 +404,19 @@ function loadGraphPanel() {
   const frame = $("#graphFrame");
   const endpoint = graphSource === "neo4j" ? "neo4j-graph.html" : "graph.html";
   frame.src = runId ? `${API}/runs/${runId}/${endpoint}` : "about:blank";
-  $("#graphLegend").innerHTML = Object.entries(NODE_COLORS)
-    .map(([type, color]) => `<span class="item"><span class="swatch" style="background:${color}"></span>${type}</span>`)
+  // Edge color is a fixed, small set (kg/visualize.py's EDGE_STYLE) -- a real swatch legend.
+  // Node color isn't: it's one color per business module, hashed, so the same module reads
+  // as one cluster across files -- there's no fixed list of "node colors" to show, so that
+  // encoding (color = module, size/shade = File > Class > Function) is explained in words
+  // instead of invented swatches. Hover any node for its real type, name and module.
+  const edgeItems = Object.entries(EDGE_COLORS)
+    .map(([relation, color]) => `<span class="item"><span class="swatch" style="background:${color}"></span>${relation.charAt(0) + relation.slice(1).toLowerCase()}</span>`)
     .join("");
+  $("#graphLegend").innerHTML = `
+    <span class="item"><b>Edges</b></span>${edgeItems}
+    <span class="item legend-sep">·</span>
+    <span class="item"><b>Nodes</b></span>
+    <span class="item muted">color = business module (same color, same module) · size = File &rsaquo; Class &rsaquo; Function &mdash; hover a node for details</span>`;
 }
 
 // --------------------------------------------------------------------------- insights (Neo4j / GDS)
