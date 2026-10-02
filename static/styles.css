@@ -196,7 +196,15 @@ body {
 
 /* --------------------------------------------------------------------- tabs */
 
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-soft); margin-bottom: 22px; overflow-x: auto; }
+/* At full desktop width every tab fits and none of this shows. Narrower --
+   a tablet, a split-screen window -- the row doesn't fit, and overflow-x:auto
+   alone scrolled with zero sign there was more: no scrollbar visible on most
+   trackpads/touch devices, nothing to even suggest trying. The fades (and the
+   arrow buttons layered over them, for a mouse) appear only on the side that
+   actually has more to scroll to (updateTabsScrollState in static/app.js),
+   so at full width this is invisible and changes nothing. */
+.tabs-wrap { position: relative; margin-bottom: 22px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-soft); overflow-x: auto; scroll-behavior: smooth; }
 .tab {
   display: inline-flex; align-items: center; flex: none; white-space: nowrap;
   background: none; border: none; color: var(--muted);
@@ -206,6 +214,24 @@ body {
 }
 .tab .ic { opacity: .8; }
 .tab:hover { color: var(--text); }
+
+.tabs-fade {
+  position: absolute; top: 0; bottom: 1px; width: 32px; pointer-events: none;
+  opacity: 0; transition: opacity .15s ease;
+}
+.tabs-fade-left { left: 0; background: linear-gradient(to right, var(--bg), transparent); }
+.tabs-fade-right { right: 0; background: linear-gradient(to left, var(--bg), transparent); }
+.tabs-fade.is-visible { opacity: 1; }
+
+.tabs-scroll-btn {
+  display: none; position: absolute; top: 0; bottom: 1px; width: 26px; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--muted); cursor: pointer; padding: 0;
+}
+.tabs-scroll-btn .ic { width: 15px; height: 15px; }
+.tabs-scroll-btn:hover { color: var(--text); }
+.tabs-scroll-left { left: 0; justify-content: flex-start; }
+.tabs-scroll-right { right: 0; justify-content: flex-end; }
+.tabs-scroll-btn.is-visible { display: flex; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 
 .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; margin: 28px 0 12px; }

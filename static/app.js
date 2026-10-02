@@ -642,6 +642,43 @@ function activateTab(tabName) {
   $all(".tab-panel").forEach((p) => (p.hidden = true));
   $(`#panel-${tabName}`).hidden = false;
   if (tabName !== "insights") clearTimeout(_insightsPollTimer);
+  // A deep link or a click on a tab the overflow has scrolled out of view (see
+  // initTabsScroll below) should bring it on screen, not just mark it active
+  // underneath whatever's currently showing.
+  tab.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+  // #repoView was display:none until just now (showRepoDetail unhides it right
+  // before calling this), so the one-time measurement at startup saw a 0-width
+  // row and hid both fades/arrows -- recompute now that real widths exist.
+  updateTabsScrollState();
+}
+
+// --------------------------------------------------------------------------- tabs overflow
+//
+// The tab row (Overview..Compare runs) doesn't fit at tablet/split-screen widths
+// and already scrolls (.tabs's overflow-x: auto) -- but scrolling with no sign
+// there's more is as good as not scrollable at all on a trackpad or touchscreen,
+// where the scrollbar itself is usually invisible. This fades the edge that still
+// has content past it and layers a click target over that fade for a mouse;
+// a keyboard user tabbing to a hidden tab gets it scrolled into view for free by
+// activateTab()'s scrollIntoView above, so no extra tab-order stop is needed here.
+
+function updateTabsScrollState() {
+  const el = $("#tabsScroll");
+  if (!el) return;
+  const canLeft = el.scrollLeft > 1;
+  const canRight = el.scrollLeft < el.scrollWidth - el.clientWidth - 1;
+  for (const cls of [".tabs-fade-left", ".tabs-scroll-left"]) $(cls).classList.toggle("is-visible", canLeft);
+  for (const cls of [".tabs-fade-right", ".tabs-scroll-right"]) $(cls).classList.toggle("is-visible", canRight);
+}
+
+function initTabsScroll() {
+  const el = $("#tabsScroll");
+  if (!el) return;
+  updateTabsScrollState();
+  el.addEventListener("scroll", updateTabsScrollState);
+  window.addEventListener("resize", updateTabsScrollState);
+  $("#tabsScrollLeft").addEventListener("click", () => el.scrollBy({ left: -160, behavior: "smooth" }));
+  $("#tabsScrollRight").addEventListener("click", () => el.scrollBy({ left: 160, behavior: "smooth" }));
 }
 
 function currentTabName() {
@@ -1605,6 +1642,7 @@ function wireDocsList() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
+  initTabsScroll();
   applyTheme(document.documentElement.dataset.theme || "dark");
   await loadRepos(); // `repos` has to be populated before applyRoute() can tell a "/repo/<id>" URL is real
   applyRoute();
