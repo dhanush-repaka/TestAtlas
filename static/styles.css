@@ -145,7 +145,6 @@ body {
   transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
 .repo-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-.repo-tile .tile-accent { position: absolute; top: 0; left: 0; right: 0; height: 3px; }
 .repo-tile .tile-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
 .repo-tile .tile-icon {
   width: 36px; height: 36px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border);
@@ -274,7 +273,19 @@ select { min-width: 220px; }
 select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 
-.graph-frame { width: 100%; height: 72vh; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: #fbfbfd; }
+/* The graph canvas (kg/visualize.py's vis.js page) is always dark -- its node
+   colors are tuned against a dark background, so it doesn't follow the app's own
+   light/dark toggle. Framed on its own (not just a bare iframe) that reads as a
+   deliberate dark viewport, like a code editor's pane or a terminal embedded in
+   an otherwise light app -- without the frame, a page-height black rectangle
+   appearing out of nowhere in light mode looked like a rendering failure, not a
+   design choice. The header names it instead of leaving the jump unexplained. */
+.graph-canvas-card { border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden; background: var(--panel); }
+.graph-canvas-card-header {
+  padding: 9px 14px; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--border-soft);
+}
+.graph-frame { display: block; width: 100%; height: 72vh; border: none; background: #0b0d14; }
 
 .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-bottom: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); font-size: 12px; color: var(--muted); }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; }

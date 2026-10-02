@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=35" />
+<link rel="stylesheet" href="static/styles.css?v=36" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -122,7 +122,10 @@
         </div>
         <div class="legend" id="graphLegend"></div>
         <p class="muted small" id="graphSourceHint" hidden>Node size here reflects the PageRank score Neo4j just computed for this run — bigger = more of the graph structurally depends on it.</p>
-        <iframe id="graphFrame" class="graph-frame"></iframe>
+        <div class="graph-canvas-card">
+          <div class="graph-canvas-card-header">Dependency graph canvas</div>
+          <iframe id="graphFrame" class="graph-frame"></iframe>
+        </div>
       </section>
 
       <section class="tab-panel" id="panel-insights" hidden>
@@ -329,6 +332,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=43"></script>
+  <script src="static/app.js?v=44"></script>
 </body>
 </html>

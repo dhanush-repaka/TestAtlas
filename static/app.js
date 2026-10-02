@@ -97,15 +97,22 @@ function fmtTimeAgo(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
-// The "Knowledge Graph Index" is a simple, transparent quality score derived
-// straight from the latest run's findings: start at 100, lose 5 points per
-// open finding. It's not a scientific metric -- it's a fast, at-a-glance
-// signal for "does this repo's graph look healthy", clickable through to the
-// Findings tab for the real detail.
+// The "Knowledge Graph Index" is a fast, at-a-glance signal for "does this
+// repo's graph look healthy" -- not a scientific metric, clickable through to
+// the Findings tab for the real detail. A flat "-5 points per finding" (its
+// first version) looked clean on a handful of findings but broke down on any
+// real repo: "findings" here are mostly routine code-hygiene notes (an unused
+// function, say), not critical bugs, and a few dozen of them is normal even in
+// a small, well-kept codebase -- 30 findings on a 66-file repo already floored
+// the old formula at 0, and every repo of any real size landed there too, with
+// nothing to tell a genuinely messy repo from a mostly-clean one. Diminishing
+// the penalty per additional finding (log-scaled, so the 10th finding costs
+// less than the 1st) keeps the score discriminating across the sizes this tool
+// actually sees, instead of every non-trivial repo bottoming out identically.
 function kgIndex(latestRun) {
   if (!latestRun || latestRun.status !== "success") return null;
   const findings = latestRun.finding_count ?? 0;
-  return Math.max(0, Math.min(100, 100 - findings * 5));
+  return Math.round(Math.max(0, Math.min(100, 100 - 6 * Math.log2(findings + 1))));
 }
 function scoreBucket(score) {
   if (score === null) return "none";
@@ -118,7 +125,7 @@ function kgRingSvg(score) {
   const r = 18, c = 2 * Math.PI * r;
   const frac = score === null ? 0 : score / 100;
   return `
-    <div class="kg-ring score-${bucket}" title="${score === null ? "No successful run yet" : `Knowledge Graph Index: ${score}/100 (100 − 5 pts per open finding)`}">
+    <div class="kg-ring score-${bucket}" title="${score === null ? "No successful run yet" : `Knowledge Graph Index: ${score}/100 -- higher is better, tapers as open findings grow`}">
       <svg viewBox="0 0 44 44">
         <circle class="track" cx="22" cy="22" r="${r}"></circle>
         <circle class="progress" cx="22" cy="22" r="${r}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - frac)}"></circle>
@@ -171,8 +178,6 @@ function wireTiles() {
 
 function repoTileHtml(repo, latestRun) {
   const score = kgIndex(latestRun);
-  const bucket = scoreBucket(score);
-  const accentColor = { ok: "var(--ok)", warn: "var(--warn)", danger: "var(--danger)", none: "var(--border)" }[bucket];
   const meta =
     repo.source_type === "local" ? repo.local_path || ""
     : repo.source_type === "upload" ? "Uploaded folder"
@@ -183,7 +188,6 @@ function repoTileHtml(repo, latestRun) {
   const topModule = stats?.module_scores?.length ? stats.module_scores[0] : null;
   return `
     <div class="repo-tile" data-id="${repo.id}">
-      <div class="tile-accent" style="background:${accentColor}"></div>
       <div class="tile-top">
         <span class="tile-icon">${sourceIcon(repo.source_type)}</span>
         ${kgRingSvg(score)}
