@@ -58,18 +58,25 @@ LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TestAtlas — Sign in</title>
 <style>
+  /* Kept in sync by hand with static/styles.css's :root token values -- this page can't
+     load the main stylesheet (it's served before login, deliberately self-contained so
+     a broken main stylesheet can never lock someone out of the login form itself). */
   body {{ display:flex; align-items:center; justify-content:center; height:100vh; margin:0;
-         background:#0c0e13; color:#eceef4; font-family:-apple-system,sans-serif; }}
-  form {{ background:#14171f; border:1px solid #262c3c; border-radius:14px; padding:28px; width:280px; }}
-  h1 {{ font-size:16px; margin:0 0 16px; }}
-  input {{ width:100%; box-sizing:border-box; background:#1b1f2a; border:1px solid #262c3c; color:#eceef4;
-           border-radius:8px; padding:9px 11px; font-size:14px; margin-bottom:12px; }}
-  button {{ width:100%; background:#7c94ff; border:none; color:#0a0c12; font-weight:700;
-            padding:10px; border-radius:8px; cursor:pointer; font-size:14px; }}
-  .err {{ color:#ff7a7a; font-size:12px; margin:-4px 0 12px; }}
+         background:#0a0c11; color:#f1f3f8; font-family:-apple-system,sans-serif; }}
+  form {{ background:#12151d; border:1px solid #272e40; border-radius:14px; padding:28px; width:280px;
+          box-shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 24px -16px rgba(0,0,0,.55); }}
+  h1 {{ font-size:17px; font-weight:800; margin:0 0 16px; display:flex; align-items:center; gap:8px; }}
+  h1 .mark {{ color:#22d3c7; filter:drop-shadow(0 0 7px rgba(34,211,199,.35)); display:inline-flex; }}
+  input {{ width:100%; box-sizing:border-box; background:#181c27; border:1px solid #272e40; color:#f1f3f8;
+           border-radius:8px; padding:9px 11px; font-size:14px; margin-bottom:12px; font-family:inherit; }}
+  button {{ width:100%; background:#22d3c7; border:none; color:#061412; font-weight:700;
+            padding:10px; border-radius:8px; cursor:pointer; font-size:14px;
+            box-shadow:0 1px 1px rgba(0,0,0,.08), 0 8px 20px -8px rgba(34,211,199,.35); }}
+  button:hover {{ background:#5ee8de; }}
+  .err {{ color:#ff6b6b; font-size:12px; margin:-4px 0 12px; }}
 </style></head><body>
 <form method="post" action="{login_path}">
-  <h1>◆ TestAtlas</h1>
+  <h1><span class="mark"><svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 12c0-4.97 4.03-9 9-9 3.5 0 6.53 2 8 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M21 12c0 4.97-4.03 9-9 9-3.5 0-6.53-2-8-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".45"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/><circle cx="20" cy="8" r="2" fill="currentColor"/><circle cx="4" cy="16" r="2" fill="currentColor" opacity=".45"/></svg></span>TestAtlas</h1>
   {error_html}
   <input type="password" name="password" placeholder="Password" autofocus required>
   {next_field}

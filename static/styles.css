@@ -1,49 +1,68 @@
 :root {
-  --bg: #0c0e13;
-  --panel: #14171f;
-  --panel-2: #1b1f2a;
-  --panel-3: #232837;
-  --border: #262c3c;
-  --border-soft: #1e2330;
-  --text: #eceef4;
-  --muted: #8b91a5;
-  --muted-2: #676d80;
-  --accent: #7c94ff;
-  --accent-strong: #93a6ff;
-  --accent-soft: rgba(124, 148, 255, 0.14);
-  --danger: #ff7a7a;
-  --danger-soft: rgba(255, 122, 122, 0.13);
-  --warn: #f5b942;
-  --warn-soft: rgba(245, 185, 66, 0.13);
-  --ok: #4bd08b;
-  --ok-soft: rgba(75, 208, 139, 0.13);
+  /* Dark theme is the primary identity (this is a tool engineers live in), and the
+     accent is teal/cyan rather than the near-universal "indigo on near-black" every
+     dark-mode dev-tool starter kit ships with -- it reads as its own thing instead of
+     a template, and it ties to the actual product (a graph of connected nodes; the
+     brand mark below is literally an orbit of nodes) rather than being an arbitrary
+     brand-kit choice. Semantic colors (danger/warn/ok) are picked to each sit in
+     their own hue family, clear of the accent and of each other. */
+  --bg: #0a0c11;
+  --bg-elevated: #0d1016;
+  --panel: #12151d;
+  --panel-2: #181c27;
+  --panel-3: #222838;
+  --border: #272e40;
+  --border-soft: #1b202c;
+  --text: #f1f3f8;
+  --muted: #8d93a8;
+  --muted-2: #666c80;
+  --accent: #22d3c7;
+  --accent-strong: #5ee8de;
+  --accent-soft: rgba(34, 211, 199, 0.13);
+  --accent-glow: rgba(34, 211, 199, 0.35);
+  /* Text color for anything sitting ON a solid --accent/--accent-strong fill (the
+     primary button, etc). --accent is a bright, light teal -- white text on it is
+     only 1.9:1 contrast, a real WCAG failure, not a style choice -- so this is dark
+     ink instead, which clears both accent and accent-strong at 10:1+. */
+  --accent-contrast: #061412;
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.13);
+  --warn: #f0ab3d;
+  --warn-soft: rgba(240, 171, 61, 0.13);
+  --ok: #3ddb93;
+  --ok-soft: rgba(61, 219, 147, 0.13);
   --radius: 10px;
   --radius-lg: 14px;
-  --shadow-lg: 0 20px 50px -20px rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 24px -16px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.65);
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 :root[data-theme="light"] {
-  --bg: #f5f6fa;
+  --bg: #f6f7fb;
+  --bg-elevated: #ffffff;
   --panel: #ffffff;
-  --panel-2: #f1f2f7;
-  --panel-3: #e8eaf2;
-  --border: #e1e3ee;
-  --border-soft: #eaecf3;
-  --text: #1b1e29;
-  --muted: #656b80;
+  --panel-2: #f1f2f8;
+  --panel-3: #e7e9f2;
+  --border: #e0e2ee;
+  --border-soft: #ebedf5;
+  --text: #171a24;
+  --muted: #5c6276;
   --muted-2: #8b91a5;
-  --accent: #4f63e0;
-  --accent-strong: #3d51cf;
-  --accent-soft: rgba(79, 99, 224, 0.10);
+  --accent: #0b7a71;
+  --accent-strong: #085f58;
+  --accent-soft: rgba(13, 143, 133, 0.09);
+  --accent-glow: rgba(13, 143, 133, 0.18);
+  --accent-contrast: #ffffff;
   --danger: #d64545;
   --danger-soft: rgba(214, 69, 69, 0.09);
   --warn: #b8790a;
   --warn-soft: rgba(184, 121, 10, 0.10);
-  --ok: #158f5f;
-  --ok-soft: rgba(21, 143, 95, 0.10);
-  --shadow-lg: 0 20px 50px -24px rgba(30, 34, 60, 0.28);
+  --ok: #148062;
+  --ok-soft: rgba(20, 128, 98, 0.10);
+  --shadow-card: 0 1px 2px rgba(30, 34, 60, 0.04), 0 10px 24px -18px rgba(30, 34, 60, 0.18);
+  --shadow-lg: 0 24px 60px -24px rgba(30, 34, 60, 0.24);
 }
 
 * { box-sizing: border-box; }
@@ -77,10 +96,11 @@ body {
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 28px; border-bottom: 1px solid var(--border-soft);
-  position: sticky; top: 0; z-index: 10; background: var(--bg);
+  position: sticky; top: 0; z-index: 10; background: var(--bg-elevated);
+  box-shadow: 0 1px 0 var(--border-soft), 0 12px 24px -20px rgba(0, 0, 0, 0.4);
 }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 16.5px; letter-spacing: -.01em; }
-.brand-mark { color: var(--accent); display: inline-flex; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17.5px; letter-spacing: -.015em; }
+.brand-mark { color: var(--accent); display: inline-flex; filter: drop-shadow(0 0 7px var(--accent-glow)); }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
 
 .icon-btn {
@@ -112,8 +132,11 @@ body {
 }
 .btn:hover { border-color: var(--accent); background: var(--panel-3); }
 .btn:active { transform: scale(.98); }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 700;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), 0 8px 20px -8px var(--accent-glow);
+}
+.btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), 0 10px 26px -8px var(--accent-glow); }
 .btn-danger { color: var(--danger); }
 .btn-danger:hover { border-color: var(--danger); background: var(--danger-soft); }
 .btn-block { width: 100%; }
@@ -129,8 +152,9 @@ body {
 
 /* --------------------------------------------------------------------- dashboard tiles */
 
-.dashboard-heading { margin-bottom: 24px; }
-.dashboard-heading h1 { margin: 0 0 5px; font-size: 23px; letter-spacing: -.01em; }
+.dashboard-heading { margin-bottom: 28px; }
+.dashboard-heading h1 { margin: 0 0 7px; font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+.dashboard-heading p { font-size: 13.5px; max-width: 56ch; }
 
 .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 
@@ -142,9 +166,10 @@ body {
   padding: 18px 18px 16px;
   cursor: pointer;
   overflow: hidden;
+  box-shadow: var(--shadow-card);
   transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
-.repo-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.repo-tile:hover { border-color: var(--accent); transform: translateY(-3px); box-shadow: var(--shadow-lg); }
 .repo-tile .tile-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
 .repo-tile .tile-icon {
   width: 36px; height: 36px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border);
@@ -188,9 +213,9 @@ body {
 
 .repo-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; gap: 16px; flex-wrap: wrap; }
 .repo-heading { display: flex; align-items: flex-start; gap: 12px; }
-.source-chip { width: 38px; height: 38px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); flex: none; margin-top: 2px; display: flex; align-items: center; justify-content: center; color: var(--accent-strong); }
+.source-chip { width: 38px; height: 38px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); flex: none; margin-top: 2px; display: flex; align-items: center; justify-content: center; color: var(--accent-strong); box-shadow: var(--shadow-card); }
 .source-chip svg { width: 18px; height: 18px; margin: 0; }
-.repo-header h1 { margin: 0 0 3px 0; font-size: 21px; letter-spacing: -.01em; }
+.repo-header h1 { margin: 0 0 3px 0; font-size: 24px; font-weight: 800; letter-spacing: -.015em; }
 .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* --------------------------------------------------------------------- tabs */
@@ -238,7 +263,7 @@ body {
 /* --------------------------------------------------------------------- cards */
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 8px; }
-.stat-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; }
+.stat-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; box-shadow: var(--shadow-card); }
 .stat-card .num { font-size: 25px; font-weight: 800; letter-spacing: -.02em; }
 .stat-card .lbl { color: var(--muted); font-size: 12px; margin-top: 3px; }
 
