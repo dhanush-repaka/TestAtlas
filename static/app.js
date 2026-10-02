@@ -4,6 +4,15 @@ let activeRepoId = null;
 let activeRuns = [];
 let view = "dashboard"; // "dashboard" | "repo"
 
+// Each tile's latest run, kept across dashboard visits (not just within one
+// renderDashboard() call) -- so returning to "Your repos" (the back link, a
+// delete, closing the add-repo modal, ...) repaints every already-seen repo
+// with its real numbers immediately, instead of a skeleton-then-"Not analyzed
+// yet" flash while the run-history re-fetch is in flight. A repo id absent
+// from this object has never been fetched in this session at all, which is
+// the only case that still shows a loading skeleton (see renderDashboard()).
+let latestRunCache = {};
+
 let activeModuleInfo = {};   // {raw module name -> {name, kind: "feature"|"supporting", description}}, per repo
 let activeModuleLabels = {}; // derived from activeModuleInfo: {raw module name -> friendly display name}
 let moduleNamingAvailable = null; // null = not checked yet; deployment-wide, checked once
@@ -131,14 +140,22 @@ async function renderDashboard() {
     $("#dashAddTile").addEventListener("click", () => openRepoModal());
     return;
   }
-  // Show tiles immediately with skeleton stats, then fill in once run history loads.
-  grid.innerHTML = repos.map((r) => repoTileHtml(r, null)).join("") + addTileHtml();
+  // First paint: a repo already in latestRunCache (seen earlier this session) renders with
+  // its real numbers right away -- no flash. Only a repo with no cache entry at all (first
+  // time ever, this page load) gets the shimmer skeleton, which looks like loading, never
+  // like a false "Not analyzed yet".
+  grid.innerHTML = repos.map((r) => r.id in latestRunCache ? repoTileHtml(r, latestRunCache[r.id]) : skeletonTileHtml()).join("") + addTileHtml();
   wireTiles();
 
   const runsByRepo = await Promise.all(repos.map((r) => api(`/repos/${r.id}/runs`).catch(() => [])));
   if (view !== "dashboard") return; // user navigated away while this was in flight
-  grid.innerHTML = repos.map((r, i) => repoTileHtml(r, runsByRepo[i][0] || null)).join("") + addTileHtml();
+  for (let i = 0; i < repos.length; i++) latestRunCache[repos[i].id] = runsByRepo[i][0] || null;
+  grid.innerHTML = repos.map((r) => repoTileHtml(r, latestRunCache[r.id])).join("") + addTileHtml();
   wireTiles();
+}
+
+function skeletonTileHtml() {
+  return `<div class="skeleton-tile" aria-hidden="true"></div>`;
 }
 
 function addTileHtml() {
@@ -589,6 +606,7 @@ async function testConnection() {
 async function deleteRepo() {
   if (!confirm("Delete this repo and all its run history? This cannot be undone.")) return;
   await api(`/repos/${activeRepoId}`, { method: "DELETE" });
+  delete latestRunCache[activeRepoId];
   await loadRepos();
   showDashboard();
 }
