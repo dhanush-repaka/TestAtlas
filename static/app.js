@@ -15,13 +15,16 @@ let readOnly = false;
 // auth link (Log in while readOnly, Log out once signed in) or neither (a
 // local/no-password deployment has no concept of being signed in).
 let loginRequired = false;
-// Fixed-id controls that each trigger a write and are never re-rendered --
+// Fixed-id controls locked for a logged-out visitor, never re-rendered --
 // disabled once in applyReadOnlyUI(). Anything dynamically re-rendered (a
 // per-module "Generate" button, per-document Edit/Delete, the test-case
 // export links) bakes the same `readOnly` check into its own render instead.
+// Almost all of these trigger a write the server would 401 anyway; compareRunBtn
+// is the one exception (its endpoint is a plain read) -- locked anyway so a
+// logged-out visitor sees a consistently read-only Compare tab.
 const READ_ONLY_LOCKED_IDS = [
   "addRepoBtn", "sidebarAddRepoBtn", "editRepoBtn", "testConnBtn", "runBtn",
-  "deleteRepoBtn", "addDocBtn", "runAutoGapBtn", "submitGapFindingsBtn",
+  "deleteRepoBtn", "addDocBtn", "runAutoGapBtn", "submitGapFindingsBtn", "compareRunBtn",
 ];
 
 // Each tile's latest run, kept across dashboard visits (not just within one
