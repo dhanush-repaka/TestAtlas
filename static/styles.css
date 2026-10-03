@@ -108,14 +108,23 @@ mean "All repos" then re-scan a grid, every single time.
 
 .sidebar {
   width: 240px; flex: none; position: sticky; top: 0; height: 100vh;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; overflow: hidden;
   background: var(--bg-elevated); border-right: 1px solid var(--border-soft);
+  transition: width .16s ease;
 }
+.sidebar-top { display: flex; align-items: center; }
 .sidebar-brand {
   display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: -.015em;
   padding: 18px 18px 14px; background: none; border: none; color: var(--text); cursor: pointer; font-family: inherit; text-align: left;
+  flex: 1; min-width: 0;
 }
-.brand-mark { color: var(--accent); display: inline-flex; filter: drop-shadow(0 0 7px var(--accent-glow)); }
+.brand-mark { color: var(--accent); display: inline-flex; flex: none; filter: drop-shadow(0 0 7px var(--accent-glow)); }
+.sidebar-collapse-btn {
+  flex: none; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 10px;
+  background: none; border: 1px solid var(--border); border-radius: 7px; color: var(--muted); cursor: pointer;
+}
+.sidebar-collapse-btn:hover { color: var(--text); border-color: var(--accent); }
+.sidebar-collapse-btn .ic { margin: 0; width: 13px; height: 13px; transition: transform .16s ease; }
 
 .sidebar-nav { padding: 2px 10px; }
 .sidebar-nav-item {
@@ -154,6 +163,28 @@ mean "All repos" then re-scan a grid, every single time.
 }
 .sidebar-foot-btn:hover { border-color: var(--accent); }
 .sidebar-foot-btn .ic { margin-right: 0; }
+
+/* Collapsed: an icon-only rail (VS Code's activity bar / Linear's collapsed nav),
+   not just a hidden sidebar -- repo switching is the rail's whole job, so it stays
+   usable collapsed, just narrower. Only text is hidden (.sidebar-nav-text); every
+   icon, every click target, and the repo status dots stay exactly where they were.
+   The nested repo list is always shown here regardless of its OWN expand/collapse
+   state (toggled separately by the chevron) -- collapsing both at once would leave
+   a rail with no way to reach a specific repo without re-expanding first. */
+.sidebar.is-collapsed { width: 60px; }
+.sidebar.is-collapsed .sidebar-nav-text,
+.sidebar.is-collapsed .brand-name,
+.sidebar.is-collapsed .sidebar-repo-row .name { display: none; }
+.sidebar.is-collapsed .sidebar-top { justify-content: center; }
+.sidebar.is-collapsed .sidebar-brand { flex: none; padding: 18px 0 14px; justify-content: center; }
+.sidebar.is-collapsed .sidebar-collapse-btn { margin-right: 0; }
+.sidebar.is-collapsed .sidebar-collapse-btn .ic { transform: rotate(180deg); }
+.sidebar.is-collapsed .sidebar-nav-item,
+.sidebar.is-collapsed .sidebar-repo-row,
+.sidebar.is-collapsed .sidebar-foot-btn { justify-content: center; padding-left: 0; padding-right: 0; }
+.sidebar-repos.sidebar-repos-collapsed { display: none; }
+.sidebar.is-collapsed .sidebar-repos.sidebar-repos-collapsed { display: flex; } /* see comment above: always shown collapsed */
+.sidebar.is-collapsed .sidebar-foot { flex-direction: column; gap: 6px; }
 
 .app-content { flex: 1; min-width: 0; }
 

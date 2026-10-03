@@ -172,10 +172,24 @@ function renderSidebar() {
 // collapsing it while a repo is active just tucks the list away, same as a
 // VS Code / Finder sidebar section) persists across reloads like the theme does.
 function setRepoSectionCollapsed(collapsed) {
-  $("#sidebarRepoList").classList.toggle("is-hidden", collapsed);
+  // A dedicated class, not the shared .is-hidden (which is `!important` -- no
+  // override of it, including the whole-sidebar-collapsed rail always showing
+  // these rows regardless, could ever win without a specificity/importance fight).
+  $("#sidebarRepoList").classList.toggle("sidebar-repos-collapsed", collapsed);
   $("#sidebarRepoChevron").classList.toggle("is-collapsed", collapsed);
   $("#sidebarReposBtn").setAttribute("aria-expanded", String(!collapsed));
   try { localStorage.setItem("ta-repos-collapsed", collapsed ? "1" : "0"); } catch (e) {}
+}
+
+// The whole rail, not just the repo list -- an icon-only strip (VS Code's activity
+// bar / Linear's collapsed nav) when collapsed, not hidden entirely: repo switching
+// is the rail's whole job, so every row and its status dot stay clickable, just
+// without the text label (see the CSS comment on .sidebar.is-collapsed for how the
+// repo list specifically stays visible even if its own chevron-toggle says collapsed).
+function setSidebarCollapsed(collapsed) {
+  $("#sidebar").classList.toggle("is-collapsed", collapsed);
+  $("#sidebarCollapseBtn").title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  try { localStorage.setItem("ta-sidebar-collapsed", collapsed ? "1" : "0"); } catch (e) {}
 }
 
 async function renderDashboard() {
@@ -1904,6 +1918,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   let collapsedAtLoad = false;
   try { collapsedAtLoad = localStorage.getItem("ta-repos-collapsed") === "1"; } catch (e) {}
   setRepoSectionCollapsed(collapsedAtLoad);
+  $("#sidebarCollapseBtn").addEventListener("click", () => setSidebarCollapsed(!$("#sidebar").classList.contains("is-collapsed")));
+  let sidebarCollapsedAtLoad = false;
+  try { sidebarCollapsedAtLoad = localStorage.getItem("ta-sidebar-collapsed") === "1"; } catch (e) {}
+  setSidebarCollapsed(sidebarCollapsedAtLoad);
   $("#cancelRepoBtn").addEventListener("click", closeRepoModal);
   $("#repoModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "repoModalBackdrop") closeRepoModal(); });
   $("#repoForm").addEventListener("submit", submitRepoForm);
