@@ -10,6 +10,11 @@ let view = "overview"; // "overview" | "dashboard" | "repo" -- "dashboard" is th
 // /api/system/config before the first route render (see loadSystemConfig/
 // DOMContentLoaded), so every render below can just read it synchronously.
 let readOnly = false;
+// True wherever this deployment has TESTATLAS_PASSWORD set at all, regardless
+// of this visitor's own auth state -- decides whether the topbar shows either
+// auth link (Log in while readOnly, Log out once signed in) or neither (a
+// local/no-password deployment has no concept of being signed in).
+let loginRequired = false;
 // Fixed-id controls that each trigger a write and are never re-rendered --
 // disabled once in applyReadOnlyUI(). Anything dynamically re-rendered (a
 // per-module "Generate" button, per-document Edit/Delete, the test-case
@@ -1064,12 +1069,13 @@ function setSourceType(value) {
 async function loadSystemConfig() {
   const config = await api("/system/config").catch(() => ({}));
   $("#browseFolderBtn").classList.toggle("is-hidden", !config.folder_picker_available);
-  readOnly = !!config.login_required && !config.authenticated;
+  loginRequired = !!config.login_required;
+  readOnly = loginRequired && !config.authenticated;
   applyReadOnlyUI();
 }
 
-// Runs once readOnly is known (see DOMContentLoaded -- resolved before the
-// first route render) so every button below is correct from first paint.
+// Runs once readOnly/loginRequired are known (see DOMContentLoaded -- resolved
+// before the first route render) so every button below is correct from first paint.
 function applyReadOnlyUI() {
   const loginLink = $("#loginLink");
   loginLink.classList.toggle("is-hidden", !readOnly);
@@ -1077,6 +1083,7 @@ function applyReadOnlyUI() {
   // auth.py's safe_next_path validates it), so signing in from a repo's Graph
   // tab doesn't dump them back on the dashboard.
   if (readOnly) loginLink.href = `login?next=${encodeURIComponent(location.pathname)}`;
+  $("#logoutLink").classList.toggle("is-hidden", !(loginRequired && !readOnly));
   for (const id of READ_ONLY_LOCKED_IDS) {
     const el = document.getElementById(id);
     if (el) el.disabled = readOnly;

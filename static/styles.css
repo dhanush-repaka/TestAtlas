@@ -254,7 +254,7 @@ mean "All repos" then re-scan a grid, every single time.
 .btn-danger:hover { border-color: var(--danger); background: var(--danger-soft); }
 .btn-block { width: 100%; }
 .btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
-#loginLink { text-decoration: none; }
+#loginLink, #logoutLink { text-decoration: none; }
 .btn-sm { padding: 5px 11px; font-size: 12px; }
 
 .back-link {

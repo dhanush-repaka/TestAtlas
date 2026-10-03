@@ -128,6 +128,19 @@ class LoginNextRoundTripTests(unittest.TestCase):
         self.assertEqual(submitted.headers["location"], "/repo/abc/graph")  # the ORIGINAL destination, not the dashboard
         self.assertIn(auth.COOKIE_NAME, submitted.cookies)
 
+    def test_logout_clears_the_session_and_drops_back_to_read_only(self):
+        submitted = self.client.post("/login", data={"password": "pw123", "next": "/"})
+        self.assertIn(auth.COOKIE_NAME, submitted.cookies)  # self.client's jar now carries it
+
+        out = self.client.get("/logout")
+        self.assertEqual(out.status_code, 303)
+        self.assertEqual(out.headers["location"], f"{BASE_PATH}/")
+
+        # Same client, same jar -- the delete_cookie response above should have
+        # cleared it, so this write is rejected same as someone never logged in.
+        r = self.client.post("/api/repos", json={"name": "x", "source_type": "local"})
+        self.assertEqual(r.status_code, 401)
+
     def test_a_wrong_password_keeps_next_for_the_retry(self):
         r = self.client.post("/login", data={"password": "nope", "next": "/repo/abc/graph"})
         self.assertEqual(r.headers["location"], f"{BASE_PATH}/login?error=1&next=%2Frepo%2Fabc%2Fgraph")

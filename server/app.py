@@ -113,6 +113,16 @@ async def login_submit(request: Request):
     return RedirectResponse(url=retry_url, status_code=303)
 
 
+@app.get(f"{BASE_PATH}/logout")
+def logout():
+    """Drops back to read-only browsing rather than the login form -- signing
+    out isn't the same as being locked out, and the site is still fully
+    viewable without a session (see auth.AuthMiddleware)."""
+    resp = RedirectResponse(url=f"{BASE_PATH}/", status_code=303)
+    resp.delete_cookie(auth.COOKIE_NAME)
+    return resp
+
+
 # --------------------------------------------------------------------------- schemas
 
 class RepoIn(BaseModel):

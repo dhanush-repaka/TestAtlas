@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=43" />
+<link rel="stylesheet" href="static/styles.css?v=44" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -72,6 +72,7 @@
         <svg class="ic theme-moon is-hidden" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 019.5 4 8.5 8.5 0 1020 14.5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
       </button>
       <a class="btn is-hidden" id="loginLink" href="login" title="Sign in to add repos, run analysis, and generate or export test cases">Log in</a>
+      <a class="btn is-hidden" id="logoutLink" href="logout" title="Sign out — the site stays viewable, but you'll lose write access">Log out</a>
       <button class="btn btn-primary" id="addRepoBtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>Add repo</button>
     </div>
   </header>
@@ -407,6 +408,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=50"></script>
+  <script src="static/app.js?v=51"></script>
 </body>
 </html>
