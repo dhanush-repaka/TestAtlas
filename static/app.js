@@ -2,7 +2,7 @@ const API = "api"; // relative -- resolves against the page's <base href>, so th
 let repos = [];
 let activeRepoId = null;
 let activeRuns = [];
-let view = "dashboard"; // "dashboard" | "repo"
+let view = "overview"; // "overview" | "dashboard" | "repo" -- "dashboard" is the repo grid (named before the overview existed)
 
 // Each tile's latest run, kept across dashboard visits (not just within one
 // renderDashboard() call) -- so returning to "Your repos" (the back link, a
@@ -140,6 +140,7 @@ async function loadRepos() {
   repos = await api("/repos");
   renderSidebar();
   if (view === "dashboard") renderDashboard();
+  if (view === "overview") renderOverviewDashboard();
 }
 
 // The persistent nav rail's repo list -- see static/styles.css's layout comment for
@@ -150,6 +151,11 @@ async function loadRepos() {
 function renderSidebar() {
   const el = $("#sidebarRepoList");
   if (!el) return;
+  $("#sidebarDashboardBtn").classList.toggle("active", view === "overview");
+  // "Repos" itself (the section header) reads active for both the grid AND a
+  // single open repo -- a repo is reached through this section, same as a
+  // folder stays highlighted while a file inside it is open in a file tree.
+  $("#sidebarReposBtn").classList.toggle("active", view === "dashboard" || view === "repo");
   el.innerHTML = repos
     .map((r) => {
       const bucket = scoreBucket(kgIndex(latestRunCache[r.id]));
@@ -160,6 +166,16 @@ function renderSidebar() {
     })
     .join("");
   $all(".sidebar-repo-row", el).forEach((row) => row.addEventListener("click", () => showRepoDetail(row.dataset.id)));
+}
+
+// The repo list's own expand/collapse state (independent of which page is open --
+// collapsing it while a repo is active just tucks the list away, same as a
+// VS Code / Finder sidebar section) persists across reloads like the theme does.
+function setRepoSectionCollapsed(collapsed) {
+  $("#sidebarRepoList").classList.toggle("is-hidden", collapsed);
+  $("#sidebarRepoChevron").classList.toggle("is-collapsed", collapsed);
+  $("#sidebarReposBtn").setAttribute("aria-expanded", String(!collapsed));
+  try { localStorage.setItem("ta-repos-collapsed", collapsed ? "1" : "0"); } catch (e) {}
 }
 
 async function renderDashboard() {
@@ -241,8 +257,12 @@ function basePathname() {
   return new URL(document.baseURI).pathname; // e.g. "/testatlas/" or "/" -- always trailing-slashed
 }
 
-function routePath(repoId, tab) {
-  const rel = repoId ? `repo/${encodeURIComponent(repoId)}/${tab || "overview"}` : "";
+// Three pages now instead of two: "overview" (the new charts dashboard, at the
+// root path), "repos" (the existing repo grid, at "/repos" -- its internal
+// name/DOM id/functions are still "dashboard", kept as-is to avoid rewriting
+// already-tested code for a rename), and "repo" (a single repo, unchanged).
+function routePath(page, repoId, tab) {
+  const rel = page === "repo" ? `repo/${encodeURIComponent(repoId)}/${tab || "overview"}` : page === "repos" ? "repos" : "";
   return new URL(rel, document.baseURI).pathname;
 }
 
@@ -250,20 +270,23 @@ function parseRoute(pathname) {
   const base = basePathname();
   const rel = pathname.startsWith(base) ? pathname.slice(base.length) : "";
   const parts = rel.split("/").filter(Boolean);
-  if (parts[0] !== "repo" || !parts[1]) return { repoId: null, tab: null };
-  const tab = $all(".tab").some((t) => t.dataset.tab === parts[2]) ? parts[2] : "overview";
-  return { repoId: decodeURIComponent(parts[1]), tab };
+  if (parts[0] === "repo" && parts[1]) {
+    const tab = $all(".tab").some((t) => t.dataset.tab === parts[2]) ? parts[2] : "overview";
+    return { page: "repo", repoId: decodeURIComponent(parts[1]), tab };
+  }
+  if (parts[0] === "repos") return { page: "repos", repoId: null, tab: null };
+  return { page: "overview", repoId: null, tab: null };
 }
 
 // Pushes (or replaces) a history entry for wherever we're navigating TO. Called by
-// user-driven navigation (showDashboard, showRepoDetail, a tab click) -- never by
-// the router itself syncing the view to a URL that's already current (initial
-// load, popstate), since in that case the address bar is already right and
-// pushing again would just litter the back-button history. Title is separate
-// (setTitle below): it has to update in EVERY case, including the ones where
-// there's no history entry to push.
-function navigate(repoId, tab, { replace = false } = {}) {
-  const path = routePath(repoId, tab);
+// user-driven navigation (showOverview, showDashboard, showRepoDetail, a tab
+// click) -- never by the router itself syncing the view to a URL that's already
+// current (initial load, popstate), since in that case the address bar is
+// already right and pushing again would just litter the back-button history.
+// Title is separate (setTitle below): it has to update in EVERY case, including
+// the ones where there's no history entry to push.
+function navigate(page, repoId, tab, { replace = false } = {}) {
+  const path = routePath(page, repoId, tab);
   if (path === location.pathname && !replace) return; // already there (e.g. re-clicking the active tab)
   history[replace ? "replaceState" : "pushState"]({}, "", path);
 }
@@ -279,12 +302,190 @@ function setTitle(repoId) {
 // same as any SPA hitting an unresolvable route, rather than a dead page.
 function applyRoute() {
   const route = parseRoute(location.pathname);
-  if (route.repoId && repos.some((r) => r.id === route.repoId)) {
+  if (route.page === "repo" && repos.some((r) => r.id === route.repoId)) {
     showRepoDetail(route.repoId, route.tab, { updateHistory: false });
-  } else {
-    if (route.repoId) toast("That repo link no longer resolves — showing all repos.", "error");
+  } else if (route.page === "repo") {
+    toast("That repo link no longer resolves — showing all repos.", "error");
     showDashboard({ updateHistory: false });
+  } else if (route.page === "repos") {
+    showDashboard({ updateHistory: false });
+  } else {
+    showOverview({ updateHistory: false });
   }
+}
+
+// --------------------------------------------------------------------------- overview dashboard
+//
+// A second landing page alongside the repo grid: a handful of charts built from
+// data already on hand, or one extra fetch for full run history -- hand-coded
+// in SVG/CSS/HTML like the rest of this app, no charting library, no simulated
+// numbers. Built after a reference screenshot of a React/Tailwind/Framer-Motion
+// widget board; this app has no React, Tailwind or build step to put that
+// component into, so this reproduces the IDEA (a dense, chart-driven overview)
+// with this app's own real, already-computed data instead.
+
+let allRunsCache = {}; // repo id -> full run history (array) -- for the activity heatmap only
+
+async function ensureAllRuns() {
+  const missing = repos.filter((r) => !(r.id in allRunsCache));
+  if (missing.length) {
+    const results = await Promise.all(missing.map((r) => api(`/repos/${r.id}/runs`).catch(() => [])));
+    missing.forEach((r, i) => { allRunsCache[r.id] = results[i]; });
+  }
+  // This fetch already has every repo's full run list -- piggyback the "latest
+  // run only" cache the repo grid and sidebar use off it too, so whichever page
+  // loads first warms the other instead of each doing its own fetch.
+  for (const r of repos) if (!(r.id in latestRunCache)) latestRunCache[r.id] = allRunsCache[r.id]?.[0] || null;
+}
+
+function showOverview(opts = {}) {
+  view = "overview";
+  activeRepoId = null;
+  $("#overviewView").hidden = false;
+  $("#dashboardView").hidden = true;
+  $("#repoView").hidden = true;
+  renderOverviewDashboard();
+  renderSidebar();
+  $("#topbarCrumb").textContent = "";
+  setTitle(null);
+  if (opts.updateHistory !== false) navigate("overview", null, null, { replace: !!opts.replace });
+}
+
+async function renderOverviewDashboard() {
+  if (!repos.length) {
+    $("#ovHero").innerHTML = "";
+    $("#ovActivity").innerHTML = `<p class="muted small">Add a repo to see activity here.</p>`;
+    $("#ovHealth").innerHTML = "";
+    $("#ovTopModules").innerHTML = "";
+    $("#ovLanguages").innerHTML = "";
+    return;
+  }
+  // Paint immediately from whatever's already cached (no flash of zeros), then
+  // fetch full run history (only thing not already on hand) and repaint for real.
+  renderOvHero();
+  renderOvHealth();
+  renderOvTopModules();
+  renderOvLanguages();
+  $("#ovActivity").innerHTML = `<p class="muted small">Loading…</p>`;
+
+  await ensureAllRuns();
+  if (view !== "overview") return; // navigated away while this was in flight
+
+  renderOvHero();
+  renderOvHealth();
+  renderOvTopModules();
+  renderOvLanguages();
+  renderOvActivity();
+}
+
+function renderOvHero() {
+  const scored = repos.map((r) => kgIndex(latestRunCache[r.id])).filter((s) => s !== null);
+  const avg = scored.length ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : null;
+  const totalFindings = repos.reduce((a, r) => a + (latestRunCache[r.id]?.finding_count ?? 0), 0);
+  const totalNodes = repos.reduce((a, r) => a + (latestRunCache[r.id]?.stats?.nodes ?? 0), 0);
+  const totalModules = repos.reduce((a, r) => a + (latestRunCache[r.id]?.stats?.module_scores?.length ?? 0), 0);
+  $("#ovHero").innerHTML = [
+    statCard(repos.length, "Repos connected"),
+    statCard(avg === null ? "—" : avg, "Average health score"),
+    statCard(totalNodes.toLocaleString(), "Total nodes analyzed"),
+    statCard(totalModules.toLocaleString(), "Total modules"),
+    statCard(totalFindings.toLocaleString(), "Open findings"),
+  ].join("");
+}
+
+function renderOvHealth() {
+  const buckets = { ok: 0, warn: 0, danger: 0, none: 0 };
+  for (const r of repos) buckets[scoreBucket(kgIndex(latestRunCache[r.id]))]++;
+  const total = repos.length || 1;
+  const seg = (key) => (buckets[key] ? `<span class="ov-health-seg score-${key}" style="width:${(buckets[key] / total) * 100}%"></span>` : "");
+  $("#ovHealth").innerHTML = `
+    <div class="ov-health-bar">${seg("ok")}${seg("warn")}${seg("danger")}${seg("none")}</div>
+    <ul class="ov-health-legend">
+      <li><span class="dot score-ok"></span>${buckets.ok} healthy</li>
+      <li><span class="dot score-warn"></span>${buckets.warn} needs attention</li>
+      <li><span class="dot score-danger"></span>${buckets.danger} critical</li>
+      ${buckets.none ? `<li><span class="dot score-none"></span>${buckets.none} not yet analyzed</li>` : ""}
+    </ul>`;
+}
+
+function renderOvTopModules() {
+  const top = repos
+    .map((r) => {
+      const m = latestRunCache[r.id]?.stats?.module_scores?.[0];
+      return m ? { repo: r.name, module: m.module, pagerank: m.pagerank } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.pagerank - a.pagerank)
+    .slice(0, 6);
+  if (!top.length) { $("#ovTopModules").innerHTML = `<p class="muted small">No successful runs yet.</p>`; return; }
+  const max = top[0].pagerank || 1;
+  $("#ovTopModules").innerHTML = top
+    .map(
+      (m) => `
+    <div class="ov-module-row">
+      <div class="ov-module-info">
+        <div class="ov-module-name">${escapeHtml(m.module)}</div>
+        <div class="muted small">${escapeHtml(m.repo)}</div>
+      </div>
+      <div class="rank-bar-track ov-module-bar"><div class="rank-bar" style="width:${(m.pagerank / max) * 100}%"></div></div>
+    </div>`
+    )
+    .join("");
+}
+
+function renderOvLanguages() {
+  const totals = {};
+  for (const r of repos) {
+    const byLang = latestRunCache[r.id]?.stats?.by_language || {};
+    for (const [lang, n] of Object.entries(byLang)) totals[lang] = (totals[lang] || 0) + n;
+  }
+  const entries = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const grand = entries.reduce((a, [, n]) => a + n, 0);
+  if (!grand) { $("#ovLanguages").innerHTML = `<p class="muted small">No successful runs yet.</p>`; return; }
+  const colors = ["var(--accent)", "var(--ok)", "var(--warn)", "var(--danger)", "var(--muted-2)"];
+  $("#ovLanguages").innerHTML = `
+    <div class="ov-lang-bar">${entries.map(([, n], i) => `<span style="width:${(n / grand) * 100}%; background:${colors[i % colors.length]}"></span>`).join("")}</div>
+    <ul class="ov-lang-legend">
+      ${entries.map(([lang, n], i) => `<li><span class="dot" style="background:${colors[i % colors.length]}"></span>${LANGUAGE_LABELS[lang] || lang}<span class="muted">${n.toLocaleString()} files</span></li>`).join("")}
+    </ul>`;
+}
+
+// A GitHub-contributions-style grid: one cell per day over the last 12 weeks,
+// shaded by how many analysis runs (summed across every repo) happened that day.
+function renderOvActivity() {
+  const counts = {}; // "YYYY-MM-DD" -> run count that day, across all repos
+  for (const runs of Object.values(allRunsCache)) {
+    for (const r of runs) {
+      if (!r.started_at) continue;
+      const day = r.started_at.slice(0, 10);
+      counts[day] = (counts[day] || 0) + 1;
+    }
+  }
+  const weeks = 12;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - (weeks * 7 - 1) - today.getDay());
+  const max = Math.max(1, ...Object.values(counts));
+  const level = (n) => (n === 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4)));
+  const cols = [];
+  for (let w = 0; w < weeks; w++) {
+    const cells = [];
+    for (let d = 0; d < 7; d++) {
+      const date = new Date(start);
+      date.setDate(date.getDate() + w * 7 + d);
+      const key = date.toISOString().slice(0, 10);
+      const future = date > today;
+      const n = counts[key] || 0;
+      cells.push(`<span class="ov-activity-cell${future ? " is-future" : ` lv${level(n)}`}" title="${future ? "" : `${date.toLocaleDateString()}: ${n} run${n === 1 ? "" : "s"}`}"></span>`);
+    }
+    cols.push(`<div class="ov-activity-col">${cells.join("")}</div>`);
+  }
+  const totalRuns = Object.values(counts).reduce((a, b) => a + b, 0);
+  $("#ovActivity").innerHTML = `
+    <div class="ov-activity-summary"><b>${totalRuns}</b> run${totalRuns === 1 ? "" : "s"} in the last ${weeks} weeks</div>
+    <div class="ov-activity-grid">${cols.join("")}</div>
+    <div class="ov-activity-scale"><span class="muted small">Less</span>${[0, 1, 2, 3, 4].map((l) => `<span class="ov-activity-cell lv${l}"></span>`).join("")}<span class="muted small">More</span></div>`;
 }
 
 // --------------------------------------------------------------------------- views
@@ -292,18 +493,20 @@ function applyRoute() {
 function showDashboard(opts = {}) {
   view = "dashboard";
   activeRepoId = null;
+  $("#overviewView").hidden = true;
   $("#dashboardView").hidden = false;
   $("#repoView").hidden = true;
   renderDashboard();
   renderSidebar();
-  $("#topbarCrumb").textContent = "";
+  $("#topbarCrumb").textContent = "Repos";
   setTitle(null);
-  if (opts.updateHistory !== false) navigate(null, null, { replace: !!opts.replace });
+  if (opts.updateHistory !== false) navigate("repos", null, null, { replace: !!opts.replace });
 }
 
 async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   view = "repo";
   activeRepoId = id;
+  $("#overviewView").hidden = true;
   $("#dashboardView").hidden = true;
   $("#repoView").hidden = false;
   const repo = repos.find((r) => r.id === id);
@@ -320,7 +523,7 @@ async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   // "graph" shouldn't flash Overview first while findings/docs/gaps/tests load.
   activateTab(tab);
   setTitle(id);
-  if (opts.updateHistory !== false) navigate(id, tab, { replace: !!opts.replace });
+  if (opts.updateHistory !== false) navigate("repo", id, tab, { replace: !!opts.replace });
   setModuleInfo({});
   await loadModuleLabels();
   await loadRuns();
@@ -719,7 +922,7 @@ function initTabs() {
   $all(".tab").forEach((tab) =>
     tab.addEventListener("click", () => {
       activateTab(tab.dataset.tab);
-      navigate(activeRepoId, tab.dataset.tab); // reflect the tab switch in the URL too
+      navigate("repo", activeRepoId, tab.dataset.tab); // reflect the tab switch in the URL too
     })
   );
 }
@@ -1686,9 +1889,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#themeToggleCompact").addEventListener("click", toggleTheme);
   $("#backToDashboard").addEventListener("click", () => showDashboard());
   $("#addRepoBtn").addEventListener("click", () => openRepoModal());
-  $("#sidebarBrandBtn").addEventListener("click", () => showDashboard());
+  $("#sidebarBrandBtn").addEventListener("click", () => showOverview());
   $("#sidebarAddRepoBtn").addEventListener("click", () => openRepoModal());
-  $("#topbarBrandBtn").addEventListener("click", () => showDashboard());
+  $("#topbarBrandBtn").addEventListener("click", () => showOverview());
+  $("#sidebarDashboardBtn").addEventListener("click", () => showOverview());
+  $("#ovViewReposBtn").addEventListener("click", () => showDashboard());
+  $("#sidebarReposBtn").addEventListener("click", (e) => {
+    if (e.target.closest("#sidebarRepoChevron")) {
+      setRepoSectionCollapsed(!$("#sidebarRepoChevron").classList.contains("is-collapsed"));
+      return;
+    }
+    showDashboard();
+  });
+  let collapsedAtLoad = false;
+  try { collapsedAtLoad = localStorage.getItem("ta-repos-collapsed") === "1"; } catch (e) {}
+  setRepoSectionCollapsed(collapsedAtLoad);
   $("#cancelRepoBtn").addEventListener("click", closeRepoModal);
   $("#repoModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "repoModalBackdrop") closeRepoModal(); });
   $("#repoForm").addEventListener("submit", submitRepoForm);

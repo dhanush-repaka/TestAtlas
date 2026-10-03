@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=39" />
+<link rel="stylesheet" href="static/styles.css?v=41" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -28,8 +28,19 @@
         </span>
         <span class="brand-name">TestAtlas</span>
       </button>
-      <div class="sidebar-section-label">Repos</div>
-      <nav class="sidebar-repos" id="sidebarRepoList"></nav>
+      <nav class="sidebar-nav">
+        <button type="button" class="sidebar-nav-item" id="sidebarDashboardBtn">
+          <svg class="ic" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/></svg>Dashboard
+        </button>
+      </nav>
+      <div class="sidebar-section">
+        <button type="button" class="sidebar-nav-item sidebar-section-btn" id="sidebarReposBtn">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span class="sidebar-nav-label">Repos</span>
+          <svg class="ic sidebar-chevron" id="sidebarRepoChevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <nav class="sidebar-repos" id="sidebarRepoList"></nav>
+      </div>
       <div class="sidebar-foot">
         <button class="sidebar-foot-btn" id="sidebarAddRepoBtn" title="Add repo">
           <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>New repo
@@ -60,7 +71,40 @@
   </header>
 
   <main class="main">
-    <div id="dashboardView" class="dashboard-view">
+    <div id="overviewView" class="overview-view" hidden>
+      <div class="dashboard-heading">
+        <div class="dashboard-heading-row">
+          <h1>Dashboard</h1>
+          <button type="button" class="link-btn" id="ovViewReposBtn">View all repos<svg class="ic" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <p class="muted">A live view across every repo you've connected — nothing simulated, this is your own data.</p>
+      </div>
+      <div class="ov-hero-grid" id="ovHero"></div>
+      <div class="ov-grid">
+        <section class="ov-card ov-span-2">
+          <h3>Run activity</h3>
+          <p class="muted small">Analyses run per day across every repo, the last 12 weeks.</p>
+          <div id="ovActivity"></div>
+        </section>
+        <section class="ov-card">
+          <h3>Repo health</h3>
+          <p class="muted small">Knowledge Graph Index across your repos.</p>
+          <div id="ovHealth"></div>
+        </section>
+        <section class="ov-card">
+          <h3>Most critical modules</h3>
+          <p class="muted small">Highest PageRank module in each repo's latest run.</p>
+          <div id="ovTopModules"></div>
+        </section>
+        <section class="ov-card">
+          <h3>Languages analyzed</h3>
+          <p class="muted small">Files by language, across every repo.</p>
+          <div id="ovLanguages"></div>
+        </section>
+      </div>
+    </div>
+
+    <div id="dashboardView" class="dashboard-view" hidden>
       <div class="dashboard-heading">
         <h1>Your repos</h1>
         <p class="muted">Each tile is a codebase's knowledge graph — open one to explore it, or run it again to see what changed.</p>
@@ -357,6 +401,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=46"></script>
+  <script src="static/app.js?v=48"></script>
 </body>
 </html>
