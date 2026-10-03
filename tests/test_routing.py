@@ -95,12 +95,32 @@ class LoginNextRoundTripTests(unittest.TestCase):
             p.stop()
         self._tmp.cleanup()
 
-    def test_an_unauthenticated_deep_link_is_carried_through_login_and_back(self):
-        redirected = self.client.get("/repo/abc/graph", headers=HTML)
-        self.assertEqual(redirected.status_code, 307)
-        self.assertEqual(redirected.headers["location"], f"{BASE_PATH}/login?next=%2Frepo%2Fabc%2Fgraph")
+    def test_viewing_a_repo_deep_link_without_a_session_is_read_only_not_redirected(self):
+        # AuthMiddleware only gates writes now -- browsing (including a shared
+        # repo/tab deep link) renders for anyone, same shell as the root.
+        page = self.client.get("/repo/abc/graph", headers=HTML)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("app.js", page.text)
 
-        form_page = self.client.get(redirected.headers["location"], headers=HTML)
+    def test_a_write_without_a_session_is_rejected(self):
+        r = self.client.post("/api/repos", json={"name": "x", "source_type": "local"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_the_test_case_export_get_is_gated_like_a_write(self):
+        # The one GET that behaves like a write (it hands out generated
+        # content) -- carried through login via `next` exactly like a page
+        # redirect used to be, so it isn't silently readable either.
+        redirected = self.client.get("/api/repos/abc/test-cases/export", headers=HTML)
+        self.assertEqual(redirected.status_code, 307)
+        self.assertEqual(
+            redirected.headers["location"],
+            f"{BASE_PATH}/login?next=%2Fapi%2Frepos%2Fabc%2Ftest-cases%2Fexport",
+        )
+
+    def test_logging_in_from_a_link_that_carries_next_lands_back_there(self):
+        # What the UI's visible "Log in" link does: carries the page the
+        # visitor was already looking at through login and back to it.
+        form_page = self.client.get("/login", params={"next": "/repo/abc/graph"}, headers=HTML)
         self.assertIn('<input type="hidden" name="next" value="/repo/abc/graph">', form_page.text)
 
         submitted = self.client.post("/login", data={"password": "pw123", "next": "/repo/abc/graph"})

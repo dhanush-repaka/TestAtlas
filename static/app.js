@@ -4,6 +4,21 @@ let activeRepoId = null;
 let activeRuns = [];
 let view = "overview"; // "overview" | "dashboard" | "repo" -- "dashboard" is the repo grid (named before the overview existed)
 
+// True on a password-protected deployment, for a visitor without a session --
+// AuthMiddleware (server/auth.py) rejects every write regardless, this just
+// keeps the UI from offering buttons that would 401. Resolved once from
+// /api/system/config before the first route render (see loadSystemConfig/
+// DOMContentLoaded), so every render below can just read it synchronously.
+let readOnly = false;
+// Fixed-id controls that each trigger a write and are never re-rendered --
+// disabled once in applyReadOnlyUI(). Anything dynamically re-rendered (a
+// per-module "Generate" button, per-document Edit/Delete, the test-case
+// export links) bakes the same `readOnly` check into its own render instead.
+const READ_ONLY_LOCKED_IDS = [
+  "addRepoBtn", "sidebarAddRepoBtn", "editRepoBtn", "testConnBtn", "runBtn",
+  "deleteRepoBtn", "addDocBtn", "runAutoGapBtn", "submitGapFindingsBtn",
+];
+
 // Each tile's latest run, kept across dashboard visits (not just within one
 // renderDashboard() call) -- so returning to "Your repos" (the back link, a
 // delete, closing the add-repo modal, ...) repaints every already-seen repo
@@ -301,6 +316,9 @@ function parseRoute(pathname) {
 // the ones where there's no history entry to push.
 function navigate(page, repoId, tab, { replace = false } = {}) {
   const path = routePath(page, repoId, tab);
+  // Keeps the "Log in" link's `next` pointed at wherever this click is taking
+  // the visitor, so signing in from here lands them back on it, not the root.
+  if (readOnly) $("#loginLink").href = `login?next=${encodeURIComponent(path)}`;
   if (path === location.pathname && !replace) return; // already there (e.g. re-clicking the active tab)
   history[replace ? "replaceState" : "pushState"]({}, "", path);
 }
@@ -584,7 +602,7 @@ function renderModuleNamingControl() {
   const el = $("#moduleNamingControl");
   if (!moduleNamingAvailable) { el.innerHTML = ""; return; }
   const hasAny = Object.keys(activeModuleLabels).length > 0;
-  el.innerHTML = `<button type="button" class="btn btn-sm" id="generateModuleLabelsBtn">${hasAny ? "Re-generate plain-English names" : "Give modules plain-English names"}</button>`;
+  el.innerHTML = `<button type="button" class="btn btn-sm" id="generateModuleLabelsBtn" ${readOnly ? "disabled" : ""}>${hasAny ? "Re-generate plain-English names" : "Give modules plain-English names"}</button>`;
   $("#generateModuleLabelsBtn").addEventListener("click", (ev) => generateModuleLabels(ev.target));
 }
 
@@ -1044,10 +1062,25 @@ function setSourceType(value) {
 // machine, so the button stays hidden unless the server says it's offered
 // (never on a deployed instance).
 async function loadSystemConfig() {
-  const available = await api("/system/config")
-    .then((c) => c.folder_picker_available)
-    .catch(() => false);
-  $("#browseFolderBtn").classList.toggle("is-hidden", !available);
+  const config = await api("/system/config").catch(() => ({}));
+  $("#browseFolderBtn").classList.toggle("is-hidden", !config.folder_picker_available);
+  readOnly = !!config.login_required && !config.authenticated;
+  applyReadOnlyUI();
+}
+
+// Runs once readOnly is known (see DOMContentLoaded -- resolved before the
+// first route render) so every button below is correct from first paint.
+function applyReadOnlyUI() {
+  const loginLink = $("#loginLink");
+  loginLink.classList.toggle("is-hidden", !readOnly);
+  // Carries wherever the visitor already is through login and back (server/
+  // auth.py's safe_next_path validates it), so signing in from a repo's Graph
+  // tab doesn't dump them back on the dashboard.
+  if (readOnly) loginLink.href = `login?next=${encodeURIComponent(location.pathname)}`;
+  for (const id of READ_ONLY_LOCKED_IDS) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = readOnly;
+  }
 }
 
 async function browseForFolder() {
@@ -1506,7 +1539,7 @@ function renderModuleNamesBanner() {
       <b>These module names come straight from the code</b> (like <code>components.cart</code>) — hard to follow unless you've read it.
       Get plain-English names for the screens and features instead — "Shopping Cart", "Product Page" — plus a one-line description of each.
     </div>
-    <button type="button" class="btn btn-primary btn-sm" id="nameModulesBtn">Name modules in plain English</button>`;
+    <button type="button" class="btn btn-primary btn-sm" id="nameModulesBtn" ${readOnly ? "disabled" : ""}>Name modules in plain English</button>`;
 }
 
 function moduleGenRow(m) {
@@ -1521,7 +1554,7 @@ function moduleGenRow(m) {
         </div>
         <div class="module-gen-actions">
           <span class="small muted">${count ? `${count} generated` : ""}</span>
-          <button type="button" class="btn btn-sm module-gen-btn" data-module="${escapeHtml(m.module)}">${count ? "Regenerate" : "Generate"}</button>
+          <button type="button" class="btn btn-sm module-gen-btn" data-module="${escapeHtml(m.module)}" ${readOnly ? "disabled" : ""}>${count ? "Regenerate" : "Generate"}</button>
         </div>
       </div>`;
 }
@@ -1622,8 +1655,9 @@ function updateExportLinks(count) {
   for (const a of $all("#testCaseExport a")) {
     params.set("format", a.dataset.format);
     a.href = `${API}/repos/${activeRepoId}/test-cases/export?${params}`;
-    a.classList.toggle("is-disabled", !count);
-    a.setAttribute("aria-disabled", String(!count));
+    const disabled = !count || readOnly;
+    a.classList.toggle("is-disabled", disabled);
+    a.setAttribute("aria-disabled", String(disabled));
   }
   $("#testCaseExport").classList.toggle("is-hidden", !activeTestCases.length);
 }
@@ -1721,8 +1755,8 @@ function renderDocCard(doc) {
       <div class="doc-card-head">
         <h4>${escapeHtml(doc.name)}</h4>
         <div class="doc-card-actions">
-          <button type="button" class="btn" data-action="edit-doc">Edit</button>
-          <button type="button" class="btn btn-danger" data-action="delete-doc">Delete</button>
+          <button type="button" class="btn" data-action="edit-doc" ${readOnly ? "disabled" : ""}>Edit</button>
+          <button type="button" class="btn btn-danger" data-action="delete-doc" ${readOnly ? "disabled" : ""}>Delete</button>
         </div>
       </div>
       <div class="doc-card-content">${escapeHtml(preview)}</div>
@@ -1894,10 +1928,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
   initTabsScroll();
   applyTheme(document.documentElement.dataset.theme || "dark");
-  await loadRepos(); // `repos` has to be populated before applyRoute() can tell a "/repo/<id>" URL is real
+  // Both resolved before the first render: loadRepos() so applyRoute() can tell a
+  // "/repo/<id>" URL is real, loadSystemConfig() so readOnly is correct from the
+  // first paint instead of flipping buttons on a moment after they're shown enabled.
+  await Promise.all([loadRepos(), loadSystemConfig()]);
   applyRoute();
   window.addEventListener("popstate", applyRoute);
-  loadSystemConfig();
 
   $("#themeToggle").addEventListener("click", toggleTheme);
   $("#themeToggleCompact").addEventListener("click", toggleTheme);

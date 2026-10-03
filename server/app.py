@@ -780,8 +780,16 @@ def _folder_picker_allowed(request: Request) -> bool:
 
 @api.get("/system/config")
 def api_system_config(request: Request):
-    """Lets the UI know whether to show the Local-folder "Browse..." button."""
-    return {"folder_picker_available": _folder_picker_allowed(request)}
+    """Lets the UI know whether to show the Local-folder "Browse..." button,
+    and whether this visitor is signed in -- an anonymous visitor on a
+    password-protected deployment gets read-only access (AuthMiddleware
+    enforces it server-side regardless), so the UI disables every button
+    that would otherwise hit a write endpoint."""
+    return {
+        "folder_picker_available": _folder_picker_allowed(request),
+        "login_required": auth.password_configured(),
+        "authenticated": auth.is_authenticated(request),
+    }
 
 
 @api.post("/system/pick-folder")

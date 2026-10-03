@@ -41,6 +41,10 @@ def check_password(candidate: str) -> bool:
     return bool(expected) and hmac.compare_digest(candidate, expected)
 
 
+def is_authenticated(request: Request) -> bool:
+    return verify_session_token(request.cookies.get(COOKIE_NAME))
+
+
 def _sign(payload: str) -> str:
     return hmac.new(_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
 
@@ -78,9 +82,15 @@ def safe_next_path(raw: str | None, base_path: str) -> str:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Redirects (pages) or 401s (everything else) any request without a
-    valid session cookie, except the login page and its own form submission.
+    """Gates every write (anything but GET) and a couple of GETs that act like
+    one -- everything else is open to read without a session, so an anonymous
+    visitor can browse repos/graphs/findings/test cases but never change
+    anything. Password holders still sign in at /login for full access.
     A no-op entirely when TESTATLAS_PASSWORD isn't set."""
+
+    # GET endpoints that export/trigger something rather than just reading --
+    # kept to a suffix match since every one of these lives under /api/repos/{id}/...
+    WRITE_LIKE_GET_SUFFIXES = ("/test-cases/export",)
 
     def __init__(self, app, base_path: str = ""):
         super().__init__(app)
@@ -94,6 +104,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if verify_session_token(request.cookies.get(COOKIE_NAME)):
+            return await call_next(request)
+
+        if request.method == "GET" and not request.url.path.endswith(self.WRITE_LIKE_GET_SUFFIXES):
             return await call_next(request)
 
         accepts_html = "text/html" in request.headers.get("accept", "")
