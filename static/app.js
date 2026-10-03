@@ -138,7 +138,28 @@ function kgRingSvg(score) {
 
 async function loadRepos() {
   repos = await api("/repos");
+  renderSidebar();
   if (view === "dashboard") renderDashboard();
+}
+
+// The persistent nav rail's repo list -- see static/styles.css's layout comment for
+// why this exists alongside the dashboard grid rather than replacing it. Cheap to
+// call often: it only reads already-fetched state (repos, latestRunCache,
+// activeRepoId), so showDashboard()/showRepoDetail() call it on every navigation
+// just to keep the active highlight correct, not only when the repo list changes.
+function renderSidebar() {
+  const el = $("#sidebarRepoList");
+  if (!el) return;
+  el.innerHTML = repos
+    .map((r) => {
+      const bucket = scoreBucket(kgIndex(latestRunCache[r.id]));
+      return `
+        <button type="button" class="sidebar-repo-row${r.id === activeRepoId ? " active" : ""}" data-id="${r.id}" title="${escapeHtml(r.name)}">
+          <span class="sidebar-repo-dot score-${bucket}"></span><span class="name">${escapeHtml(r.name)}</span>
+        </button>`;
+    })
+    .join("");
+  $all(".sidebar-repo-row", el).forEach((row) => row.addEventListener("click", () => showRepoDetail(row.dataset.id)));
 }
 
 async function renderDashboard() {
@@ -160,6 +181,7 @@ async function renderDashboard() {
   for (let i = 0; i < repos.length; i++) latestRunCache[repos[i].id] = runsByRepo[i][0] || null;
   grid.innerHTML = repos.map((r) => repoTileHtml(r, latestRunCache[r.id])).join("") + addTileHtml();
   wireTiles();
+  renderSidebar(); // the rail's status dots were all "none" (gray) until the cache just filled in above
 }
 
 function skeletonTileHtml() {
@@ -273,6 +295,8 @@ function showDashboard(opts = {}) {
   $("#dashboardView").hidden = false;
   $("#repoView").hidden = true;
   renderDashboard();
+  renderSidebar();
+  $("#topbarCrumb").textContent = "";
   setTitle(null);
   if (opts.updateHistory !== false) navigate(null, null, { replace: !!opts.replace });
 }
@@ -283,6 +307,8 @@ async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   $("#dashboardView").hidden = true;
   $("#repoView").hidden = false;
   const repo = repos.find((r) => r.id === id);
+  renderSidebar();
+  $("#topbarCrumb").textContent = repo.name;
   $("#repoTitle").textContent = repo.name;
   $("#repoSourceChip").innerHTML = sourceIcon(repo.source_type);
   $("#repoSubtitle").textContent =
@@ -1044,8 +1070,11 @@ async function testGithubFromModal() {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  $(".theme-sun").classList.toggle("is-hidden", theme === "light");
-  $(".theme-moon").classList.toggle("is-hidden", theme !== "light");
+  // Two toggle buttons exist now (the sidebar's, and the topbar's compact one that only
+  // shows when the sidebar is hidden on narrow screens) -- both need their icon updated,
+  // not just whichever one a plain $() happens to find first.
+  $all(".theme-sun").forEach((el) => el.classList.toggle("is-hidden", theme === "light"));
+  $all(".theme-moon").forEach((el) => el.classList.toggle("is-hidden", theme !== "light"));
   try { localStorage.setItem("ta-theme", theme); } catch (e) {}
 }
 function toggleTheme() {
@@ -1654,8 +1683,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   loadSystemConfig();
 
   $("#themeToggle").addEventListener("click", toggleTheme);
+  $("#themeToggleCompact").addEventListener("click", toggleTheme);
   $("#backToDashboard").addEventListener("click", () => showDashboard());
   $("#addRepoBtn").addEventListener("click", () => openRepoModal());
+  $("#sidebarBrandBtn").addEventListener("click", () => showDashboard());
+  $("#sidebarAddRepoBtn").addEventListener("click", () => openRepoModal());
+  $("#topbarBrandBtn").addEventListener("click", () => showDashboard());
   $("#cancelRepoBtn").addEventListener("click", closeRepoModal);
   $("#repoModalBackdrop").addEventListener("click", (e) => { if (e.target.id === "repoModalBackdrop") closeRepoModal(); });
   $("#repoForm").addEventListener("submit", submitRepoForm);
