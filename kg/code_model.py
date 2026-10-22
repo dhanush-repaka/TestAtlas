@@ -26,6 +26,10 @@ class CodeFunction:
     class_qualname: str | None
     calls: list[str] = field(default_factory=list)  # resolved qualnames of things it calls
     lineno: int = 0
+    # HTTP route(s) this function is registered against, e.g. [{"method": "post", "path": "/checkout"}]
+    # -- empty for an ordinary function. Populated by a parser that reads decorators
+    # (kg/python_ast_parser.py); makes this an entry point for kg/journeys.py.
+    routes: list[dict] = field(default_factory=list)
 
 
 @dataclass

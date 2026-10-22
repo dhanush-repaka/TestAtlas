@@ -39,6 +39,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from kg.doc_gaps import known_code_names as _known_code_names, canonical_cover as _canonical_cover
+from llm_logging import call_and_log
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
 ALLOWED_TEST_CASE_CATEGORIES = {"happy_path", "edge_case", "error_handling"}
@@ -125,12 +127,21 @@ def _target_case_count(context: dict) -> int:
     return max(floor, min(HARD_CASE_CAP, round(wanted)))
 
 
-def _build_prompt(context: dict, target: int, must_trigger: list[str] | None = None) -> str:
+def _build_prompt(context: dict, must_trigger: list[str] | None = None, sources: dict[str, str] | None = None) -> str:
     module_name = context["modules"][0]["module"] if context["modules"] else "(unknown)"
     display = context.get("display_name")
     named = f' (known as "{display}")' if display else ""
     about = f'\nWhat this module is for, in the words of the product team: {context["description"]}' if context.get("description") else ""
     modules_json = json.dumps(context["modules"], indent=2)
+    sources_block = ""
+    if sources:
+        snippets = "\n\n".join(f"# {name}\n{src}" for name, src in sources.items())
+        sources_block = f"""
+REAL SOURCE CODE for the functions/methods above -- this is what they actually DO, not just their names. Base every case's expected result on this, not on what the name or a document implies the code should do. If the real behavior here contradicts what a document describes, write the case's expected result to match what the code ACTUALLY does -- a separate pass compares this case against the project's documents and flags the mismatch; your job here is accuracy to the code, not to the spec:
+---
+{snippets}
+---
+"""
     parts = context.get("parts") or []
     parts_block = ""
     if parts:
@@ -166,13 +177,14 @@ The code can show each of these on screen -- they are error, validation, empty-s
 
 {docs_block}
 
-THIS MODULE'S ACTUAL CONTENTS -- its files, each file's real top-level functions, its real classes WITH their real method names, and, for user-interface code, the "ui_text" found in each file: the real labels, headings, placeholders and messages a user sees on screen. File paths are ground truth too (for a web app they usually reveal the page route). This is derived directly from the source, not a summary; you do NOT have function/method bodies:
+THIS MODULE'S ACTUAL CONTENTS -- its files, each file's real top-level functions, its real classes WITH their real method names, and, for user-interface code, the "ui_text" found in each file: the real labels, headings, placeholders and messages a user sees on screen. File paths are ground truth too (for a web app they usually reveal the page route). This is derived directly from the source, not a summary:
 ---
 {modules_json}
 ---
-{parts_block}
+{sources_block}{parts_block}
 WHAT "FUNCTIONAL" MEANS HERE
-A functional test case verifies that a feature works from the OUTSIDE, the way a user -- or, for a library/API/service with no UI, a developer consuming its public interface -- would exercise it: a scenario with a goal, run start to finish. It is NOT a unit test. Never write one case per function or method, never "call X with input Y and check it returns Z", never assertions about internals. A good case exercises several of the code units above together as one flow (for example: add a product to the cart, open the cart, change the quantity, remove the item).
+A functional test case verifies that a feature works from the OUTSIDE, the way a user -- or, for a library/API/service with no UI, a developer consuming its public interface -- would exercise it: a scenario with a goal, run start to finish. It is NOT a unit test. Never write one case per function or method, never an assertion about internals the user/consumer can't observe. A good case exercises several of the code units above together as one flow (for example: add a product to the cart, open the cart, change the quantity, remove the item).
+This is NOT the same thing as refusing to vary a NUMERIC input: a customer typing "10" into a discount field and a customer typing "150" into it are two different real actions with two different real, user-visible outcomes -- that's boundary-value analysis (see COVERAGE below), not a unit test, and must not be collapsed into one case just because the flow around the input is the same.
 - If the module has a user interface: write from the user's side of the screen -- pages, buttons, forms, messages. Where "ui_text" is listed, those are the REAL strings on screen: quote them verbatim in your steps (click "Add To Cart"). Do NOT invent label or message text that isn't listed; when you need to refer to something whose exact wording you weren't given, describe it instead ("the checkout button", "the search field", "an error message saying the email is invalid").
 - Do not assume the UI offers an action in a state where it plausibly doesn't. If ui_text shows an empty-state message ("Your cart is empty.") and no control for the action you're imagining, the expected result for that state is the message itself -- not an error triggered by a button that likely isn't there.
 - If the module has no UI (a library, API or service): write from the consumer's side of its public interface -- what they call or send, and the observable result or response.
@@ -191,14 +203,15 @@ TEST CASE FORMAT (an Azure DevOps test case)
 - "covers": the real names from the contents above (functions, classes, or `Class.method`) that this scenario exercises, so it can be traced back to code. Use ONLY names that appear above.
 
 COVERAGE
-Design approximately {target} test cases. Spread them across the module's genuinely distinct features -- don't pile several cases on one feature and skip another. For each major feature write a happy-path case, then the failure and boundary cases a real tester would run: invalid or missing input, empty states (empty cart, empty list, no results), limits, repeated or duplicate actions, expired or invalid sessions or tokens, unauthorized access, an unavailable dependency. Express every one of them as a user action with an observable outcome, never an internal check. For a page or screen, treat each visible section as its own feature: the page loading with every section present, each section's content and the links or buttons in it, moving to another page and coming back, the small-screen (mobile) layout, and what shows when the data is missing or the page fails to load. Give priority to {priority_hint}.
+Decide for yourself how many test cases this module genuinely needs -- there is no target count or quota. Spread them across the module's genuinely distinct features -- don't pile several cases on one feature and skip another, and don't pad a simple module with filler just to produce a longer list. A module with one small, clear-cut feature and NO numeric range or threshold in it may need only 2-3 cases; a module with many distinct features, screens, or failure modes, OR a feature that involves a numeric range (see rule 3 below -- that alone can mean 5+ cases for what looks like "one small feature"), may legitimately need far more -- let the module's actual testable surface decide, not a preconceived number, and don't let "this module looks small" talk you out of covering a range's real boundaries. For each major feature write a happy-path case, then the failure and boundary cases a real tester would run: invalid or missing input, empty states (empty cart, empty list, no results), limits, repeated or duplicate actions, expired or invalid sessions or tokens, unauthorized access, an unavailable dependency. Express every one of them as a user action with an observable outcome, never an internal check. For a page or screen, treat each visible section as its own feature: the page loading with every section present, each section's content and the links or buttons in it, moving to another page and coming back, the small-screen (mobile) layout, and what shows when the data is missing or the page fails to load. Give priority to {priority_hint}.
 Two rules on top of that:
 1. Negative and edge cases matter as much as happy paths -- aim for at least a third of your cases to be "edge_case" or "error_handling", and don't leave a message the UI can show (see "ui_text") untested in favor of more happy paths.
 2. Every case is a distinct scenario. Don't write the same flow twice under different wording (for instance "update quantity" and "edit quantity"), and keep implementation details -- cookies, tokens, caches, function names -- out of titles and steps unless the user or consumer can actually see them.
+3. If a feature involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, a price, a quantity, a count), apply boundary-value analysis explicitly: write a SEPARATE case for each meaningfully distinct boundary, not one representative case for the whole range -- the minimum/zero value, a typical mid-range value, the maximum valid value, a value just past the limit, a value far past the limit, and a fractional/decimal value if the domain allows one. These are NOT duplicate cases -- real bugs hide at exactly these boundaries (off-by-one at the limit, rounding at a fraction, a sign error at zero), so each is its own case, not filler.
 
 {must_block}
 GROUNDING
-Base everything on the names, purposes, UI text and documents above. Because you can't see function bodies, don't assert exact numbers, formats or messages you weren't given -- describe outcomes at the level you can actually support. Don't invent features the contents don't suggest.
+Base everything on the names, purposes, UI text, documents, and real source code above. Where real source was shown for a name, your case's expected result must match what that code actually does, including a bug -- never soften or correct it to what you think it should do. Where you were NOT shown a name's real source, don't assert exact numbers, formats or messages you weren't given -- describe outcomes at the level you can actually support. Don't invent features the contents don't suggest.
 
 Respond with ONLY a JSON object of this exact shape, no other text:
 {{"test_cases": [
@@ -223,36 +236,10 @@ If this module and the documents genuinely don't support meaningful functional t
 _ACTION_KEYS = ("action", "step", "instruction", "description")
 _EXPECTED_KEYS = ("expected", "expected_result", "expected_outcome", "result")
 
-
-def _known_code_names(context: dict) -> dict[str, str]:
-    """Every name the model may legitimately cite in `covers` -> its canonical
-    form. Bare method names map to `Class.method` (first class wins)."""
-    canon: dict[str, str] = {}
-    for p in context.get("parts") or []:
-        canon.setdefault(p["name"], p["name"])
-    for m in context["modules"]:
-        for f in m["files"]:
-            for fn in f["functions"]:
-                canon.setdefault(fn, fn)
-            for c in f["classes"]:
-                canon.setdefault(c["name"], c["name"])
-                for meth in c["methods"]:
-                    canon.setdefault(f'{c["name"]}.{meth}', f'{c["name"]}.{meth}')
-                    canon.setdefault(meth, f'{c["name"]}.{meth}')
-    return canon
-
-
-def _canonical_cover(entry: str, canon: dict[str, str]) -> str | None:
-    """Maps what the model wrote to a real name, tolerating a module-path
-    prefix (`src.lib.Signer.sign` -> `Signer.sign`); None means it's invented."""
-    e = entry.strip()
-    if e in canon:
-        return canon[e]
-    parts = e.replace(":", ".").split(".")
-    for k in (2, 1):
-        if len(parts) >= k and ".".join(parts[-k:]) in canon:
-            return canon[".".join(parts[-k:])]
-    return None
+# _known_code_names/_canonical_cover now live in kg/doc_gaps.py (imported above
+# as known_code_names/canonical_cover) -- server/llm_story_coverage.py needs
+# the identical nominal citation check, and the context-dict shape they walk
+# belongs to that module already.
 
 
 def _text(value) -> str:
@@ -384,10 +371,10 @@ def _uncovered(messages: list[str], cases: list[dict]) -> list[str]:
     return [m for m in messages if m.lower().rstrip(".") not in blob]
 
 
-def _build_repair_prompt(context: dict, missing: list[str], existing_titles: list[str], must_trigger: list[str]) -> str:
+def _build_repair_prompt(context: dict, missing: list[str], existing_titles: list[str], must_trigger: list[str], sources: dict[str, str] | None = None) -> str:
     listed = "\n".join(f'  - "{m}"' for m in missing)
     have = "\n".join(f"  - {t}" for t in existing_titles) or "  (none)"
-    return _build_prompt(context, len(missing), must_trigger) + f"""
+    return _build_prompt(context, must_trigger, sources) + f"""
 
 FOLLOW-UP PASS -- this overrides the count and coverage guidance above.
 A first pass already wrote test cases with these titles (do NOT repeat or rephrase any of them):
@@ -407,9 +394,9 @@ def _thin(cases: list[dict]) -> list[dict]:
     return [c for c in cases if c["category"] == "happy_path" and len(c["steps"]) < _HAPPY_MIN_STEPS]
 
 
-def _build_deepen_prompt(context: dict, thin: list[dict], must_trigger: list[str]) -> str:
+def _build_deepen_prompt(context: dict, thin: list[dict], must_trigger: list[str], sources: dict[str, str] | None = None) -> str:
     listed = json.dumps([{"title": c["title"], "feature": c.get("feature"), "steps": c["steps"]} for c in thin], indent=2)
-    return _build_prompt(context, len(thin), must_trigger) + f"""
+    return _build_prompt(context, must_trigger, sources) + f"""
 
 FOLLOW-UP PASS -- this overrides the count and coverage guidance above.
 A first pass wrote these happy-path cases, but each has fewer than {_HAPPY_MIN_STEPS} steps -- it only opens the screen and looks at it, which tests nothing a user actually does:
@@ -433,13 +420,13 @@ def _ask(prompt: str, max_tokens: int, model: str) -> list:
     from openai import OpenAI  # lazy import: only needed when this is actually called
 
     try:
-        response = OpenAI().chat.completions.create(
+        response = call_and_log("test_generation.ask", model, lambda: OpenAI().chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.3,  # a little variety helps cover more distinct scenarios than temperature=0
             max_tokens=max_tokens,
-        )
+        ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
 
@@ -454,23 +441,30 @@ def _ask(prompt: str, max_tokens: int, model: str) -> list:
     return cases
 
 
-def generate_test_cases(context: dict, model: str | None = None) -> GenerationResult:
+def generate_test_cases(context: dict, model: str | None = None, sources: dict[str, str] | None = None) -> GenerationResult:
     """Designs functional test cases for `context` (from
-    kg.doc_gaps.module_test_context, scoped to one module). Validated cases
-    come back with a reason for every discard. If the module's UI can show
-    error/empty-state/unavailable messages that no case reaches, ONE follow-up
-    call asks only for those (checked in the text, not taken on the model's
-    word). Raises RuntimeError, message safe to show the user, on a missing
-    key, API error, or malformed response."""
+    kg.doc_gaps.module_test_context, scoped to one module). `sources` (from
+    kg.source_lookup.gather_module_sources) is real function/method bodies
+    for names in this module -- when given, a case's expected result is
+    grounded in what that code actually does, bugs included, not a guess from
+    names and documents alone. Validated cases come back with a reason for
+    every discard. If the module's UI can show error/empty-state/unavailable
+    messages that no case reaches, ONE follow-up call asks only for those
+    (checked in the text, not taken on the model's word). Raises
+    RuntimeError, message safe to show the user, on a missing key, API
+    error, or malformed response."""
     if not is_configured():
         raise RuntimeError("OPENAI_API_KEY isn't configured on this deployment.")
     model = _model(model)
 
-    target = _target_case_count(context)
     must = _must_trigger_messages(context)
-    # Scale the token budget with the target count -- a fixed budget only ever right for a
-    # small module silently truncates a larger one mid-JSON (see HARD_CASE_CAP's derivation).
-    max_tokens = min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + target * _TOKENS_PER_CASE)
+    # The model decides how many cases this module warrants (see _build_prompt's
+    # COVERAGE section) -- we no longer know the count in advance, so the
+    # initial call always requests the model's own full output ceiling rather
+    # than a budget scaled to a guessed target; HARD_CASE_CAP (derived from
+    # that same ceiling) is the client-side safety rail on how many we'll
+    # accept, not a target communicated to the model.
+    max_tokens = _MODEL_TOKEN_CEILING
 
     canon = _known_code_names(context)
     ui = _has_ui(context)
@@ -486,19 +480,19 @@ def generate_test_cases(context: dict, model: str | None = None) -> GenerationRe
                 result.cases.append(case)
                 seen.add(case["title"].lower())
 
-    take(_ask(_build_prompt(context, target, must), max_tokens, model))
+    take(_ask(_build_prompt(context, must, sources), max_tokens, model))
 
     missing = _uncovered(must, result.cases)
     if missing and len(result.cases) < HARD_CASE_CAP:
         before = len(result.cases)
-        prompt = _build_repair_prompt(context, missing, [c["title"] for c in result.cases], must)
+        prompt = _build_repair_prompt(context, missing, [c["title"] for c in result.cases], must, sources)
         take(_ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(missing) * _TOKENS_PER_CASE), model))
         result.repaired = len(result.cases) - before
     result.still_uncovered = _uncovered(must, result.cases)
 
     thin = _thin(result.cases)
     if thin:
-        prompt = _build_deepen_prompt(context, thin, must)
+        prompt = _build_deepen_prompt(context, thin, must, sources)
         by_title = {c["title"].lower(): i for i, c in enumerate(result.cases)}
         for raw in _ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
             case, _ = _check_case(raw, canon, ui)
@@ -510,6 +504,6 @@ def generate_test_cases(context: dict, model: str | None = None) -> GenerationRe
     return result
 
 
-def run_test_generation(context: dict, model: str | None = None) -> list[dict]:
+def run_test_generation(context: dict, model: str | None = None, sources: dict[str, str] | None = None) -> list[dict]:
     """The validated cases from generate_test_cases(), for callers that don't need the report."""
-    return generate_test_cases(context, model).cases
+    return generate_test_cases(context, model, sources).cases

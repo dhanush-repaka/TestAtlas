@@ -5,9 +5,10 @@ consistent with the rest of this project's cost constraints.
 """
 from __future__ import annotations
 
+import csv
 import io
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".docx", ".pptx", ".xlsx", ".pdf"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".docx", ".pptx", ".xlsx", ".pdf"}
 
 _MAX_CHARS = 300_000  # generous, but keeps a pathological huge file from blowing up
                        # the DB row / gap-analysis context size
@@ -33,6 +34,8 @@ def extract_text(filename: str, data: bytes) -> str:
 
     if ext in (".txt", ".md", ".markdown"):
         text = data.decode("utf-8", errors="replace")
+    elif ext == ".csv":
+        text = _extract_csv(data)
     elif ext == ".docx":
         text = _extract_docx(data)
     elif ext == ".pptx":
@@ -81,6 +84,23 @@ def _extract_pptx(data: bytes) -> str:
         if parts:
             slides_text.append(f"--- Slide {i} ---\n" + "\n".join(parts))
     return "\n\n".join(slides_text)
+
+
+def _extract_csv(data: bytes) -> str:
+    """Same "cell | cell | cell" per-row shape _extract_xlsx produces, so
+    anything downstream that reads a pipe-delimited table (server/
+    work_item_import.py's header/row detection, for an ADO work-item export)
+    doesn't care whether the original file was a real spreadsheet or a plain
+    CSV -- one format either way. Uses csv.reader, not a naive split(','), so
+    a quoted field containing a comma or an embedded newline (routine in an
+    ADO "Acceptance Criteria" export) is handled correctly."""
+    text = data.decode("utf-8-sig", errors="replace")  # utf-8-sig: strips an Excel-added BOM if present
+    rows_text = []
+    for row in csv.reader(io.StringIO(text)):
+        cells = [c.strip() for c in row if c.strip()]
+        if cells:
+            rows_text.append(" | ".join(cells))
+    return "\n".join(rows_text)
 
 
 def _extract_xlsx(data: bytes) -> str:

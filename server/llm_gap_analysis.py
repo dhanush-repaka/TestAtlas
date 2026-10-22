@@ -15,6 +15,7 @@ import json
 import os
 
 from kg.doc_gaps import ALLOWED_GAP_CATEGORIES
+from llm_logging import call_and_log
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -59,13 +60,14 @@ def run_gap_analysis(context: dict, model: str = DEFAULT_MODEL) -> list[dict]:
     from openai import OpenAI  # lazy import: only needed when this is actually called
 
     client = OpenAI()
+    prompt = _build_prompt(context)
     try:
-        response = client.chat.completions.create(
+        response = call_and_log("gap_analysis.run", model, lambda: client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": _build_prompt(context)}],
+            messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0,
-        )
+        ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
 

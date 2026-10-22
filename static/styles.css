@@ -33,8 +33,13 @@
   --ok-soft: rgba(61, 219, 147, 0.13);
   --radius: 10px;
   --radius-lg: 14px;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 24px -16px rgba(0, 0, 0, 0.55);
-  --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.65);
+  /* Layered and lightly accent-tinted rather than flat black -- a card should
+     read as lifted off the page, not just outlined. The faint teal cast in
+     the far shadow ties every elevated surface back to the brand accent. */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.28), 0 3px 8px -3px rgba(0, 0, 0, 0.4), 0 20px 40px -24px rgba(34, 211, 199, 0.22);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.35), 0 30px 70px -24px rgba(0, 0, 0, 0.65), 0 14px 46px -18px rgba(34, 211, 199, 0.2);
+  --accent-gradient: linear-gradient(135deg, var(--accent-strong), var(--accent));
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -61,8 +66,9 @@
   --warn-soft: rgba(184, 121, 10, 0.10);
   --ok: #148062;
   --ok-soft: rgba(20, 128, 98, 0.10);
-  --shadow-card: 0 1px 2px rgba(30, 34, 60, 0.04), 0 10px 24px -18px rgba(30, 34, 60, 0.18);
-  --shadow-lg: 0 24px 60px -24px rgba(30, 34, 60, 0.24);
+  --shadow-xs: 0 1px 2px rgba(30, 34, 60, 0.05);
+  --shadow-card: 0 1px 1px rgba(30, 34, 60, 0.05), 0 3px 8px -4px rgba(30, 34, 60, 0.12), 0 18px 36px -20px rgba(13, 143, 133, 0.14);
+  --shadow-lg: 0 2px 6px rgba(30, 34, 60, 0.08), 0 30px 64px -26px rgba(30, 34, 60, 0.26), 0 14px 40px -18px rgba(13, 143, 133, 0.14);
 }
 
 * { box-sizing: border-box; }
@@ -82,7 +88,8 @@ body {
 
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; transition: background .12s ease; }
+*::-webkit-scrollbar-thumb:hover { background: var(--muted-2); }
 *::-webkit-scrollbar-track { background: transparent; }
 
 .ic { width: 15px; height: 15px; flex: none; vertical-align: -2px; margin-right: 6px; }
@@ -243,13 +250,17 @@ mean "All repos" then re-scan a grid, every single time.
   transition: border-color .12s ease, background .12s ease, transform .06s ease;
   white-space: nowrap;
 }
-.btn:hover { border-color: var(--accent); background: var(--panel-3); }
+.btn:hover { border-color: var(--accent); background: var(--panel-3); transform: translateY(-1px); }
 .btn:active { transform: scale(.98); }
 .btn-primary {
-  background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 700;
+  background: var(--accent-gradient); border-color: var(--accent); color: var(--accent-contrast); font-weight: 700;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), 0 8px 20px -8px var(--accent-glow);
 }
-.btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), 0 10px 26px -8px var(--accent-glow); }
+.btn-primary:hover {
+  background: var(--accent-gradient); border-color: var(--accent-strong); transform: translateY(-1px);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), 0 12px 30px -8px var(--accent-glow);
+  filter: brightness(1.05);
+}
 .btn-danger { color: var(--danger); }
 .btn-danger:hover { border-color: var(--danger); background: var(--danger-soft); }
 .btn-block { width: 100%; }
@@ -277,9 +288,21 @@ mean "All repos" then re-scan a grid, every single time.
 
 /* --------------------------------------------------------------------- dashboard tiles */
 
-.dashboard-heading { margin-bottom: 28px; }
-.dashboard-heading h1 { margin: 0 0 7px; font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+.dashboard-heading { margin-bottom: 28px; position: relative; }
+.dashboard-heading h1 { margin: 0 0 7px; font-size: 30px; font-weight: 800; letter-spacing: -.025em; }
 .dashboard-heading p { font-size: 13.5px; max-width: 56ch; }
+
+/* A quiet radial-gradient backdrop behind the dashboard's first screen --
+   pure CSS, no images -- so a demo's opening frame has some presence instead
+   of cards sitting on a flat background. Scoped to the overview landing only. */
+.overview-view { position: relative; }
+.overview-view::before {
+  content: ""; position: absolute; top: -24px; left: -40px; right: -40px; height: 380px;
+  z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(480px 280px at 12% 0%, var(--accent-soft), transparent 70%),
+    radial-gradient(420px 260px at 82% 10%, rgba(94, 232, 222, 0.1), transparent 72%);
+}
 
 .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 
@@ -300,6 +323,18 @@ mean "All repos" then re-scan a grid, every single time.
 .dot.score-warn { background: var(--warn); }
 .dot.score-danger { background: var(--danger); }
 .dot.score-none { background: var(--muted-2); }
+.dot.status-supported { background: var(--ok); }
+.dot.status-contradicted { background: var(--danger); }
+.dot.status-needs_human_input { background: var(--warn); }
+.dot.status-unknown { background: var(--muted-2); }
+
+/* A SECONDARY status mention -- a related/linked requirement's own judgment,
+   or one step's backing requirement inside an otherwise-whole test case --
+   deliberately NOT styled as a loud colored pill (.finding-cat), which is
+   reserved for a card's OWN primary verdict. Reusing that same pill here
+   read as "this test case is both contradicted AND supported" at a glance;
+   a quiet dot + plain label makes clear it belongs to something else. */
+.tc-status-note { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: capitalize; white-space: nowrap; }
 
 .ov-health-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; background: var(--panel-2); }
 .ov-health-seg { display: block; height: 100%; }
@@ -373,7 +408,7 @@ mean "All repos" then re-scan a grid, every single time.
 .kg-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .kg-ring .track { fill: none; stroke: var(--border); stroke-width: 4; }
 .kg-ring .progress { fill: none; stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray .3s ease; }
-.kg-ring .ring-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 800; }
+.kg-ring .ring-value { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .kg-ring.score-ok .progress { stroke: var(--ok); }
 .kg-ring.score-warn .progress { stroke: var(--warn); }
 .kg-ring.score-danger .progress { stroke: var(--danger); }
@@ -417,7 +452,7 @@ mean "All repos" then re-scan a grid, every single time.
   background: none; border: none; color: var(--muted);
   padding: 10px 15px; cursor: pointer; font-size: 13px; font-weight: 600;
   border-bottom: 2px solid transparent; font-family: inherit;
-  transition: color .12s ease;
+  transition: color .12s ease, border-color .18s ease;
 }
 .tab .ic { opacity: .8; }
 .tab:hover { color: var(--text); }
@@ -446,8 +481,12 @@ mean "All repos" then re-scan a grid, every single time.
 /* --------------------------------------------------------------------- cards */
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 8px; }
-.stat-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; box-shadow: var(--shadow-card); }
-.stat-card .num { font-size: 25px; font-weight: 800; letter-spacing: -.02em; }
+.stat-card {
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+  padding: 15px 16px; box-shadow: var(--shadow-card); transition: transform .12s ease, box-shadow .12s ease;
+}
+.stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.stat-card .num { font-size: 26px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .stat-card .lbl { color: var(--muted); font-size: 12px; margin-top: 3px; }
 
 /* --------------------------------------------------------------------- tables */
@@ -472,6 +511,8 @@ mean "All repos" then re-scan a grid, every single time.
 .compare-picker { align-items: flex-end; }
 .compare-arrow { color: var(--muted-2); margin-bottom: 9px; }
 .field-inline { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.checkbox-inline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); align-self: center; }
+.checkbox-inline input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 
 select, input[type=text], input[type=password], input:not([type]), textarea {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
@@ -555,6 +596,9 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 @keyframes slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .toast.ok { border-color: var(--ok); color: var(--ok); }
+.toast::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 9px; vertical-align: 1px; background: var(--muted-2); }
+.toast.ok::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.toast.error::before { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
 
 /* --------------------------------------------------------------------- misc semantic bits */
 
@@ -562,7 +606,8 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .pill-remove { color: var(--danger); }
 .pill-change { color: var(--warn); }
 
-.finding-cat { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+.finding-cat { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+.finding-cat::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
 .cat-orphan_step, .cat-untracked_scenario { background: var(--warn-soft); color: var(--warn); }
 .cat-dead_locator, .cat-unused_method { background: var(--accent-soft); color: var(--accent-strong); }
 .cat-untagged_scenario { background: var(--panel-3); color: var(--muted); }
@@ -576,6 +621,13 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .cat-happy_path { background: var(--ok-soft); color: var(--ok); }
 .cat-edge_case { background: var(--warn-soft); color: var(--warn); }
 .cat-error_handling { background: var(--danger-soft); color: var(--danger); }
+.cat-supported, .cat-tested { background: var(--ok-soft); color: var(--ok); }
+.cat-contradicted { background: var(--danger-soft); color: var(--danger); }
+.cat-unknown, .cat-untested { background: var(--panel-3); color: var(--muted); }
+.cat-positive { background: var(--accent-soft); color: var(--accent-strong); }
+.cat-negative { background: var(--warn-soft); color: var(--warn); }
+.cat-needs_human_input { background: var(--warn-soft); color: var(--warn); }
+.story-cover-chip { font-family: var(--mono); font-size: 11px; background: var(--panel-3); color: var(--muted); padding: 1px 6px; border-radius: 5px; }
 
 .doc-card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom: 14px; }
 .doc-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
@@ -585,6 +637,22 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .doc-gap-context { max-height: 260px; overflow-y: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 11.5px; background: var(--panel-2); border-radius: 8px; padding: 10px 12px; }
 .doc-gap-finding { border-left: 3px solid var(--border); padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); border-radius: 0 8px 8px 0; }
 .doc-gap-finding p { margin: 4px 0 0; font-size: 13px; }
+
+/* Bulk job progress -- Story Coverage / test generation "run for all
+   documents", a CSV/Excel import that can produce tens of documents at once. */
+.bulk-job-progress {
+  border: 1px solid var(--border-soft); border-radius: var(--radius);
+  padding: 12px 14px; margin: 10px 0; background: var(--panel-2);
+}
+.bulk-job-progress .bulk-job-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 8px; }
+.bulk-job-progress .bulk-job-track { height: 6px; border-radius: 4px; background: var(--panel-3); overflow: hidden; }
+.bulk-job-progress .bulk-job-fill { height: 100%; background: var(--accent-gradient); transition: width .25s ease; }
+.bulk-job-progress .bulk-job-results { margin-top: 10px; max-height: 220px; overflow-y: auto; }
+.bulk-job-result-row { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 3px 0; border-bottom: 1px solid var(--border-soft); }
+.bulk-job-result-row:last-child { border-bottom: none; }
+.bulk-job-result-row .dot { flex: none; }
+.bulk-job-result-row .name { font-weight: 600; }
+.bulk-job-result-row .detail { color: var(--muted); }
 
 .test-case-card {
   border: 1px solid var(--border-soft); border-left: 4px solid var(--border);
@@ -596,12 +664,13 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .test-case-card.tc-edge_case { border-left-color: var(--warn); }
 .test-case-card.tc-error_handling { border-left-color: var(--danger); }
 
-.test-case-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
-.test-case-head .tc-icon { flex: none; width: 17px; height: 17px; }
+.test-case-head { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px 9px; margin-bottom: 8px; }
+.test-case-head .tc-icon { flex: none; width: 17px; height: 17px; margin-top: 2px; }
+.tc-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: none; }
 .tc-happy_path .tc-icon { color: var(--ok); }
 .tc-edge_case .tc-icon { color: var(--warn); }
 .tc-error_handling .tc-icon { color: var(--danger); }
-.test-case-head h4 { margin: 0; font-size: 14.5px; flex: 1; line-height: 1.3; }
+.test-case-head h4 { margin: 0; font-size: 14.5px; flex: 1 1 200px; min-width: 160px; line-height: 1.3; }
 
 .test-case-target {
   display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px;
@@ -636,6 +705,16 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .tc-col-n { width: 28px; color: var(--muted-2); font-weight: 700; }
 .tc-covers { display: flex; flex-wrap: wrap; gap: 5px; }
 .tc-covers code { font-size: 11px; padding: 1px 7px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--muted); }
+/* The verification verdict -- deliberately louder than plain muted text so a
+   "contradicted" reason doesn't blend into the rest of the card's quiet copy. */
+.tc-verdict { font-size: 13px; line-height: 1.5; padding: 8px 11px; border-radius: 8px; border-left: 3px solid; margin: 2px 0 4px; }
+.tc-verdict b { text-transform: capitalize; }
+.tc-verdict-supported { background: var(--ok-soft); border-color: var(--ok); color: var(--text); }
+.tc-verdict-contradicted { background: var(--danger-soft); border-color: var(--danger); color: var(--text); }
+.tc-verdict-unknown { background: var(--panel-3); border-color: var(--border); color: var(--muted); }
+.tc-linked-req { padding: 7px 0; border-top: 1px solid var(--border-soft); }
+.tc-linked-req:first-of-type { border-top: none; }
+.tc-linked-req p { margin: 3px 0 0; font-size: 13px; line-height: 1.4; }
 @media (max-width: 560px) {
   .tc-steps-table thead { display: none; }
   .tc-steps-table, .tc-steps-table tbody, .tc-steps-table tr, .tc-steps-table td { display: block; width: 100%; box-sizing: border-box; }
@@ -645,6 +724,23 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
   .tc-col-n { width: auto; }
 }
 .test-case-module { color: var(--accent-strong); font-weight: 700; margin-right: 6px; padding-right: 6px; border-right: 1px solid var(--border-soft); }
+.tc-origin-tag { font-family: var(--font); text-transform: uppercase; letter-spacing: .03em; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; margin-left: auto; }
+.tc-origin-story { background: var(--accent-soft); color: var(--accent-strong); }
+.tc-origin-journey { background: var(--ok-soft); color: var(--ok); }
+.tc-origin-code { background: var(--panel-3); color: var(--muted); }
+
+/* --------------------------------------------------------------------- journeys */
+
+.journey-card { display: flex; flex-direction: column; gap: 10px; }
+.journey-card-head { display: flex; align-items: baseline; gap: 10px; }
+.journey-card-head h4 { margin: 0; font-size: 15px; }
+.journey-card-rollup { display: flex; flex-wrap: wrap; gap: 6px; }
+.journey-card-actions { display: flex; gap: 8px; }
+.journey-card-members { display: flex; flex-direction: column; border-top: 1px solid var(--border-soft); margin-top: 2px; }
+.journey-member { padding: 9px 0; }
+.journey-question { margin-top: 8px; padding: 9px 11px; background: var(--warn-soft); border-radius: 8px; border-left: 3px solid var(--warn); }
+.journey-question p { margin: 0 0 8px; font-size: 13px; }
+.journey-question .btn { margin-right: 6px; }
 
 .module-gen-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

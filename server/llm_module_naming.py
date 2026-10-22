@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 
+from llm_logging import call_and_log
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -166,13 +167,13 @@ Rename ONLY these, following every rule above. Describe the job in the words a p
 
 def _ask(client, model: str, prompt: str, known: set[str]) -> dict[str, dict]:
     try:
-        response = client.chat.completions.create(
+        response = call_and_log("module_naming.ask", model, lambda: client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.2,
             max_tokens=_MAX_TOKENS_PER_BATCH,
-        )
+        ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
 

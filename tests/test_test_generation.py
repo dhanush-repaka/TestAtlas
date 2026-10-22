@@ -13,9 +13,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from fastapi.testclient import TestClient
+
 from kg.repo_parser import parse_repo
 from server import db
 from server import llm_test_generation as gen
+from server.app import app
 
 CONTEXT = {
     "documents": [],
@@ -98,10 +101,24 @@ class NormalizeCaseTests(unittest.TestCase):
 
 class PromptAndCountTests(unittest.TestCase):
     def test_prompt_asks_for_functional_ado_cases_with_real_ui_text(self):
-        prompt = gen._build_prompt(CONTEXT, 5)
+        prompt = gen._build_prompt(CONTEXT)
         for needle in ("FUNCTIONAL", "NOT a unit test", "Never write one case per function", '"expected"',
                        "Add To Cart", "Out Of Stock", 'known as "Shopping Cart"', "Do NOT invent label"):
             self.assertIn(needle, prompt)
+
+    def test_prompt_lets_the_model_decide_the_count_with_no_prescribed_number(self):
+        prompt = gen._build_prompt(CONTEXT)
+        self.assertIn("no target count or quota", prompt)
+        self.assertNotIn("Design approximately", prompt)
+
+    def test_prompt_instructs_boundary_value_analysis_for_numeric_ranges(self):
+        # Same fix as the story-driven generator (server/llm_requirement_test_generation.py):
+        # a numeric range/threshold/limit needs one case PER boundary, not one
+        # representative case for the whole range -- a real-world comparison
+        # against ChatGPT on a pricing/discount story surfaced this gap.
+        prompt = gen._build_prompt(CONTEXT)
+        self.assertIn("boundary-value analysis", prompt.lower())
+        self.assertIn("NOT duplicate cases", prompt)
 
     def test_functional_count_scales_slowly_with_units(self):
         # 2 functions + CartService(1 + 2 methods) = 5 real units -> the floor, not 1.5x like the unit-style version
@@ -123,9 +140,9 @@ class PromptAndCountTests(unittest.TestCase):
 
     def test_prompt_lists_the_parts_a_screen_pulls_in_and_they_are_valid_covers(self):
         ctx = {**CONTEXT, "parts": [{"name": "Carousel", "module": "components", "display_name": "Visual Elements"}]}
-        self.assertIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(ctx, 8))
+        self.assertIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(ctx))
         self.assertIn("Carousel", gen._known_code_names(ctx))
-        self.assertNotIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(CONTEXT, 8))
+        self.assertNotIn("WHAT THIS SCREEN PULLS IN", gen._build_prompt(CONTEXT))
 
     def test_cases_about_code_instead_of_what_a_user_does_are_refused_with_a_reason(self):
         step = [{"action": "Open the page", "expected": "It loads"}]
@@ -148,16 +165,29 @@ class PromptAndCountTests(unittest.TestCase):
 
     def test_prompt_describes_contains_and_loads_and_forbids_code_words(self):
         ctx = {**CONTEXT, "parts": [{"name": "Navbar", "module": "components", "contains": ["MobileMenu", "Search"], "loads": ["getMenu"]}]}
-        p = gen._build_prompt(ctx, 8)
+        p = gen._build_prompt(ctx)
         for needle in ('"contains"', '"loads"', "Never invent the names of menu links", "must not contain the words function", "crawlers"):
             self.assertIn(needle, p)
 
     def test_cap_is_derived_from_the_token_budget(self):
         self.assertLessEqual(gen.HARD_CASE_CAP * gen._TOKENS_PER_CASE + gen._PROMPT_OVERHEAD_TOKENS, gen._MODEL_TOKEN_CEILING)
 
+    def test_real_source_is_included_in_the_prompt_when_given(self):
+        # Module-level generation is now grounded in the actual code body, not just its name --
+        # a case's expected result must match what the code really does, bugs included.
+        prompt = gen._build_prompt(CONTEXT, sources={"CartService.addItem": "def addItem(self, item):\n    self.items.append(item)"})
+        self.assertIn("REAL SOURCE CODE", prompt)
+        self.assertIn("self.items.append(item)", prompt)
+        self.assertIn("match what the code ACTUALLY does", prompt)
+
+    def test_no_source_block_at_all_when_nothing_given(self):
+        prompt = gen._build_prompt(CONTEXT)
+        self.assertNotIn("REAL SOURCE CODE", prompt)
+        self.assertNotIn("do NOT have function/method bodies", prompt)  # old guessing-only instruction is gone
+
 
 class RunGenerationTests(unittest.TestCase):
-    def _run(self, *payloads, context=CONTEXT):
+    def _run(self, *payloads, context=CONTEXT, sources=None):
         """Mocks OpenAI: each payload is one successive model response. Returns (result, client)."""
         def response(payload):
             r = mock.Mock()
@@ -166,7 +196,14 @@ class RunGenerationTests(unittest.TestCase):
         client = mock.Mock()
         client.chat.completions.create.side_effect = [response(p) for p in payloads]
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}), mock.patch("openai.OpenAI", return_value=client):
-            return gen.generate_test_cases(context), client
+            return gen.generate_test_cases(context, sources=sources), client
+
+    def test_sources_reach_the_first_prompt_sent_to_the_model(self):
+        _, client = self._run({"test_cases": []}, context=self.QUIET,
+                               sources={"CartService.addItem": "def addItem(self, item):\n    self.items.append(item)"})
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("REAL SOURCE CODE", prompt)
+        self.assertIn("self.items.append(item)", prompt)
 
     QUIET = {"modules": [{"module": "app", "files": [{"file": "app.page", "functions": ["HomePage"], "classes": [], "ui_text": ["Deploy"]}]}],
              "documents": []}     # no on-screen error/empty-state messages, so the coverage pass stays out of the way
@@ -272,10 +309,10 @@ class MessageDetectionTests(unittest.TestCase):
         self.assertEqual(len(gen._must_trigger_messages(ctx)), gen._MAX_MUST_TRIGGER)
 
     def test_the_main_prompt_lists_them_up_front(self):
-        prompt = gen._build_prompt(CONTEXT, 5, ["Out Of Stock"])
+        prompt = gen._build_prompt(CONTEXT, ["Out Of Stock"])
         self.assertIn("MESSAGES THAT MUST BE TRIGGERED", prompt)
         self.assertIn('  - "Out Of Stock"', prompt)
-        self.assertNotIn("MESSAGES THAT MUST BE TRIGGERED", gen._build_prompt(CONTEXT, 5, []))
+        self.assertNotIn("MESSAGES THAT MUST BE TRIGGERED", gen._build_prompt(CONTEXT, []))
 
 
 class ModelChoiceTests(unittest.TestCase):
@@ -328,10 +365,66 @@ class StorageTests(unittest.TestCase):
         by_mod = [r["module"] for r in db.list_test_cases(self.repo_id)]
         self.assertEqual(sorted(by_mod), ["a", "b"])
 
+    def test_regenerating_a_module_never_touches_a_story_driven_case_verified_into_it(self):
+        # A story-driven case starts with module=NULL and only gets a real
+        # module assigned once a later Verify pass resolves one -- at that
+        # point it can share a module name with this module's own
+        # code-generated batch. Regenerating that module must only replace
+        # ITS OWN rows, never a verified case that merely happens to share
+        # the same module string -- "Regenerate" means "refresh my code-driven
+        # batch," not "wipe everything under this module name."
+        db.create_test_case(self.repo_id, "pricing", None, {
+            "title": "Verified from a story", "category": "happy_path",
+            "steps": [{"action": "a", "expected": "b"}], "expected_result": "b", "covers": ["Pricing.apply_coupon"],
+            "status": "supported",
+        }, source_doc_id="doc-1")
+
+        n = gen._normalize_case(good_case(), CANON)
+        db.replace_test_cases(self.repo_id, "pricing", None, [n])
+
+        rows = db.list_test_cases(self.repo_id)
+        self.assertEqual(len(rows), 2)  # the fresh code-driven case AND the untouched verified one
+        titles = {r["title"] for r in rows}
+        self.assertIn("Verified from a story", titles)
+
+        # Regenerating again (idempotent) still never touches the verified row.
+        db.replace_test_cases(self.repo_id, "pricing", None, [n])
+        rows = db.list_test_cases(self.repo_id)
+        self.assertEqual(len(rows), 2)
+        self.assertIn("Verified from a story", {r["title"] for r in rows})
+
     def test_within_a_pass_most_important_first(self):
         cases = [gen._normalize_case(good_case(title=f"Verify {p}", priority=p), CANON) for p in (3, 1, 4, 2)]
         db.replace_test_cases(self.repo_id, "m", None, cases)
         self.assertEqual([r["priority"] for r in db.list_test_cases(self.repo_id)], [1, 2, 3, 4])
+
+    def test_delete_by_module_only_removes_that_modules_cases_and_returns_the_count(self):
+        n = gen._normalize_case(good_case(), CANON)
+        db.replace_test_cases(self.repo_id, "stale_module", None, [n, n])
+        db.replace_test_cases(self.repo_id, "current_module", None, [n])
+
+        deleted = db.delete_test_cases_by_module(self.repo_id, "stale_module")
+
+        self.assertEqual(deleted, 2)
+        by_mod = [r["module"] for r in db.list_test_cases(self.repo_id)]
+        self.assertEqual(by_mod, ["current_module"])
+
+    def test_delete_by_module_works_regardless_of_case_origin(self):
+        # A module can be assigned to a story-driven case too, once Verify
+        # resolves it -- the clear action has to catch those as well, not
+        # just code-driven (module-level) cases.
+        db.create_test_case(self.repo_id, "stale_module", None, {
+            "title": "from a story", "category": "happy_path", "steps": [{"action": "a", "expected": "b"}],
+            "expected_result": "b", "covers": [],
+        }, source_doc_id="doc-1")
+
+        deleted = db.delete_test_cases_by_module(self.repo_id, "stale_module")
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(db.list_test_cases(self.repo_id), [])
+
+    def test_delete_by_module_with_no_matching_cases_deletes_nothing(self):
+        self.assertEqual(db.delete_test_cases_by_module(self.repo_id, "does-not-exist"), 0)
 
 
 class UiTextExtractionTests(unittest.TestCase):
@@ -408,6 +501,40 @@ class UiTextExtractionTests(unittest.TestCase):
         self.assertEqual(len(mods["List"].ui_text), 15)
         self.assertEqual(mods["util"].ui_text, [])
         self.assertEqual(mods["mod"].ui_text, [])
+
+
+class DeleteTestCasesByModuleApiTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._patches = [mock.patch.object(db, "DATA_DIR", Path(self._tmp.name)),
+                         mock.patch.object(db, "DB_PATH", Path(self._tmp.name) / "kg.db")]
+        for p in self._patches:
+            p.start()
+        db.init_db()
+        self.client = TestClient(app)
+        r = self.client.post("/api/repos", json={"name": "t", "source_type": "local", "local_path": "/tmp"})
+        self.repo_id = r.json()["id"]
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def test_404_for_an_unknown_repo(self):
+        r = self.client.request("DELETE", "/api/repos/does-not-exist/test-cases", params={"module": "x"})
+        self.assertEqual(r.status_code, 404)
+
+    def test_clears_only_the_named_module_and_reports_the_count(self):
+        n = gen._normalize_case(good_case(), CANON)
+        db.replace_test_cases(self.repo_id, "stale", None, [n, n])
+        db.replace_test_cases(self.repo_id, "current", None, [n])
+
+        r = self.client.request("DELETE", f"/api/repos/{self.repo_id}/test-cases", params={"module": "stale"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["deleted"], 2)
+
+        remaining = self.client.get(f"/api/repos/{self.repo_id}/test-cases").json()
+        self.assertEqual([c["module"] for c in remaining], ["current"])
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=44" />
+<link rel="stylesheet" href="static/styles.css?v=54" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -36,6 +36,9 @@
       <nav class="sidebar-nav">
         <button type="button" class="sidebar-nav-item" id="sidebarDashboardBtn" title="Dashboard" aria-label="Dashboard">
           <svg class="ic" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.6" stroke="currentColor" stroke-width="1.7"/></svg><span class="sidebar-nav-text">Dashboard</span>
+        </button>
+        <button type="button" class="sidebar-nav-item" id="sidebarDiagnosticsBtn" title="Diagnostics" aria-label="Diagnostics">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sidebar-nav-text">Diagnostics</span>
         </button>
       </nav>
       <div class="sidebar-section">
@@ -122,6 +125,25 @@
       </div>
     </div>
 
+    <div id="diagnosticsView" class="overview-view" hidden>
+      <div class="dashboard-heading">
+        <h1>Diagnostics</h1>
+        <p class="muted">Every OpenAI call this deployment has made — latency, token usage, and which feature made it — read straight from <code>data/llm_calls.log</code>, nothing simulated.</p>
+      </div>
+      <div class="card-grid" id="diagSummaryCards"></div>
+      <h3 class="section-title">Recent calls</h3>
+      <div class="findings-toolbar">
+        <label class="field-inline">Feature<select id="diagSiteFilter"><option value="">All features</option></select></label>
+        <button type="button" class="btn btn-sm" id="diagRefreshBtn">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table class="table" id="diagCallsTable">
+          <thead><tr><th>Time</th><th>Feature</th><th>Model</th><th>Latency</th><th>Prompt tokens</th><th>Completion tokens</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div id="repoView" class="repo-view" hidden>
       <button class="back-link" id="backToDashboard">
         <svg class="ic" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -151,6 +173,8 @@
           <button class="tab" data-tab="insights"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>Insights</button>
           <button class="tab" data-tab="docs"><svg class="ic" viewBox="0 0 24 24"><path d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12h6M9 16h6M9 8h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Docs</button>
           <button class="tab" data-tab="gaps"><svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="12" r="6" stroke="currentColor" stroke-width="1.6"/><circle cx="15" cy="12" r="6" stroke="currentColor" stroke-width="1.6"/></svg>Gap Analysis</button>
+          <button class="tab" data-tab="story"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20M4 19.5A2.5 2.5 0 006.5 22H20V4a2 2 0 00-2-2H6.5A2.5 2.5 0 004 4.5v15z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>Story Coverage</button>
+          <button class="tab" data-tab="journeys"><svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="19" cy="18" r="2.2" stroke="currentColor" stroke-width="1.6"/><path d="M5 8.2V12a4 4 0 004 4h6a4 4 0 014 4v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Journeys</button>
           <button class="tab" data-tab="tests"><svg class="ic" viewBox="0 0 24 24"><path d="M9 3h6v4l4 12a1.5 1.5 0 01-1.4 2H6.4A1.5 1.5 0 015 19L9 7V3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 15h8M9 3h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Test Cases</button>
           <button class="tab" data-tab="compare"><svg class="ic" viewBox="0 0 24 24"><path d="M8 4v13M8 17l-3-3M8 17l3-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 20V7M16 7l-3 3M16 7l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Compare runs</button>
         </div>
@@ -212,8 +236,10 @@
       <section class="tab-panel" id="panel-docs" hidden>
         <div class="findings-toolbar">
           <button class="btn btn-primary" id="addDocBtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>Add document(s)</button>
+          <button class="btn" id="importWorkItemsBtn" title="Splits an Azure DevOps (or similar) work-item export into one document per row, so each story gets the same per-document pipeline as a hand-authored document">Import work items (CSV/Excel)</button>
+          <input type="file" id="importWorkItemsInput" accept=".csv,.xlsx" hidden />
         </div>
-        <p class="muted small">Upload a high-level process/architecture doc covering the system overall. Run and review the comparison against the code in the Gap Analysis tab.</p>
+        <p class="muted small">Upload a high-level process/architecture doc covering the system overall. Run and review the comparison against the code in the Gap Analysis tab. For a bulk export of user stories (e.g. an Azure DevOps CSV), use "Import work items" instead — it splits the export into one document per row.</p>
         <div id="docsList"></div>
       </section>
 
@@ -255,6 +281,53 @@
         <div id="gapFindingsListAll"></div>
       </section>
 
+      <section class="tab-panel" id="panel-story" hidden>
+        <div class="findings-toolbar">
+          <label class="field-inline">Document<select id="storyCoverageDocSelect"></select></label>
+          <button type="button" class="btn btn-primary is-hidden" id="runStoryCoverageBtn">Run automatic story coverage</button>
+        </div>
+        <p class="muted small">Upload the user story in the Docs tab, then pick it here. Every judgment cites a real function/class name from the code, or says "unknown" rather than guess. Test case generation and verification have moved to the Test Cases tab — they no longer need a Story Coverage run first.</p>
+        <p class="muted small is-hidden" id="storyCoverageHint">Calls OpenAI directly — a metered cost per click, same as Gap Analysis's automatic pass.</p>
+
+        <div class="findings-toolbar" id="storyCoverageBulkToolbar">
+          <button type="button" class="btn is-hidden" id="runStoryCoverageAllBtn" title="Runs Story Coverage for every document in this repo, one at a time — for a bulk import of many user stories at once">Run for all documents</button>
+        </div>
+        <div class="bulk-job-progress is-hidden" id="bulkJobProgress"></div>
+
+        <div class="card-grid" id="storyCoverageSummaryCards"></div>
+
+        <details style="margin-top:10px;">
+          <summary class="small muted" style="cursor:pointer;">Or do it manually with any LLM session (free)</summary>
+          <p class="muted small">1. Get the context below. 2. Hand it to an LLM session and ask it to break the document into atomic acceptance criteria and judge each against the code, producing a JSON array of <code>{text, type, status, covers, rationale}</code> (type: <code>positive</code>/<code>negative</code>; status: <code>supported</code>/<code>contradicted</code>/<code>unknown</code>). 3. Paste the result back and submit.</p>
+          <button type="button" class="btn" id="getStoryCoverageContextBtn">Get coverage context</button>
+          <div class="doc-gap-context is-hidden" id="storyCoverageContextOutput"></div>
+          <label class="small">Paste requirements JSON
+            <textarea id="storyRequirementsInput" rows="4" placeholder='[{"text":"...","type":"positive","status":"supported","covers":["Name"],"rationale":"..."}]'></textarea>
+          </label>
+          <button type="button" class="btn btn-primary" id="submitStoryRequirementsBtn">Submit requirements</button>
+        </details>
+
+        <h3 class="section-title">Requirements</h3>
+        <div class="findings-toolbar">
+          <label class="field-inline">Status<select id="storyFilterStatusSelect">
+            <option value="">All statuses</option><option value="supported">Supported</option>
+            <option value="contradicted">Contradicted</option><option value="unknown">Unknown</option>
+          </select></label>
+          <label class="field-inline">Type<select id="storyFilterTypeSelect">
+            <option value="">All types</option><option value="positive">Positive</option><option value="negative">Negative</option>
+          </select></label>
+        </div>
+        <div id="storyRequirementsListAll"></div>
+      </section>
+
+      <section class="tab-panel" id="panel-journeys" hidden>
+        <p class="muted small">A journey is an end-to-end flow traced from a real HTTP entry point through the call graph (e.g. every route under <code>/checkout</code>, and everything they call), grouped so a test case can walk the whole flow instead of one isolated piece of it. Detection is free and deterministic; only naming the result and finding requirements inside it call an LLM.</p>
+        <div class="findings-toolbar">
+          <button type="button" class="btn btn-primary" id="detectJourneysBtn">Detect journeys</button>
+        </div>
+        <div id="journeysListAll"></div>
+      </section>
+
       <section class="tab-panel" id="panel-tests" hidden>
         <div class="card-grid" id="testCaseSummaryCards"></div>
 
@@ -268,9 +341,34 @@
           <div id="moduleGenList" class="module-gen-list-scroll"></div>
         </div>
 
+        <div class="result-block">
+          <h3>Generate from user story</h3>
+          <p class="muted small">Writes the full realistic set of test cases directly from a document's own story text — no code shown, no Story Coverage run required first. "Verify against code" then judges the generated cases against the real codebase, resolving status, citations and module.</p>
+          <div class="findings-toolbar">
+            <label class="field-inline">Document<select id="testCaseGenDocSelect"></select></label>
+            <label class="checkbox-inline"><input type="checkbox" id="testCaseGenReplaceCheckbox" />Replace existing test cases for this document</label>
+          </div>
+          <div class="findings-toolbar">
+            <button type="button" class="btn btn-primary" id="generateDocTestCasesBtn">Generate test cases for this document</button>
+            <button type="button" class="btn" id="verifyDocTestCasesBtn" title="Judges every test case generated from this document against the real codebase — resolves status, citations and module for the first time">Verify against code</button>
+          </div>
+          <div class="findings-toolbar">
+            <button type="button" class="btn is-hidden" id="generateTestCasesAllBtn" title="Generates test cases for every document in this repo, straight from each document's own story text">Generate test cases for all documents</button>
+            <button type="button" class="btn is-hidden" id="verifyTestCasesAllBtn" title="Verifies every document's generated test cases against the real codebase, one document at a time">Verify all documents</button>
+          </div>
+          <div class="bulk-job-progress is-hidden" id="bulkJobProgressTests"></div>
+        </div>
+
         <h3 class="section-title">Test cases</h3>
+        <div class="segmented" id="testCaseSourceSegmented" role="group" aria-label="Filter by source">
+          <button type="button" class="seg-btn active" data-value="">All</button>
+          <button type="button" class="seg-btn" data-value="code">From code</button>
+          <button type="button" class="seg-btn" data-value="story">From user story</button>
+          <button type="button" class="seg-btn" data-value="journey">From journey</button>
+        </div>
         <div class="findings-toolbar">
           <label class="field-inline">Module<select id="testCaseFilterModuleSelect"><option value="">All modules</option></select></label>
+          <button type="button" class="btn btn-sm is-hidden" id="clearModuleTestCasesBtn" title="Deletes every test case stored under the selected module — including one left orphaned by a since-renamed or restructured module">Clear this module's test cases</button>
           <label class="field-inline">Category
             <select id="testCaseFilterCategorySelect">
               <option value="">All categories</option>
@@ -279,6 +377,7 @@
               <option value="error_handling">Error handling</option>
             </select>
           </label>
+          <label class="field-inline is-hidden" id="testCaseStoryDocFilterRow">User story<select id="testCaseFilterStoryDocSelect"><option value="">All stories</option></select></label>
           <span class="export-group" id="testCaseExport" role="group" aria-label="Export the test cases shown">
             <span class="small muted">Export</span>
             <a class="btn btn-sm" data-format="csv" href="#" title="Azure DevOps Test Plans import format — also opens in Excel">CSV (Azure DevOps)</a>
@@ -408,6 +507,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=52"></script>
+  <script src="static/app.js?v=69"></script>
 </body>
 </html>

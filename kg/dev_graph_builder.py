@@ -73,6 +73,12 @@ def build_dev_graph(repo: ParsedRepo) -> nx.MultiDiGraph:
                 fn_id, type="Function", label=fn.name, defined_in=dotted, domain=domain,
                 is_method=fn.is_method, path=module.path,
             )
+            if fn.routes:
+                # An HTTP entry point (kg/journeys.py traces call chains outward
+                # from these) -- set only when present, same "don't touch the
+                # shape of a graph that has none" discipline as ui_text above.
+                g.nodes[fn_id]["is_entry_point"] = True
+                g.nodes[fn_id]["routes"] = fn.routes
             if fn.is_method and fn.class_qualname:
                 g.add_edge(f"class:{fn.class_qualname}", fn_id, relation="DEFINES")
             else:

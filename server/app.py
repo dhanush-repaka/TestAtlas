@@ -3,11 +3,13 @@ from __future__ import annotations
 import html
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
 import networkx as nx
+import llm_logging
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -17,17 +19,27 @@ from pydantic import BaseModel
 
 from ado import client as ado_client
 from github import client as github_client
-from kg import neo4j_sync
-from kg.doc_gaps import ALLOWED_GAP_CATEGORIES, gap_analysis_context, module_test_context
+from kg import embeddings, neo4j_sync
+from kg.doc_gaps import ALLOWED_GAP_CATEGORIES, candidate_modules_context, gap_analysis_context, module_test_context
 from kg.enrichment import apply_enrichment, enrichment_coverage, enrichment_targets
 from kg.dev_graph_builder import score_modules
 from kg.graph_intelligence import most_critical_nodes, bottleneck_nodes, fetch_graph_for_run
 from kg.graph_io import load_graph, save_graph
+from kg.journeys import detect_journeys, name_journeys
 from kg.repo_parser import has_source_files
+from kg.source_lookup import (
+    gather_module_sources, gather_journey_sources,
+    find_citation_domain_and_path, resolve_citation_node_id,
+)
 from kg.visualize import to_pyvis_html
-from . import auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_module_naming, llm_test_generation, test_export, uploads
+from . import (
+    auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_journey_requirements,
+    llm_journey_test_generation, llm_module_naming, llm_requirement_test_generation,
+    llm_story_coverage, llm_test_generation, llm_test_verification, test_export, uploads,
+    work_item_import,
+)
 from .diff import diff_runs
-from .runner import run_analysis
+from .runner import resolve_source_dir, run_analysis
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -190,6 +202,16 @@ def _expand_github_url(payload: dict) -> dict:
 # http://localhost:8123/ or reverse-proxied at dhanushrepaka.com/testatlas.
 
 api = APIRouter(prefix=f"{BASE_PATH}/api")
+
+
+@api.get("/llm-calls")
+def api_llm_calls(limit: int = 200):
+    """Recent OpenAI calls across every feature -- latency, token usage, and
+    which feature made the call (llm_logging.py's `site` tag) -- for
+    diagnosing cost/latency/context questions without reading server logs by
+    hand. Not scoped to a repo: this is a deployment-wide diagnostic, same
+    spirit as the server's own stdout log, just structured and queryable."""
+    return llm_logging.read_recent(limit)
 
 
 @api.get("/repos")
@@ -503,6 +525,23 @@ class GapFindingsIn(BaseModel):
     findings: list[GapFinding]
 
 
+class StoryRequirementIn(BaseModel):
+    text: str
+    type: str
+    status: str
+    covers: list[str] = []
+    rationale: Optional[str] = None
+
+
+class StoryRequirementsIn(BaseModel):
+    requirements: list[StoryRequirementIn]
+
+
+class ConfirmRequirementIn(BaseModel):
+    status: str  # "supported" | "contradicted" -- a human resolves the ambiguity one way or the other, never back to unknown
+    rationale: Optional[str] = None
+
+
 @api.get("/repos/{repo_id}/documents")
 def api_list_documents(repo_id: str):
     if not db.get_repo(repo_id):
@@ -561,6 +600,34 @@ async def api_upload_document_replace(doc_id: str, file: UploadFile = File(...),
     if name:
         updates["name"] = name
     return db.update_document(doc_id, updates)
+
+
+@api.post("/repos/{repo_id}/documents/import-work-items")
+async def api_import_work_items(repo_id: str, file: UploadFile = File(...)):
+    """Splits an ADO-style work-item export (.csv/.xlsx) into one document
+    per row instead of one document for the whole export -- so each story
+    hits the exact same proven per-document pipeline (Story Coverage, test
+    generation) as a hand-authored document, rather than asking one decompose
+    call to untangle dozens of unrelated stories. See server/work_item_import.py.
+    Falls back to a single whole-file document (today's upload behavior) when
+    no recognizable header row is found, same as split_work_items documents."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "file too large (max 20MB)")
+    try:
+        text = doc_extract.extract_text(file.filename or "", data)
+    except doc_extract.UnsupportedDocumentError as e:
+        raise HTTPException(400, str(e))
+    items = work_item_import.split_work_items(text)
+    if not items:
+        raise HTTPException(400, "no content found in that file")
+    fallback_name = file.filename.rsplit(".", 1)[0] if file.filename else "Untitled document"
+    return [
+        db.create_document(repo_id, {"name": item["name"] or fallback_name, "content": item["content"]})
+        for item in items
+    ]
 
 
 @api.delete("/documents/{doc_id}")
@@ -656,6 +723,652 @@ def api_gap_analysis_config():
     return {"automatic_available": llm_gap_analysis.is_configured()}
 
 
+# --------------------------------------------------------------------------- story coverage
+#
+# Compares ONE user-story document against the whole codebase -- unlike gap
+# analysis, which always bundles every document together (see kg/doc_gaps.py's
+# module docstring: that's to avoid false "undocumented" findings across
+# documents, which doesn't apply here -- "how much of THIS story is built" is
+# inherently a per-document question).
+
+def _get_doc_in_repo(repo_id: str, doc_id: str) -> dict:
+    doc = db.get_document(doc_id)
+    if not doc or doc["repo_id"] != repo_id:
+        raise HTTPException(404, "document not found")
+    return doc
+
+
+def _story_coverage_context(repo_id: str, doc: dict) -> tuple[dict, dict, object]:
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    context = gap_analysis_context(g, [doc], include_ui_text=True)
+    if not context["ok"]:
+        raise HTTPException(400, context["message"])
+    return context, run, g
+
+
+def _with_tested_status(repo_id: str, requirements: list[dict]) -> list[dict]:
+    return llm_story_coverage.compute_tested_status(requirements, db.list_test_cases(repo_id))
+
+
+@api.get("/repos/{repo_id}/documents/{doc_id}/story-coverage-context")
+def api_story_coverage_context(repo_id: str, doc_id: str):
+    """What an LLM pass needs to compare ONE story document against the
+    whole codebase's real contents -- the free manual-fallback path, works
+    with no OPENAI_API_KEY configured."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    doc = _get_doc_in_repo(repo_id, doc_id)
+    context, run, _g = _story_coverage_context(repo_id, doc)
+    context["run_id"] = run["id"]
+    return context
+
+
+@api.post("/repos/{repo_id}/documents/{doc_id}/story-coverage/run")
+def api_run_story_coverage(repo_id: str, doc_id: str):
+    """Runs Story Coverage via a live OpenAI API call -- gated on
+    OPENAI_API_KEY, same opt-in exception as gap analysis and test
+    generation. One combined call decomposes this document into acceptance
+    criteria AND judges each against the whole codebase. Replaces this
+    document's previously stored requirements (source='document' rows only)."""
+    if not llm_story_coverage.is_configured():
+        raise HTTPException(
+            400,
+            "Automatic story coverage isn't configured on this deployment (no OPENAI_API_KEY) -- "
+            "use \"Get coverage context\" + paste requirements instead.",
+        )
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    doc = _get_doc_in_repo(repo_id, doc_id)
+    context, run, g = _story_coverage_context(repo_id, doc)
+    source_root = resolve_source_dir(repo)
+    index_path = Path(run["graph_path"]).parent / "embeddings.json"
+    try:
+        result = llm_story_coverage.generate_story_requirements(doc, context, g, source_root, index_path)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements)
+    return {
+        "applied": len(result.requirements), "dropped": result.dropped,
+        "requirements": _with_tested_status(repo_id, result.requirements),
+    }
+
+
+def _story_coverage_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], run: dict, g, source_root: Path) -> None:
+    """Runs in a background daemon thread, looping this repo's documents ONE
+    AT A TIME -- concurrency already happens inside generate_story_requirements's
+    own per-requirement judge loop, so a second layer of parallelism here
+    would only add simultaneous DB writers without a real throughput gain.
+    One document's failure is recorded as that document's own result entry
+    and never aborts the rest of the job."""
+    index_path = Path(run["graph_path"]).parent / "embeddings.json"
+    for doc_id in doc_ids:
+        doc = db.get_document(doc_id)
+        if not doc:
+            db.update_bulk_job_progress(job_id, "(deleted)", {
+                "document_id": doc_id, "document_name": None, "ok": False,
+                "detail": "document was deleted during this run",
+            })
+            continue
+        try:
+            context = gap_analysis_context(g, [doc], include_ui_text=True)
+            if not context["ok"]:
+                raise RuntimeError(context["message"])
+            result = llm_story_coverage.generate_story_requirements(doc, context, g, source_root, index_path)
+            db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements)
+            detail = f"{len(result.requirements)} requirement(s)"
+            if result.dropped:
+                detail += f", {len(result.dropped)} dropped"
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": True, "detail": detail,
+            })
+        except RuntimeError as e:
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": False, "detail": str(e),
+            })
+    db.finish_bulk_job(job_id, "success")
+
+
+@api.post("/repos/{repo_id}/story-coverage/run-all")
+def api_run_story_coverage_all(repo_id: str):
+    """Starts a background job that runs Story Coverage for every document in
+    this repo -- the bulk-import counterpart to api_run_story_coverage, for a
+    CSV/Excel import that produced tens or hundreds of documents at once.
+    Returns the job id immediately (the loop runs on a daemon thread); poll
+    GET .../story-coverage/jobs/{job_id} for progress."""
+    if not llm_story_coverage.is_configured():
+        raise HTTPException(400, "Automatic story coverage isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    documents = db.list_documents(repo_id)
+    if not documents:
+        raise HTTPException(400, "this repo has no documents yet")
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    source_root = resolve_source_dir(repo)
+    job = db.create_bulk_job(repo_id, "story_coverage", len(documents))
+    threading.Thread(
+        target=_story_coverage_bulk_worker,
+        args=(job["id"], repo_id, [d["id"] for d in documents], run, g, source_root),
+        daemon=True,
+    ).start()
+    return job
+
+
+@api.get("/repos/{repo_id}/story-coverage/jobs/{job_id}")
+def api_get_story_coverage_job(repo_id: str, job_id: str):
+    job = db.get_bulk_job(job_id)
+    if not job or job["repo_id"] != repo_id:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+@api.post("/repos/{repo_id}/documents/{doc_id}/story-requirements")
+def api_post_story_requirements(repo_id: str, doc_id: str, payload: StoryRequirementsIn):
+    """Stores the result of a manual (free) comparison pass -- same
+    replace-scoped-to-this-document semantics as the automatic run."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    doc = _get_doc_in_repo(repo_id, doc_id)
+    for r in payload.requirements:
+        if r.type not in llm_story_coverage.ALLOWED_REQUIREMENT_TYPES:
+            raise HTTPException(400, f"invalid type '{r.type}' -- must be one of {sorted(llm_story_coverage.ALLOWED_REQUIREMENT_TYPES)}")
+        if r.status not in llm_story_coverage.ALLOWED_REQUIREMENT_STATUSES:
+            raise HTTPException(400, f"invalid status '{r.status}' -- must be one of {sorted(llm_story_coverage.ALLOWED_REQUIREMENT_STATUSES)}")
+    context, run, _g = _story_coverage_context(repo_id, doc)
+    validated = llm_story_coverage.validate_requirements(context, [r.model_dump() for r in payload.requirements])
+    db.replace_story_requirements(repo_id, doc_id, run["id"], validated)
+    return {"stored": len(validated)}
+
+
+@api.get("/repos/{repo_id}/documents/{doc_id}/story-requirements")
+def api_get_story_requirements(repo_id: str, doc_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    _get_doc_in_repo(repo_id, doc_id)
+    return _with_tested_status(repo_id, db.list_story_requirements(repo_id, doc_id))
+
+
+@api.get("/story-coverage/config")
+def api_story_coverage_config():
+    """Lets the UI know whether the automatic (paid) story coverage button
+    should show at all -- opt-in per deployment, off unless OPENAI_API_KEY is set."""
+    return {"automatic_available": llm_story_coverage.is_configured()}
+
+
+@api.post("/repos/{repo_id}/documents/{doc_id}/story-requirements/{requirement_id}/generate-test-case")
+def api_generate_test_case_from_requirement(repo_id: str, doc_id: str, requirement_id: str):
+    """Generates 1-or-more test cases directly from ONE acceptance criterion's
+    own wording -- ungrounded: no code is shown, and no resolved citation is
+    required up front. Stored with status=NULL, covers=[], module=NULL until
+    a later "Verify against code" pass judges it (see
+    api_verify_test_cases_for_document). See server/llm_requirement_test_generation.py."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    requirement = db.get_story_requirement(requirement_id)
+    if not requirement or requirement["doc_id"] != doc_id:
+        raise HTTPException(404, "requirement not found")
+    try:
+        cases = llm_requirement_test_generation.generate_test_cases_from_requirement(requirement)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    run = db.get_latest_successful_run(repo_id)  # optional provenance only -- not required to generate
+    run_id = run["id"] if run else None
+    return [
+        db.create_test_case(repo_id, None, run_id, case, source_requirement_id=requirement_id, source_doc_id=doc_id)
+        for case in cases
+    ]
+
+
+@api.post("/repos/{repo_id}/documents/{doc_id}/story-requirements/generate-test-cases")
+def api_generate_test_cases_from_document(repo_id: str, doc_id: str, replace: bool = False):
+    """Generates the full realistic set of test cases directly from this
+    document's own raw story text (name + content) -- ungrounded, no code
+    shown, no requirement that Story Coverage has ever run on this document.
+    Stored with status=NULL, covers=[], module=NULL until a later "Verify
+    against code" pass judges them (see api_verify_test_cases_for_document).
+    `replace=true` (opt-in, never the default -- generation is additive
+    otherwise, same as every other generator in this app) deletes this
+    document's previously-generated cases first, so a regenerate doesn't pile
+    duplicates on top of an earlier pass.
+    See server/llm_requirement_test_generation.py's generate_test_cases_from_document."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    doc = _get_doc_in_repo(repo_id, doc_id)
+    try:
+        cases = llm_requirement_test_generation.generate_test_cases_from_document(doc)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    if replace:
+        db.delete_test_cases_by_source_doc(repo_id, doc_id)
+    run = db.get_latest_successful_run(repo_id)  # optional provenance only -- not required to generate
+    run_id = run["id"] if run else None
+    return [db.create_test_case(repo_id, None, run_id, case, source_doc_id=doc_id) for case in cases]
+
+
+def _test_generation_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], run_id: str | None, replace: bool) -> None:
+    """Background counterpart to api_generate_test_cases_from_document --
+    ungrounded, so unlike the pre-fix version this needs no graph/source_root
+    at all. A document with no content is recorded as a failed entry, not a
+    crash."""
+    for doc_id in doc_ids:
+        doc = db.get_document(doc_id)
+        if not doc:
+            db.update_bulk_job_progress(job_id, "(deleted)", {
+                "document_id": doc_id, "document_name": None, "ok": False,
+                "detail": "document was deleted during this run",
+            })
+            continue
+        try:
+            cases = llm_requirement_test_generation.generate_test_cases_from_document(doc)
+            if replace:
+                db.delete_test_cases_by_source_doc(repo_id, doc_id)
+            created = [db.create_test_case(repo_id, None, run_id, case, source_doc_id=doc_id) for case in cases]
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": True,
+                "detail": f"{len(created)} test case(s)",
+            })
+        except RuntimeError as e:
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": False, "detail": str(e),
+            })
+    db.finish_bulk_job(job_id, "success")
+
+
+@api.post("/repos/{repo_id}/test-cases/generate-all-documents")
+def api_generate_test_cases_all_documents(repo_id: str, replace: bool = False):
+    """Starts a background job that generates test cases for every document
+    in this repo, straight from each document's own story text -- the
+    bulk-import counterpart to api_generate_test_cases_from_document.
+    `replace=true` clears each document's own previously-generated cases
+    right before its new batch is stored. Returns the job id immediately;
+    poll GET .../test-cases/jobs/{job_id} for progress."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    documents = db.list_documents(repo_id)
+    if not documents:
+        raise HTTPException(400, "this repo has no documents yet")
+    run = db.get_latest_successful_run(repo_id)  # optional provenance only -- not required to generate
+    job = db.create_bulk_job(repo_id, "test_generation", len(documents))
+    threading.Thread(
+        target=_test_generation_bulk_worker,
+        args=(job["id"], repo_id, [d["id"] for d in documents], run["id"] if run else None, replace),
+        daemon=True,
+    ).start()
+    return job
+
+
+@api.get("/repos/{repo_id}/test-cases/jobs/{job_id}")
+def api_get_test_generation_job(repo_id: str, job_id: str):
+    job = db.get_bulk_job(job_id)
+    if not job or job["repo_id"] != repo_id:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+# --------------------------------------------------------------------------- document-scoped test-case verification
+#
+# Generation (above) never looks at code -- it writes the full realistic set
+# of test cases straight from a document's own story text, stored unverified
+# (status=NULL, covers=[], module=NULL). This is the second half: judges
+# those already-written cases against the real codebase, same three-state
+# grounding discipline (supported/contradicted/unknown, citation-validated,
+# demote-on-fabricated-citation) used everywhere else in this app, reusing
+# llm_test_verification.generate_test_case_verifications UNCHANGED -- only
+# how context/sources get built (retrieval-narrowed across a whole batch of
+# cases, not scoped to one module a UI button already named) differs from the
+# existing module-scoped /test-cases/verify route.
+
+def _case_embedding_text(c: dict) -> str:
+    """One short blurb per test case for the retrieval step -- title plus
+    each step's action/expected, same idea as kg/embeddings.py's own
+    module-text building, just built purely from what the case already says
+    about itself (no code involved)."""
+    steps = c.get("steps") or []
+    parts = [c.get("title") or ""]
+    parts.extend(f"{s.get('action','')} {s.get('expected','')}" for s in steps if isinstance(s, dict))
+    return " ".join(p for p in parts if p)
+
+
+def _load_verification_run_state(repo_id: str) -> tuple:
+    """Everything a batch of document-scoped Verify calls needs, loaded ONCE
+    per request/bulk-job (not once per document) -- the graph, every
+    document, the source root, the whole-codebase context (for building/
+    loading the retrieval index), and the cached per-run embedding index
+    itself. Raises RuntimeError, message safe to show the user, if there's
+    no successful analysis run yet."""
+    repo = db.get_repo(repo_id)
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise RuntimeError("this repo has no successful analysis run yet -- run analysis first")
+    g = load_graph(run["graph_path"])
+    docs = db.list_documents(repo_id)
+    source_root = resolve_source_dir(repo)
+    full_context = gap_analysis_context(g, docs, require_docs=False, include_ui_text=False)
+    if not full_context["ok"]:
+        raise RuntimeError(full_context["message"])
+    index_path = Path(run["graph_path"]).parent / "embeddings.json"
+    index: list[dict] = []
+    try:
+        index = embeddings.load_index(index_path)
+        if not index:
+            index = embeddings.build_module_index(full_context)
+            embeddings.save_index(index, index_path)
+    except RuntimeError:
+        index = []  # retrieval is an optimization, not a hard dependency -- same fallback discipline as Story Coverage
+    return g, docs, source_root, full_context, index
+
+
+def _candidate_modules_for_cases(index: list[dict], all_modules: list[str], cases: list[dict]) -> set[str]:
+    """Embeds every case's own title+steps text in ONE batched call, retrieves
+    each case's own top-K candidate modules, and unions them across the whole
+    batch -- narrows a whole-codebase module search down to a short,
+    real-source-backed shortlist instead of feeding every module's full
+    source into one verify call. Falls back to every module when retrieval
+    isn't available, same discipline as Story Coverage."""
+    if not index:
+        return set(all_modules)
+    try:
+        query_embeddings = embeddings.embed_texts([_case_embedding_text(c) for c in cases])
+    except RuntimeError:
+        return set(all_modules)
+    out: set[str] = set()
+    for q in query_embeddings:
+        out.update(embeddings.retrieve_candidate_modules(index, q, k=10))
+    return out
+
+
+def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: Path, full_context: dict, index: list[dict], cases: list[dict]):
+    """One document's (or one bulk-job document's) full Verify step: narrow
+    candidates, gather real source for just that narrowed set, call
+    llm_test_verification.generate_test_case_verifications ONCE, then patch
+    each judged case's status/rationale/covers AND resolve+set its module
+    for the first time (find_citation_domain_and_path, same helper used
+    elsewhere) since it started with module=NULL."""
+    all_modules = [m["module"] for m in full_context.get("modules") or []]
+    candidate_modules = sorted(_candidate_modules_for_cases(index, all_modules, cases))
+    sources = gather_module_sources(g, source_root, candidate_modules)
+    context = candidate_modules_context(g, docs, candidate_modules)
+    if not context["ok"]:
+        raise RuntimeError(context["message"])
+    result = llm_test_verification.generate_test_case_verifications(cases, context, sources)
+    for v in result.results:
+        module = None
+        for name in v.get("covers") or []:
+            found = find_citation_domain_and_path(g, name)
+            if found:
+                module = found[0]
+                break
+        db.update_test_case_verification(v["id"], v["status"], v.get("rationale"), v.get("covers") or [], module)
+    return result
+
+
+@api.post("/repos/{repo_id}/documents/{doc_id}/test-cases/verify")
+def api_verify_test_cases_for_document(repo_id: str, doc_id: str):
+    """Document-scoped sibling of api_verify_test_cases (module-scoped) --
+    judges every test case tied to ONE document (via source_doc_id) against
+    real retrieved source. Reuses llm_test_verification.generate_test_case_verifications
+    unchanged -- only how context/sources get built differs."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case verification isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    _get_doc_in_repo(repo_id, doc_id)
+    cases = [c for c in db.list_test_cases(repo_id) if c.get("source_doc_id") == doc_id]
+    if not cases:
+        raise HTTPException(400, "this document has no generated test cases yet -- generate some first")
+    try:
+        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    try:
+        result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    return {"applied": len(result.results), "dropped": result.dropped, "test_cases": db.list_test_cases(repo_id)}
+
+
+def _document_verification_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str]) -> None:
+    """Bulk counterpart to api_verify_test_cases_for_document -- loads the
+    run/graph/index ONCE, then loops documents sequentially (same reasoning
+    as _story_coverage_bulk_worker: concurrency, if any, belongs inside the
+    per-batch call, not across documents)."""
+    try:
+        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+    except RuntimeError as e:
+        db.finish_bulk_job(job_id, "failed", str(e))
+        return
+    for doc_id in doc_ids:
+        doc = db.get_document(doc_id)
+        if not doc:
+            db.update_bulk_job_progress(job_id, "(deleted)", {
+                "document_id": doc_id, "document_name": None, "ok": False,
+                "detail": "document was deleted during this run",
+            })
+            continue
+        try:
+            cases = [c for c in db.list_test_cases(repo_id) if c.get("source_doc_id") == doc_id]
+            if not cases:
+                raise RuntimeError("this document has no generated test cases yet")
+            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases)
+            detail = f"{len(result.results)} case(s) verified"
+            if result.dropped:
+                detail += f", {len(result.dropped)} dropped"
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": True, "detail": detail,
+            })
+        except RuntimeError as e:
+            db.update_bulk_job_progress(job_id, doc["name"], {
+                "document_id": doc_id, "document_name": doc["name"], "ok": False, "detail": str(e),
+            })
+    db.finish_bulk_job(job_id, "success")
+
+
+@api.post("/repos/{repo_id}/test-cases/verify-all-documents")
+def api_verify_test_cases_all_documents(repo_id: str):
+    """Bulk counterpart to api_verify_test_cases_for_document -- same
+    one-job-per-repo, sequential-per-document shape as story-coverage/run-all
+    and test-cases/generate-all-documents."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case verification isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    documents = db.list_documents(repo_id)
+    if not documents:
+        raise HTTPException(400, "this repo has no documents yet")
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    job = db.create_bulk_job(repo_id, "test_verification", len(documents))
+    threading.Thread(
+        target=_document_verification_bulk_worker,
+        args=(job["id"], repo_id, [d["id"] for d in documents]),
+        daemon=True,
+    ).start()
+    return job
+
+
+@api.get("/repos/{repo_id}/test-cases/verify-jobs/{job_id}")
+def api_get_test_verification_job(repo_id: str, job_id: str):
+    job = db.get_bulk_job(job_id)
+    if not job or job["repo_id"] != repo_id:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+# --------------------------------------------------------------------------- journeys
+
+def _journey_member_requirements(repo_id: str, g, journey: dict) -> list[dict]:
+    """A journey's requirements come from two directions (server/db.py's
+    schema comment on `journeys`/`story_requirements.journey_id` has the full
+    reasoning): rows DERIVED from this journey's own code (stored with
+    journey_id set), union document-sourced rows whose resolved citations
+    fall inside this journey's node_ids -- computed here, never stored, since
+    a document-sourced requirement doesn't "belong" to one journey, it just
+    happens to cite code that journey also reaches."""
+    node_ids = set(journey.get("node_ids") or [])
+    out = []
+    for r in db.list_story_requirements(repo_id):
+        if r.get("journey_id") == journey["id"]:
+            out.append(r)
+            continue
+        if r.get("journey_id"):
+            continue  # derived for a DIFFERENT journey -- not this one's member
+        for name in r.get("covers") or []:
+            node_id = resolve_citation_node_id(g, name)
+            if node_id and node_id in node_ids:
+                out.append(r)
+                break
+    return out
+
+
+def _journey_run_and_graph(repo_id: str) -> tuple[dict, object]:
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    return run, load_graph(run["graph_path"])
+
+
+@api.post("/repos/{repo_id}/journeys/detect")
+def api_detect_journeys(repo_id: str):
+    """Deterministic, free -- no LLM call except the one-shot naming pass
+    (kg.journeys.name_journeys), which falls back to the route prefix itself
+    on any failure. Upserts by stable journey id (see kg.journeys.detect_journeys's
+    docstring for why) -- a prior journey's requirements/answers are never
+    orphaned by re-running this."""
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    run, g = _journey_run_and_graph(repo_id)
+    journeys = detect_journeys(g)
+    names = name_journeys(g, journeys)
+    for j in journeys:
+        j["name"] = names.get(j["id"], j["prefix"])
+    db.replace_journeys(repo_id, run["id"], journeys)
+    return {"detected": len(journeys)}
+
+
+@api.get("/repos/{repo_id}/journeys")
+def api_list_journeys(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    journeys = db.list_journeys(repo_id)
+    if not journeys:
+        return []
+    run = db.get_latest_successful_run(repo_id)
+    g = load_graph(run["graph_path"]) if run and run.get("graph_path") else None
+    out = []
+    for j in journeys:
+        members = _journey_member_requirements(repo_id, g, j) if g is not None else []
+        statuses = [m["status"] for m in members]
+        out.append({
+            **j,
+            "members": members,
+            "member_count": len(members),
+            "supported_count": statuses.count("supported"),
+            "contradicted_count": statuses.count("contradicted"),
+            "needs_human_input_count": statuses.count("needs_human_input"),
+            "unknown_count": statuses.count("unknown"),
+        })
+    return out
+
+
+@api.post("/repos/{repo_id}/journeys/{journey_id}/derive-requirements")
+def api_derive_journey_requirements(repo_id: str, journey_id: str):
+    """Finds candidate requirements directly in a journey's code -- for the
+    case no user story exists yet (server/llm_journey_requirements.py).
+    Replaces only this journey's previously DERIVED rows -- a human-confirmed
+    answer for this same journey is never touched (db.replace_derived_requirements)."""
+    if not llm_journey_requirements.is_configured():
+        raise HTTPException(400, "Deriving requirements isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    journey = db.get_journey(journey_id)
+    if not journey or journey["repo_id"] != repo_id:
+        raise HTTPException(404, "journey not found")
+    run, g = _journey_run_and_graph(repo_id)
+    source_root = resolve_source_dir(repo)
+    sources = gather_journey_sources(g, source_root, journey)
+    try:
+        requirements = llm_journey_requirements.generate_journey_requirements(journey["name"], sources)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.replace_derived_requirements(repo_id, journey_id, run["id"], requirements)
+    return {"derived": len(requirements)}
+
+
+@api.post("/repos/{repo_id}/story-requirements/{requirement_id}/confirm")
+def api_confirm_story_requirement(repo_id: str, requirement_id: str, payload: ConfirmRequirementIn):
+    """A human answers a needs_human_input question -- flips `source` to
+    'human_confirmed' (server/db.py's confirm_story_requirement); from this
+    moment the row behaves exactly like a document-sourced one everywhere
+    else. This is the entire "answers compound over time" mechanism."""
+    if payload.status not in ("supported", "contradicted"):
+        raise HTTPException(400, "status must be 'supported' or 'contradicted' -- a human resolves the ambiguity, it doesn't stay open")
+    requirement = db.get_story_requirement(requirement_id)
+    if not requirement or requirement["repo_id"] != repo_id:
+        raise HTTPException(404, "requirement not found")
+    return db.confirm_story_requirement(requirement_id, payload.status, payload.rationale)
+
+
+@api.post("/repos/{repo_id}/journeys/{journey_id}/generate-test-case")
+def api_generate_journey_test_case(repo_id: str, journey_id: str):
+    """Generates ONE end-to-end test case spanning a whole journey's already-
+    judged member requirements (server/llm_journey_test_generation.py) --
+    never re-judges any of them; each step is tagged with the requirement and
+    status that backs it, and the case's overall status is the worst among
+    its members (never a single fake collapsed verdict)."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    journey = db.get_journey(journey_id)
+    if not journey or journey["repo_id"] != repo_id:
+        raise HTTPException(404, "journey not found")
+    run, g = _journey_run_and_graph(repo_id)
+    members = _journey_member_requirements(repo_id, g, journey)
+    if not members:
+        raise HTTPException(400, "this journey has no requirements yet -- derive some from its code, or link a user story, first")
+    source_root = resolve_source_dir(repo)
+    sources = gather_journey_sources(g, source_root, journey)
+    try:
+        case = llm_journey_test_generation.generate_test_case_from_journey(journey["name"], members, sources)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    # No single module owns a cross-cutting journey -- the first member
+    # requirement's resolved citation picks a reasonable home for the case,
+    # same fallback shape api_generate_test_case_from_requirement already uses.
+    module = None
+    for r in members:
+        for name in r.get("covers") or []:
+            found = find_citation_domain_and_path(g, name)
+            if found:
+                module = found[0]
+                break
+        if module:
+            break
+    return db.create_test_case(repo_id, module, run["id"], case, source_journey_id=journey_id)
+
+
 # --------------------------------------------------------------------------- LLM test case generation
 
 @api.post("/repos/{repo_id}/test-cases/run")
@@ -670,12 +1383,18 @@ def api_run_test_generation(repo_id: str, module: str):
     to generate test cases; documents (if any) just add richer grounding
     for what's "critical" and what the intended behavior is. Also unlike gap
     analysis, this has no free manual fallback -- gated entirely on
-    OPENAI_API_KEY, same as automatic gap analysis. Replaces this module's
-    previously stored test cases with the result -- other modules' cases
-    are untouched."""
+    OPENAI_API_KEY, same as automatic gap analysis. Grounded in this
+    module's REAL source (gather_module_sources) so a case's expected
+    result describes what the code actually does, bugs included -- its
+    status/rationale, if any, is derived separately (server/llm_story_coverage.py's
+    link_requirements_to_cases) from whatever Story Coverage has already
+    judged about the matching user story, not re-checked against this same
+    code again. Replaces this module's previously stored test cases with the
+    result -- other modules' cases are untouched."""
     if not llm_test_generation.is_configured():
         raise HTTPException(400, "Test case generation isn't configured on this deployment (no OPENAI_API_KEY).")
-    if not db.get_repo(repo_id):
+    repo = db.get_repo(repo_id)
+    if not repo:
         raise HTTPException(404, "repo not found")
     docs = db.list_documents(repo_id)
     run = db.get_latest_successful_run(repo_id)
@@ -688,7 +1407,12 @@ def api_run_test_generation(repo_id: str, module: str):
     if not context["ok"]:
         raise HTTPException(400, context["message"])
     try:
-        result = llm_test_generation.generate_test_cases(context)
+        source_root = resolve_source_dir(repo)
+        sources = gather_module_sources(g, source_root, [module])
+    except OSError:
+        sources = {}  # degrade to name-only generation rather than fail the whole pass over a source-access problem
+    try:
+        result = llm_test_generation.generate_test_cases(context, sources=sources)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     db.replace_test_cases(repo_id, module, run["id"], result.cases)
@@ -704,7 +1428,25 @@ def api_run_test_generation(repo_id: str, module: str):
 def api_list_test_cases(repo_id: str):
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    return db.list_test_cases(repo_id)
+    cases = db.list_test_cases(repo_id)
+    requirements = db.list_story_requirements(repo_id)  # every document's requirements, not just one
+    return llm_story_coverage.link_requirements_to_cases(cases, requirements)
+
+
+@api.delete("/repos/{repo_id}/test-cases")
+def api_delete_test_cases_by_module(repo_id: str, module: str):
+    """Manual cleanup for one module's whole bucket of test cases -- the
+    "Clear" action next to the Module filter in the Test Cases tab. Scoped
+    purely by the `module` string already stored on each case, regardless of
+    origin (code/story/journey) or whether that module still exists in the
+    latest analysis run's graph -- the main reason this exists is to clear
+    cases left orphaned under a module name a repo's real structure has since
+    moved past (a renamed or restructured module), which nothing else in the
+    app can target."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    deleted = db.delete_test_cases_by_module(repo_id, module)
+    return {"deleted": deleted}
 
 
 @api.get("/repos/{repo_id}/test-cases/export")

@@ -131,6 +131,7 @@ def parse_repo(root: Path) -> ParsedPythonRepo:
                             PyFunction(
                                 name=item.name, qualname=method_qual, is_method=True,
                                 class_qualname=cls_qual, lineno=item.lineno,
+                                routes=_extract_routes(item.decorator_list),
                             )
                         )
                 py_module.classes.append(py_class)
@@ -138,7 +139,8 @@ def parse_repo(root: Path) -> ParsedPythonRepo:
                 func_qual = f"{dotted}:{node.name}"
                 py_module.functions.append(
                     PyFunction(name=node.name, qualname=func_qual, is_method=False,
-                               class_qualname=None, lineno=node.lineno)
+                               class_qualname=None, lineno=node.lineno,
+                               routes=_extract_routes(node.decorator_list))
                 )
 
     # Build a global symbol table: qualname suffix -> full qualname, per module,
@@ -186,6 +188,34 @@ def _unparse_safe(node: ast.AST) -> str:
         return ast.unparse(node)
     except Exception:  # noqa: BLE001
         return "<expr>"
+
+
+# FastAPI/Flask-style HTTP-method decorator names -- the only route shape this
+# parser recognizes today (kg/journeys.py's entry-point detection depends on
+# it). A bare `@app.route(...)` with a `methods=[...]` kwarg (plain Flask) and
+# non-Python frameworks are both out of scope for now -- see kg/journeys.py's
+# module docstring for why this is deliberately narrow to start.
+_ROUTE_METHOD_NAMES = {"get", "post", "put", "delete", "patch", "options", "head", "websocket", "api_route"}
+
+
+def _extract_routes(decorator_list: list[ast.expr]) -> list[dict]:
+    """Reads `@app.get("/path")`-shaped decorators off a function/method def.
+    Mechanical and best-effort like the rest of this parser -- a route whose
+    path isn't a plain string literal (an f-string, a variable) is skipped
+    rather than guessed at."""
+    routes: list[dict] = []
+    for dec in decorator_list:
+        if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+            continue
+        method = dec.func.attr
+        if method not in _ROUTE_METHOD_NAMES:
+            continue
+        path = None
+        if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+            path = dec.args[0].value
+        if path is not None:
+            routes.append({"method": "api_route" if method == "api_route" else method, "path": path})
+    return routes
 
 
 def _enclosing_qualname(tree: ast.Module, target: ast.AST, dotted: str) -> str | None:

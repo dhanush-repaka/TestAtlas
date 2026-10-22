@@ -8,3 +8,4 @@ secret.key
 .env
 .env.*
 !.env.example
+.gstack/

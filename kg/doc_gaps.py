@@ -50,6 +50,43 @@ import networkx as nx
 ALLOWED_GAP_CATEGORIES = {"missing_implementation", "undocumented_capability", "mismatch"}
 
 
+def known_code_names(context: dict) -> dict[str, str]:
+    """Every name an LLM may legitimately cite against this context -> its
+    canonical form. Bare method names map to `Class.method` (first class
+    wins). Shared by server/llm_test_generation.py's `covers` checking and
+    server/llm_story_coverage.py's requirement-citation checking -- both
+    validate an LLM's claimed code references against the SAME context dict
+    handed to the model, nominally (there's no source text to substring-match
+    against; only names, paths, domain and optional purpose summaries ever
+    reach the graph)."""
+    canon: dict[str, str] = {}
+    for p in context.get("parts") or []:
+        canon.setdefault(p["name"], p["name"])
+    for m in context["modules"]:
+        for f in m["files"]:
+            for fn in f["functions"]:
+                canon.setdefault(fn, fn)
+            for c in f["classes"]:
+                canon.setdefault(c["name"], c["name"])
+                for meth in c["methods"]:
+                    canon.setdefault(f'{c["name"]}.{meth}', f'{c["name"]}.{meth}')
+                    canon.setdefault(meth, f'{c["name"]}.{meth}')
+    return canon
+
+
+def canonical_cover(entry: str, canon: dict[str, str]) -> str | None:
+    """Maps what a model wrote to a real name, tolerating a module-path
+    prefix (`src.lib.Signer.sign` -> `Signer.sign`); None means it's invented."""
+    e = entry.strip()
+    if e in canon:
+        return canon[e]
+    parts = e.replace(":", ".").split(".")
+    for k in (2, 1):
+        if len(parts) >= k and ".".join(parts[-k:]) in canon:
+            return canon[".".join(parts[-k:])]
+    return None
+
+
 def gap_analysis_context(
     g: nx.MultiDiGraph, docs: list[dict], require_docs: bool = True, include_ui_text: bool = False
 ) -> dict:
@@ -210,3 +247,19 @@ def module_test_context(
     return {"ok": True, "documents": full["documents"], "modules": matching,
             "display_name": display_name, "description": description, "kind": kind,
             "parts": screen_parts(g, module, labels)}
+
+
+def candidate_modules_context(g: nx.MultiDiGraph, docs: list[dict], modules: list[str]) -> dict:
+    """Like module_test_context, narrowed to a SET of candidate modules
+    instead of exactly one -- used by the document-scoped test-case Verify
+    pass (server/app.py), whose retrieval step (kg/embeddings.py) narrows a
+    whole-codebase module search down to a short candidate set per batch of
+    test cases, not to one module a UI button is already scoped to."""
+    full = gap_analysis_context(g, docs, require_docs=False, include_ui_text=False)
+    if not full["ok"]:
+        return full
+    wanted = set(modules)
+    matching = [m for m in full["modules"] if m["module"] in wanted]
+    if not matching:
+        return {"ok": False, "message": "none of the retrieved candidate modules exist in this run's graph."}
+    return {"ok": True, "documents": full["documents"], "modules": matching}

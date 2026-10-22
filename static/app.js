@@ -25,6 +25,9 @@ let loginRequired = false;
 const READ_ONLY_LOCKED_IDS = [
   "addRepoBtn", "sidebarAddRepoBtn", "editRepoBtn", "testConnBtn", "runBtn",
   "deleteRepoBtn", "addDocBtn", "runAutoGapBtn", "submitGapFindingsBtn", "compareRunBtn",
+  "runStoryCoverageBtn", "submitStoryRequirementsBtn", "detectJourneysBtn", "generateDocTestCasesBtn",
+  "importWorkItemsBtn", "runStoryCoverageAllBtn", "generateTestCasesAllBtn",
+  "verifyDocTestCasesBtn", "verifyTestCasesAllBtn", "clearModuleTestCasesBtn",
 ];
 
 // Each tile's latest run, kept across dashboard visits (not just within one
@@ -175,6 +178,7 @@ function renderSidebar() {
   const el = $("#sidebarRepoList");
   if (!el) return;
   $("#sidebarDashboardBtn").classList.toggle("active", view === "overview");
+  $("#sidebarDiagnosticsBtn").classList.toggle("active", view === "diagnostics");
   // "Repos" itself (the section header) reads active for both the grid AND a
   // single open repo -- a repo is reached through this section, same as a
   // folder stays highlighted while a file inside it is open in a file tree.
@@ -299,7 +303,7 @@ function basePathname() {
 // name/DOM id/functions are still "dashboard", kept as-is to avoid rewriting
 // already-tested code for a rename), and "repo" (a single repo, unchanged).
 function routePath(page, repoId, tab) {
-  const rel = page === "repo" ? `repo/${encodeURIComponent(repoId)}/${tab || "overview"}` : page === "repos" ? "repos" : "";
+  const rel = page === "repo" ? `repo/${encodeURIComponent(repoId)}/${tab || "overview"}` : page === "repos" ? "repos" : page === "diagnostics" ? "diagnostics" : "";
   return new URL(rel, document.baseURI).pathname;
 }
 
@@ -312,6 +316,7 @@ function parseRoute(pathname) {
     return { page: "repo", repoId: decodeURIComponent(parts[1]), tab };
   }
   if (parts[0] === "repos") return { page: "repos", repoId: null, tab: null };
+  if (parts[0] === "diagnostics") return { page: "diagnostics", repoId: null, tab: null };
   return { page: "overview", repoId: null, tab: null };
 }
 
@@ -349,6 +354,8 @@ function applyRoute() {
     showDashboard({ updateHistory: false });
   } else if (route.page === "repos") {
     showDashboard({ updateHistory: false });
+  } else if (route.page === "diagnostics") {
+    showDiagnostics({ updateHistory: false });
   } else {
     showOverview({ updateHistory: false });
   }
@@ -384,6 +391,7 @@ function showOverview(opts = {}) {
   $("#overviewView").hidden = false;
   $("#dashboardView").hidden = true;
   $("#repoView").hidden = true;
+  $("#diagnosticsView").hidden = true;
   renderOverviewDashboard();
   renderSidebar();
   $("#topbarCrumb").textContent = "";
@@ -536,11 +544,86 @@ function showDashboard(opts = {}) {
   $("#overviewView").hidden = true;
   $("#dashboardView").hidden = false;
   $("#repoView").hidden = true;
+  $("#diagnosticsView").hidden = true;
   renderDashboard();
   renderSidebar();
   $("#topbarCrumb").textContent = "Repos";
   setTitle(null);
   if (opts.updateHistory !== false) navigate("repos", null, null, { replace: !!opts.replace });
+}
+
+function showDiagnostics(opts = {}) {
+  view = "diagnostics";
+  activeRepoId = null;
+  $("#overviewView").hidden = true;
+  $("#dashboardView").hidden = true;
+  $("#repoView").hidden = true;
+  $("#diagnosticsView").hidden = false;
+  renderSidebar();
+  $("#topbarCrumb").textContent = "Diagnostics";
+  setTitle(null);
+  if (opts.updateHistory !== false) navigate("diagnostics", null, null, { replace: !!opts.replace });
+  loadDiagnosticsView();
+}
+
+// --------------------------------------------------------------------------- diagnostics (LLM call log)
+//
+// A deployment-wide view, not scoped to one repo -- every OpenAI call this
+// server has made, across every feature, read from llm_logging.py's
+// data/llm_calls.log via GET /api/llm-calls. Built so "why did this feature
+// only produce N test cases" or "is this slow because of a huge prompt" has
+// a real answer on hand instead of grepping server stdout by hand.
+
+let diagnosticsCalls = [];
+
+async function loadDiagnosticsView() {
+  diagnosticsCalls = await api("/llm-calls?limit=200").catch(() => []);
+  if (view !== "diagnostics") return; // navigated away while this was in flight
+  populateDiagSiteFilter();
+  renderDiagnosticsSummary();
+  renderDiagnosticsTable();
+}
+
+function populateDiagSiteFilter() {
+  const sel = $("#diagSiteFilter");
+  const prev = sel.value;
+  const sites = [...new Set(diagnosticsCalls.map((c) => c.site))].sort();
+  sel.innerHTML = `<option value="">All features</option>` + sites.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  sel.value = sites.includes(prev) ? prev : "";
+}
+
+function renderDiagnosticsSummary() {
+  const total = diagnosticsCalls.length;
+  const errors = diagnosticsCalls.filter((c) => !c.ok).length;
+  const latencies = diagnosticsCalls.filter((c) => c.ok && typeof c.latency_ms === "number").map((c) => c.latency_ms);
+  const avgLatency = latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null;
+  const totalTokens = diagnosticsCalls.reduce((a, c) => a + (c.usage?.total_tokens || 0), 0);
+  $("#diagSummaryCards").innerHTML = [
+    statCard(total, "Calls logged", "most recent 200"),
+    statCard(avgLatency === null ? "—" : `${avgLatency} ms`, "Average latency"),
+    statCard(totalTokens.toLocaleString(), "Total tokens"),
+    statCard(errors, "Failed calls"),
+  ].join("");
+}
+
+function renderDiagnosticsTable() {
+  const siteFilter = $("#diagSiteFilter").value;
+  const rows = diagnosticsCalls.filter((c) => !siteFilter || c.site === siteFilter);
+  const tbody = $("#diagCallsTable tbody");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted small">${diagnosticsCalls.length ? "No calls match this filter." : "No LLM calls logged yet — use any generation or verification feature, then come back here."}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((c) => `
+    <tr>
+      <td class="mono">${c.ts ? new Date(c.ts * 1000).toLocaleString() : "—"}</td>
+      <td>${escapeHtml(c.site || "—")}</td>
+      <td class="mono">${escapeHtml(c.model || "—")}</td>
+      <td>${typeof c.latency_ms === "number" ? `${c.latency_ms} ms` : "—"}</td>
+      <td>${c.usage?.prompt_tokens ?? "—"}</td>
+      <td>${c.usage?.completion_tokens ?? "—"}</td>
+      <td>${c.ok ? `<span class="status-pill status-success">ok</span>` : `<span class="status-pill status-failed" title="${escapeHtml(c.error || "")}">error</span>`}</td>
+    </tr>`).join("");
 }
 
 async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
@@ -549,6 +632,7 @@ async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   $("#overviewView").hidden = true;
   $("#dashboardView").hidden = true;
   $("#repoView").hidden = false;
+  $("#diagnosticsView").hidden = true;
   const repo = repos.find((r) => r.id === id);
   renderSidebar();
   $("#topbarCrumb").textContent = repo.name;
@@ -569,6 +653,8 @@ async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   await loadRuns();
   await loadDocsPanel();
   await loadGapsPanel();
+  await loadStoryCoveragePanel();
+  await loadJourneysPanel();
   await loadTestCasesPanel();
 }
 
@@ -915,6 +1001,11 @@ function activateTab(tabName) {
   $all(".tab-panel").forEach((p) => (p.hidden = true));
   $(`#panel-${tabName}`).hidden = false;
   if (tabName !== "insights") clearTimeout(_insightsPollTimer);
+  // A bulk job's progress panel lives in either the Story Coverage tab
+  // (story_coverage) or the Test Cases tab (test_generation/test_verification)
+  // -- only stop polling when navigating away from BOTH, not when switching
+  // between the two tabs a job's progress could be showing in.
+  if (tabName !== "story" && tabName !== "tests") clearTimeout(_bulkJobPollTimer);
   // A deep link or a click on a tab the overflow has scrolled out of view (see
   // initTabsScroll below) should bring it on screen, not just mark it active
   // underneath whatever's currently showing.
@@ -1493,10 +1584,358 @@ async function submitGapFindingsForSelected() {
   }
 }
 
+// --------------------------------------------------------------------------- story coverage (separate tab)
+
+let activeStoryRequirements = [];
+let storyCoverageAvailable = null; // null = not checked yet
+
+async function loadStoryCoveragePanel() {
+  const repoId = activeRepoId;
+  if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  populateStoryDocSelect();
+
+  if (storyCoverageAvailable === null) {
+    storyCoverageAvailable = await api("/story-coverage/config")
+      .then((c) => c.automatic_available)
+      .catch(() => false);
+    if (repoId !== activeRepoId) return;
+    $("#runStoryCoverageBtn").classList.toggle("is-hidden", !storyCoverageAvailable);
+    $("#storyCoverageHint").classList.toggle("is-hidden", !storyCoverageAvailable);
+  }
+  $("#runStoryCoverageAllBtn").classList.toggle("is-hidden", !storyCoverageAvailable);
+
+  await loadStoryRequirementsForSelectedDoc();
+}
+
+function populateStoryDocSelect() {
+  const sel = $("#storyCoverageDocSelect");
+  const prior = sel.value;
+  sel.innerHTML = activeDocuments.length
+    ? activeDocuments.map((d) => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join("")
+    : `<option value="">No documents yet — add one in the Docs tab</option>`;
+  if (prior && activeDocuments.some((d) => d.id === prior)) sel.value = prior;
+}
+
+async function loadStoryRequirementsForSelectedDoc() {
+  const repoId = activeRepoId;
+  const docId = $("#storyCoverageDocSelect").value;
+  activeStoryRequirements = docId ? await api(`/repos/${repoId}/documents/${docId}/story-requirements`).catch(() => []) : [];
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  renderStoryCoverageSummary();
+  renderStoryRequirementsList();
+}
+
+// --------------------------------------------------------------------------- generate/verify from user story (Test Cases tab)
+//
+// Lives here, not in the Story Coverage tab -- generation no longer needs a
+// Story Coverage run first, and keeping every test-case action (by module, by
+// user story, by journey) in the one tab that actually shows the results is
+// the whole point: these used to live in the Story Coverage tab, one tab away
+// from where their output appeared.
+
+function populateTestCaseGenDocSelect() {
+  const sel = $("#testCaseGenDocSelect");
+  const prior = sel.value;
+  sel.innerHTML = activeDocuments.length
+    ? activeDocuments.map((d) => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join("")
+    : `<option value="">No documents yet — add one in the Docs tab</option>`;
+  if (prior && activeDocuments.some((d) => d.id === prior)) sel.value = prior;
+  updateVerifyDocButtonState();
+}
+
+function updateVerifyDocButtonState() {
+  const docId = $("#testCaseGenDocSelect").value;
+  const hasCases = !!docId && activeTestCases.some((c) => c.source_doc_id === docId);
+  $("#verifyDocTestCasesBtn").disabled = readOnly || !hasCases;
+}
+
+async function generateTestCasesForDocument() {
+  const docId = $("#testCaseGenDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const replace = $("#testCaseGenReplaceCheckbox").checked;
+  const btn = $("#generateDocTestCasesBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Generating…";
+  try {
+    const created = await api(`/repos/${activeRepoId}/documents/${docId}/story-requirements/generate-test-cases?replace=${replace}`, { method: "POST" });
+    await loadTestCasesPanel();
+    toast(`Generated ${created.length} test case${created.length === 1 ? "" : "s"} from this document's story text${replace ? " (replacing the previous batch)" : ""} — unverified until you run "Verify against code"`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+    updateVerifyDocButtonState();
+  }
+}
+
+async function verifyTestCasesForDocument() {
+  const docId = $("#testCaseGenDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const btn = $("#verifyDocTestCasesBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Verifying…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/documents/${docId}/test-cases/verify`, { method: "POST" });
+    await loadTestCasesPanel();
+    const byStatus = {};
+    for (const c of result.test_cases) if (c.source_doc_id === docId && c.status) byStatus[c.status] = (byStatus[c.status] || 0) + 1;
+    const summary = ["supported", "contradicted", "unknown"].filter((s) => byStatus[s]).map((s) => `${byStatus[s]} ${s}`).join(", ");
+    const notes = (result.dropped || []).length ? ` (${result.dropped.length} discarded as malformed)` : "";
+    toast(`Verified ${result.applied} test case${result.applied === 1 ? "" : "s"} for this document${summary ? ` — ${summary}` : ""}${notes}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.textContent = originalLabel;
+    updateVerifyDocButtonState();
+  }
+}
+
+async function runStoryCoverage() {
+  const docId = $("#storyCoverageDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const btn = $("#runStoryCoverageBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Analyzing…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/documents/${docId}/story-coverage/run`, { method: "POST" });
+    await loadStoryRequirementsForSelectedDoc();
+    toast(`Extracted ${result.applied} requirement${result.applied === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+// --------------------------------------------------------------------------- bulk jobs (run for all documents)
+//
+// A repo-scale counterpart to runStoryCoverage/generateTestCasesForDocument --
+// loops every document server-side on a background thread (see server/app.py's
+// _story_coverage_bulk_worker/_test_generation_bulk_worker) instead of one
+// document per click. The route returns a job id immediately; this polls it,
+// same "setTimeout that reschedules itself" shape as _insightsPollTimer above.
+
+let _bulkJobPollTimer = null;
+
+async function runBulkJob(kind) {
+  // kind: "story_coverage" | "test_generation" | "test_verification"
+  const path = kind === "story_coverage" ? `/repos/${activeRepoId}/story-coverage/run-all`
+    : kind === "test_generation" ? `/repos/${activeRepoId}/test-cases/generate-all-documents`
+    : `/repos/${activeRepoId}/test-cases/verify-all-documents`;
+  $("#runStoryCoverageAllBtn").disabled = true;
+  $("#generateTestCasesAllBtn").disabled = true;
+  $("#verifyTestCasesAllBtn").disabled = true;
+  try {
+    const job = await api(path, { method: "POST" });
+    pollBulkJob(kind, job);
+  } catch (e) {
+    toast(e.message, "error");
+    $("#runStoryCoverageAllBtn").disabled = readOnly;
+    $("#generateTestCasesAllBtn").disabled = readOnly;
+    $("#verifyTestCasesAllBtn").disabled = readOnly;
+  }
+}
+
+function pollBulkJob(kind, job) {
+  clearTimeout(_bulkJobPollTimer);
+  const repoId = activeRepoId;
+  renderBulkJobProgress(kind, job);
+  if (job.status !== "running") { finishBulkJob(kind, job); return; }
+  _bulkJobPollTimer = setTimeout(async () => {
+    if (repoId !== activeRepoId) return; // navigated to a different repo -- stop polling this one
+    const jobPath = kind === "story_coverage" ? `/repos/${repoId}/story-coverage/jobs/${job.id}`
+      : kind === "test_generation" ? `/repos/${repoId}/test-cases/jobs/${job.id}`
+      : `/repos/${repoId}/test-cases/verify-jobs/${job.id}`;
+    const updated = await api(jobPath).catch(() => null);
+    if (!updated || repoId !== activeRepoId) return;
+    pollBulkJob(kind, updated);
+  }, 1500);
+}
+
+async function finishBulkJob(kind, job) {
+  $("#runStoryCoverageAllBtn").disabled = readOnly;
+  $("#generateTestCasesAllBtn").disabled = readOnly;
+  $("#verifyTestCasesAllBtn").disabled = readOnly;
+  const results = job.results || [];
+  const succeeded = results.filter((r) => r.ok).length;
+  const failed = results.length - succeeded;
+  const label = kind === "story_coverage" ? "Story Coverage" : kind === "test_generation" ? "Test generation" : "Test verification";
+  if (job.status === "failed") toast(`${label} job failed: ${job.error || "unknown error"}`, "error");
+  else toast(`${label}: ${succeeded} of ${job.total} document${job.total === 1 ? "" : "s"} succeeded${failed ? `, ${failed} failed` : ""}`, failed ? "error" : "ok");
+  // Refresh whichever tab's data this job could have changed, regardless of
+  // which tab is currently showing.
+  await loadStoryRequirementsForSelectedDoc();
+  await loadTestCasesPanel();
+}
+
+function renderBulkJobProgress(kind, job) {
+  // story_coverage's progress lives in the Story Coverage tab; the other two
+  // (test generation/verification) moved to the Test Cases tab along with
+  // their own trigger buttons.
+  const el = $(kind === "story_coverage" ? "#bulkJobProgress" : "#bulkJobProgressTests");
+  el.classList.remove("is-hidden");
+  const pct = job.total ? Math.round((job.processed / job.total) * 100) : 100;
+  const label = kind === "story_coverage" ? "Running Story Coverage" : kind === "test_generation" ? "Generating test cases" : "Verifying test cases";
+  const statusText = job.status === "running"
+    ? `${label} — ${job.processed} of ${job.total}${job.current_document_name ? ` (currently: ${escapeHtml(job.current_document_name)})` : ""}`
+    : `${label} finished — ${job.processed} of ${job.total}`;
+  const rows = (job.results || []).slice().reverse().map((r) => `
+    <div class="bulk-job-result-row">
+      <span class="dot ${r.ok ? "score-ok" : "score-danger"}"></span>
+      <span class="name">${escapeHtml(r.document_name || "(unknown document)")}</span>
+      <span class="detail">${escapeHtml(r.detail || "")}</span>
+    </div>`).join("");
+  el.innerHTML = `
+    <div class="bulk-job-head"><span>${escapeHtml(statusText)}</span><span class="muted">${pct}%</span></div>
+    <div class="bulk-job-track"><div class="bulk-job-fill" style="width:${pct}%"></div></div>
+    ${rows ? `<div class="bulk-job-results">${rows}</div>` : ""}
+  `;
+}
+
+async function handleImportWorkItemsInput(ev) {
+  const file = ev.target.files[0];
+  ev.target.value = ""; // allow re-selecting the same file name later
+  if (!file) return;
+  const btn = $("#importWorkItemsBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Importing…";
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const created = await api(`/repos/${activeRepoId}/documents/import-work-items`, { method: "POST", body: fd, headers: {} });
+    await loadDocsPanel();
+    await loadGapsPanel();
+    await loadStoryCoveragePanel();
+    toast(`Imported ${created.length} document${created.length === 1 ? "" : "s"} from "${file.name}"`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+  }
+}
+
+function renderStoryCoverageSummary() {
+  const total = activeStoryRequirements.length;
+  const supported = activeStoryRequirements.filter((r) => r.status === "supported");
+  const contradicted = activeStoryRequirements.filter((r) => r.status === "contradicted").length;
+  const unknown = activeStoryRequirements.filter((r) => r.status === "unknown").length;
+  const tested = supported.filter((r) => r.tested).length;
+  const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
+  $("#storyCoverageSummaryCards").innerHTML = [
+    statCard(total, "Acceptance criteria found"),
+    statCard(`${pct(supported.length, total)}%`, "Implemented", `${supported.length} of ${total} supported`),
+    statCard(`${pct(tested, supported.length)}%`, "Tested", `${tested} of ${supported.length} supported criteria`),
+    statCard(contradicted, "Contradicted"),
+    statCard(unknown, "Unknown"),
+  ].join("");
+}
+
+function renderStoryRequirementsList() {
+  const statusFilter = $("#storyFilterStatusSelect").value;
+  const typeFilter = $("#storyFilterTypeSelect").value;
+  const rows = activeStoryRequirements.filter(
+    (r) => (!statusFilter || r.status === statusFilter) && (!typeFilter || r.type === typeFilter)
+  );
+  const el = $("#storyRequirementsListAll");
+  if (!rows.length) {
+    el.innerHTML = `<p class="muted small">${activeStoryRequirements.length ? "No requirements match this filter." : "No requirements yet — pick a document and run a comparison above."}</p>`;
+    return;
+  }
+  el.innerHTML = rows.map(renderStoryRequirementCard).join("");
+}
+
+function renderStoryRequirementCard(r) {
+  const covers = (r.covers || []).map((c) => `<code class="story-cover-chip">${escapeHtml(c)}</code>`).join(" ");
+  return `
+    <div class="doc-gap-finding">
+      <span class="finding-cat cat-${r.status}">${r.status}</span>
+      <span class="finding-cat cat-${r.type}">${r.type}</span>
+      ${r.status === "supported" ? `<span class="finding-cat ${r.tested ? "cat-tested" : "cat-untested"}">${r.tested ? "tested" : "not tested"}</span>` : ""}
+      <p>${escapeHtml(r.text)}</p>
+      ${r.rationale ? `<p class="small muted">${escapeHtml(r.rationale)}</p>` : ""}
+      ${covers ? `<p class="small">Covers: ${covers}</p>` : ""}
+      <button type="button" class="btn btn-sm generate-tc-from-req-btn" data-doc-id="${escapeHtml(r.doc_id)}" data-req-id="${escapeHtml(r.id)}" ${readOnly ? "disabled" : ""}>Generate test case</button>
+    </div>`;
+}
+
+async function getStoryCoverageContextForSelected() {
+  const docId = $("#storyCoverageDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const el = $("#storyCoverageContextOutput");
+  el.classList.remove("is-hidden");
+  el.textContent = "Loading…";
+  try {
+    const ctx = await api(`/repos/${activeRepoId}/documents/${docId}/story-coverage-context`);
+    el.textContent = JSON.stringify(ctx, null, 2);
+  } catch (e) {
+    el.textContent = "Error: " + e.message;
+  }
+}
+
+async function submitStoryRequirementsForSelected() {
+  const docId = $("#storyCoverageDocSelect").value;
+  if (!docId) { toast("Pick a document first", "error"); return; }
+  const raw = $("#storyRequirementsInput").value.trim();
+  if (!raw) { toast("Paste the requirements JSON first", "error"); return; }
+  let requirements;
+  try {
+    requirements = JSON.parse(raw);
+  } catch (e) {
+    toast("That's not valid JSON: " + e.message, "error");
+    return;
+  }
+  try {
+    await api(`/repos/${activeRepoId}/documents/${docId}/story-requirements`, { method: "POST", body: JSON.stringify({ requirements }) });
+    $("#storyRequirementsInput").value = "";
+    await loadStoryRequirementsForSelectedDoc();
+    toast("Requirements saved", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function generateTestCaseFromRequirement(docId, reqId, btn) {
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Generating…";
+  try {
+    const created = await api(`/repos/${activeRepoId}/documents/${docId}/story-requirements/${reqId}/generate-test-case`, { method: "POST" });
+    await loadTestCasesPanel(); // keeps the Test Cases tab current even though we're viewing Story Coverage right now
+    toast(`Generated ${created.length} test case${created.length === 1 ? "" : "s"} — unverified until you run "Verify against code"`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    // Unlike module generation, this button's own list (Story Coverage) never
+    // gets re-rendered by loadTestCasesPanel() above -- it lives in a different
+    // tab -- so it has to reset itself rather than rely on a fresh render.
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 // --------------------------------------------------------------------------- LLM test case generation
 
 let activeTestCases = [];
 let testGenAvailable = null; // null = not checked yet
+let testCaseSourceFilter = ""; // "" | "code" | "story" | "journey" -- set by #testCaseSourceSegmented
+
+// The "User story" sub-filter only means anything once "From user story" is
+// the active segment -- hidden otherwise instead of sitting there inert,
+// one less always-visible control in a toolbar that was already crowded.
+function setTestCaseSourceFilter(value) {
+  testCaseSourceFilter = value;
+  $all("#testCaseSourceSegmented .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === value));
+  $("#testCaseStoryDocFilterRow").classList.toggle("is-hidden", value !== "story");
+  renderTestCaseList();
+}
 
 // Same heuristic as server/llm_test_generation.py's _is_test_file, applied to
 // a whole module (domain) name instead of a file path -- a module that's
@@ -1526,14 +1965,19 @@ async function loadTestCasesPanel() {
     if (repoId !== activeRepoId) return;
     $("#testGenUnavailableHint").classList.toggle("is-hidden", testGenAvailable);
   }
+  $("#generateTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
+  $("#verifyTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
+  populateTestCaseGenDocSelect();
 
   const cases = await api(`/repos/${repoId}/test-cases`).catch(() => []);
   if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
   activeTestCases = cases;
   renderModuleGenList();
   populateTestCaseModuleFilter();
+  populateTestCaseStoryFilter();
   renderTestCaseSummary();
   renderTestCaseList();
+  updateVerifyDocButtonState();
 }
 
 // Shown on the Test Cases tab while modules still carry raw folder names -- that's
@@ -1564,6 +2008,7 @@ function moduleGenRow(m) {
         </div>
         <div class="module-gen-actions">
           <span class="small muted">${count ? `${count} generated` : ""}</span>
+          ${count ? `<button type="button" class="btn btn-sm module-clear-btn" data-module="${escapeHtml(m.module)}" ${readOnly ? "disabled" : ""}>Clear</button>` : ""}
           <button type="button" class="btn btn-sm module-gen-btn" data-module="${escapeHtml(m.module)}" ${readOnly ? "disabled" : ""}>${count ? "Regenerate" : "Generate"}</button>
         </div>
       </div>`;
@@ -1652,6 +2097,45 @@ function populateTestCaseModuleFilter() {
   const modules = [...new Set(activeTestCases.map((c) => c.module).filter(Boolean))].sort();
   sel.innerHTML = `<option value="">All modules</option>` + modules.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(moduleDisplayName(m))}</option>`).join("");
   sel.value = modules.includes(prev) ? prev : "";
+  updateClearModuleButtonState();
+}
+
+// "Clear this module's test cases" only makes sense once a SPECIFIC module is
+// picked (not "All modules") -- it deletes by the raw module string, which
+// also catches a case left orphaned under a module name a repo's real
+// structure has since moved past (e.g. renamed or restructured), since that
+// string can keep showing up in this filter long after the module itself
+// stopped existing in the latest analysis run.
+function updateClearModuleButtonState() {
+  const mod = $("#testCaseFilterModuleSelect").value;
+  $("#clearModuleTestCasesBtn").classList.toggle("is-hidden", !mod);
+  $("#clearModuleTestCasesBtn").disabled = readOnly;
+}
+
+async function clearModuleTestCases(mod) {
+  if (!mod) return;
+  const label = moduleDisplayName(mod);
+  const count = activeTestCases.filter((c) => c.module === mod).length;
+  if (!confirm(`Delete all ${count} test case${count === 1 ? "" : "s"} in "${label}"? This cannot be undone.`)) return;
+  try {
+    const result = await api(`/repos/${activeRepoId}/test-cases?module=${encodeURIComponent(mod)}`, { method: "DELETE" });
+    await loadTestCasesPanel();
+    toast(`Deleted ${result.deleted} test case${result.deleted === 1 ? "" : "s"} from "${label}"`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+// Sub-filter under "Source" -- only meaningful for story-sourced cases, but kept
+// independent of the Source dropdown rather than gated by it: picking a specific
+// story here already implies "from that story," so the two compose without
+// either one needing to know about the other's state.
+function populateTestCaseStoryFilter() {
+  const sel = $("#testCaseFilterStoryDocSelect");
+  const prev = sel.value;
+  const docIds = [...new Set(activeTestCases.map((c) => c.source_doc_id).filter(Boolean))];
+  sel.innerHTML = `<option value="">All stories</option>` + docIds.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(docNameById(id))}</option>`).join("");
+  sel.value = docIds.includes(prev) ? prev : "";
 }
 
 // The export links follow the module/category filters above them, so "export what I'm looking at" is one click.
@@ -1675,7 +2159,20 @@ function updateExportLinks(count) {
 function renderTestCaseList() {
   const modFilter = $("#testCaseFilterModuleSelect").value;
   const catFilter = $("#testCaseFilterCategorySelect").value;
-  const rows = activeTestCases.filter((c) => (!modFilter || c.module === modFilter) && (!catFilter || c.category === catFilter));
+  const srcFilter = testCaseSourceFilter; // "story" | "journey" | "code" | "" (all) -- set by the segmented control below
+  const storyDocFilter = $("#testCaseFilterStoryDocSelect").value; // a doc id, or "" (all stories)
+  const matchesSource = (c) => {
+    if (!srcFilter) return true;
+    if (srcFilter === "journey") return !!c.source_journey_id;
+    if (srcFilter === "story") return !!c.source_requirement_id || !!c.source_doc_id;
+    return !c.source_requirement_id && !c.source_journey_id && !c.source_doc_id; // "code"
+  };
+  const rows = activeTestCases.filter((c) =>
+    (!modFilter || c.module === modFilter) &&
+    (!catFilter || c.category === catFilter) &&
+    matchesSource(c) &&
+    (!storyDocFilter || c.source_doc_id === storyDocFilter)
+  );
   updateExportLinks(rows.length);
   const el = $("#testCaseListAll");
   if (!rows.length) {
@@ -1703,7 +2200,7 @@ function renderTestCaseCard(c) {
         <table class="tc-steps-table">
           <thead><tr><th class="tc-col-n">#</th><th>Action</th><th>Expected result</th></tr></thead>
           <tbody>${c.steps
-            .map((s, i) => `<tr><td class="tc-col-n">${i + 1}</td><td>${escapeHtml(s.action)}</td><td>${escapeHtml(s.expected)}</td></tr>`)
+            .map((s, i) => `<tr><td class="tc-col-n">${i + 1}</td><td>${s.status ? `<span class="tc-status-note" title="${s.requirement_text ? escapeHtml(s.requirement_text) : ""}"><span class="dot status-${s.status}"></span>${s.status.replaceAll("_", " ")}</span> ` : ""}${escapeHtml(s.action)}</td><td>${escapeHtml(s.expected)}</td></tr>`)
             .join("")}</tbody>
         </table>
       </div>`
@@ -1727,14 +2224,21 @@ function renderTestCaseCard(c) {
       <div class="test-case-head">
         ${TEST_CASE_ICONS[c.category] || ""}
         <h4>${escapeHtml(c.title)}</h4>
-        ${c.priority ? `<span class="tc-priority tc-p${c.priority}" title="Priority ${c.priority} (1 = critical path, 4 = rare)">P${c.priority}</span>` : ""}
-        <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
+        <div class="tc-badges">
+          ${c.priority ? `<span class="tc-priority tc-p${c.priority}" title="Priority ${c.priority} (1 = critical path, 4 = rare)">P${c.priority}</span>` : ""}
+          <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
+          ${c.status ? `<span class="finding-cat cat-${c.status}" title="Verified against the actual code">${c.status}</span>` : ""}
+        </div>
       </div>
-      ${(c.module || c.target) ? `
-        <div class="test-case-target">
-          ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
-        </div>` : ""}
+      <div class="test-case-target">
+        ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
+        <span class="tc-origin-tag ${testCaseOriginClass(c)}">${testCaseOriginLabel(c)}</span>
+      </div>
       ${c.description ? `<p class="tc-description">${escapeHtml(c.description)}</p>` : ""}
+      ${c.status && c.rationale ? `
+        <div class="tc-verdict tc-verdict-${c.status}">
+          <b>${c.status}:</b> ${escapeHtml(c.rationale)}
+        </div>` : ""}
       ${c.preconditions ? `
         <div class="tc-section">
           <span class="tc-section-label">Preconditions</span>
@@ -1746,7 +2250,154 @@ function renderTestCaseCard(c) {
           <span class="tc-section-label">Exercises</span>
           <div class="tc-covers">${c.covers.map((n) => `<code>${escapeHtml(n)}</code>`).join("")}</div>
         </div>` : ""}
+      ${(c.related_requirements || []).length ? `
+        <div class="tc-section">
+          <span class="tc-section-label">${c.status ? "Related user story (traceability only — this case already has its own verdict above)" : "Related user story — no verdict of its own yet, shown as the best signal available"}</span>
+          ${c.related_requirements.map((r) => `
+            <div class="tc-linked-req">
+              ${c.status ? "" : `<span class="tc-status-note"><span class="dot status-${r.status}"></span>${r.status.replaceAll("_", " ")}</span>`}
+              <span class="small muted">${escapeHtml(docNameById(r.doc_id))}</span>
+              <p>${escapeHtml(r.text)}</p>
+            </div>`).join("")}
+        </div>` : ""}
     </div>`;
+}
+
+// Three mutually-exclusive origins a test case can have: generated per-module
+// from code structure, from one Story Coverage requirement, or from a whole
+// Journey's member requirements (narrated as one multi-step case).
+function testCaseOriginClass(c) {
+  if (c.source_journey_id) return "tc-origin-journey";
+  if (c.source_requirement_id || c.source_doc_id) return "tc-origin-story";
+  return "tc-origin-code";
+}
+function testCaseOriginLabel(c) {
+  if (c.source_journey_id) return "from journey";
+  if (c.source_requirement_id || c.source_doc_id) return "from user story";
+  return "from code";
+}
+
+function docNameById(docId) {
+  const doc = activeDocuments.find((d) => d.id === docId);
+  return doc ? doc.name : "a document";
+}
+
+// --------------------------------------------------------------------------- journeys
+
+let activeJourneys = [];
+
+async function loadJourneysPanel() {
+  const repoId = activeRepoId;
+  activeJourneys = await api(`/repos/${repoId}/journeys`).catch(() => []);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  renderJourneysList();
+}
+
+async function detectJourneys(btn) {
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Detecting…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/journeys/detect`, { method: "POST" });
+    await loadJourneysPanel();
+    toast(`Detected ${result.detected} journey${result.detected === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+  }
+}
+
+function renderJourneysList() {
+  const el = $("#journeysListAll");
+  if (!activeJourneys.length) {
+    el.innerHTML = `<p class="muted small">No journeys yet — click "Detect journeys" above (needs at least one successful analysis run with HTTP routes TestAtlas recognizes).</p>`;
+    return;
+  }
+  el.innerHTML = activeJourneys.map(renderJourneyCard).join("");
+}
+
+function renderJourneyCard(j) {
+  const rollup = [
+    j.supported_count ? `<span class="finding-cat cat-supported">${j.supported_count} supported</span>` : "",
+    j.contradicted_count ? `<span class="finding-cat cat-contradicted">${j.contradicted_count} contradicted</span>` : "",
+    j.needs_human_input_count ? `<span class="finding-cat cat-needs_human_input">${j.needs_human_input_count} need input</span>` : "",
+    j.unknown_count ? `<span class="finding-cat cat-unknown">${j.unknown_count} unknown</span>` : "",
+  ].filter(Boolean).join(" ");
+  const members = (j.members || []).map(renderJourneyMemberRow).join("");
+  return `
+    <div class="doc-gap-finding journey-card">
+      <div class="journey-card-head">
+        <h4>${escapeHtml(j.name)}</h4>
+        <span class="small muted">${escapeHtml(j.prefix)}</span>
+      </div>
+      <div class="journey-card-rollup">${rollup || `<span class="small muted">No requirements yet</span>`}</div>
+      <div class="journey-card-actions">
+        <button type="button" class="btn btn-sm derive-journey-btn" data-journey-id="${escapeHtml(j.id)}" ${readOnly ? "disabled" : ""}>Derive requirements from code</button>
+        <button type="button" class="btn btn-sm btn-primary generate-journey-tc-btn" data-journey-id="${escapeHtml(j.id)}" ${readOnly || !j.member_count ? "disabled" : ""} title="${j.member_count ? "" : "No requirements yet to narrate"}">Generate E2E test case</button>
+      </div>
+      ${members ? `<div class="journey-card-members">${members}</div>` : ""}
+    </div>`;
+}
+
+function renderJourneyMemberRow(r) {
+  const askHuman = r.status === "needs_human_input" && r.question;
+  return `
+    <div class="tc-linked-req journey-member">
+      <span class="finding-cat cat-${r.status}">${r.status.replaceAll("_", " ")}</span>
+      <span class="finding-cat ${r.source === "derived" ? "cat-dead_locator" : "cat-tested"}">${r.source === "derived" ? "from code" : r.source === "human_confirmed" ? "human-confirmed" : "from user story"}</span>
+      <p>${escapeHtml(r.text)}</p>
+      ${askHuman ? `
+        <div class="journey-question">
+          <p><b>Question:</b> ${escapeHtml(r.question)}</p>
+          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-status="supported" ${readOnly ? "disabled" : ""}>Yes</button>
+          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-status="contradicted" ${readOnly ? "disabled" : ""}>No</button>
+        </div>` : ""}
+    </div>`;
+}
+
+async function deriveJourneyRequirements(journeyId, btn) {
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Deriving…";
+  try {
+    const result = await api(`/repos/${activeRepoId}/journeys/${journeyId}/derive-requirements`, { method: "POST" });
+    await loadJourneysPanel();
+    toast(`Derived ${result.derived} requirement${result.derived === 1 ? "" : "s"}`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+  }
+}
+
+async function confirmJourneyRequirement(reqId, status, btn) {
+  btn.closest(".journey-question").querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    await api(`/repos/${activeRepoId}/story-requirements/${reqId}/confirm`, { method: "POST", body: JSON.stringify({ status }) });
+    await loadJourneysPanel();
+    toast("Answer saved", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+    btn.closest(".journey-question").querySelectorAll("button").forEach((b) => (b.disabled = readOnly));
+  }
+}
+
+async function generateJourneyTestCase(journeyId, btn) {
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Generating…";
+  try {
+    const created = await api(`/repos/${activeRepoId}/journeys/${journeyId}/generate-test-case`, { method: "POST" });
+    await loadTestCasesPanel(); // keeps the Test Cases tab current even though we're viewing Journeys right now
+    toast(`Generated "${created.title}" (${created.status}) — see the Test Cases tab`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+  }
 }
 
 function renderDocsList() {
@@ -1883,6 +2534,7 @@ async function submitDocForm(ev) {
     closeDocModal();
     await loadDocsPanel();
     await loadGapsPanel();
+    await loadStoryCoveragePanel();
     await loadTestCasesPanel();
     if (failed.length) toast(`Added ${ok} of ${pendingBulkFiles.length} — failed: ${failed.join("; ")}`, "error");
     else toast(`Added ${ok} document${ok === 1 ? "" : "s"}`, "ok");
@@ -1907,6 +2559,7 @@ async function submitDocForm(ev) {
     closeDocModal();
     await loadDocsPanel();
     await loadGapsPanel();
+    await loadStoryCoveragePanel();
     toast(editingDocId ? "Document saved" : "Document added", "ok");
   } catch (e) {
     toast(e.message, "error");
@@ -1918,6 +2571,7 @@ async function deleteDoc(docId) {
   await api(`/documents/${docId}`, { method: "DELETE" });
   await loadDocsPanel();
   await loadGapsPanel();
+  await loadStoryCoveragePanel();
 }
 
 function wireDocsList() {
@@ -1953,6 +2607,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#sidebarAddRepoBtn").addEventListener("click", () => openRepoModal());
   $("#topbarBrandBtn").addEventListener("click", () => showOverview());
   $("#sidebarDashboardBtn").addEventListener("click", () => showOverview());
+  $("#sidebarDiagnosticsBtn").addEventListener("click", () => showDiagnostics());
+  $("#diagRefreshBtn").addEventListener("click", () => loadDiagnosticsView());
+  $("#diagSiteFilter").addEventListener("change", renderDiagnosticsTable);
   $("#ovViewReposBtn").addEventListener("click", () => showDashboard());
   $("#sidebarReposBtn").addEventListener("click", (e) => {
     if (e.target.closest("#sidebarRepoChevron")) {
@@ -1996,21 +2653,58 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#docForm").addEventListener("submit", submitDocForm);
   $("#docFileInput").addEventListener("change", handleDocFileInput);
   wireDocsList();
+  $("#importWorkItemsBtn").addEventListener("click", () => $("#importWorkItemsInput").click());
+  $("#importWorkItemsInput").addEventListener("change", handleImportWorkItemsInput);
 
   $("#runAutoGapBtn").addEventListener("click", runAutoGapAnalysis);
   $("#getGapContextBtn").addEventListener("click", getGapContextForSelected);
   $("#submitGapFindingsBtn").addEventListener("click", submitGapFindingsForSelected);
   $("#gapFilterCategorySelect").addEventListener("change", renderGapFindingsList);
 
+  $("#storyCoverageDocSelect").addEventListener("change", loadStoryRequirementsForSelectedDoc);
+  $("#testCaseGenDocSelect").addEventListener("change", updateVerifyDocButtonState);
+  $("#generateDocTestCasesBtn").addEventListener("click", generateTestCasesForDocument);
+  $("#verifyDocTestCasesBtn").addEventListener("click", verifyTestCasesForDocument);
+  $("#runStoryCoverageBtn").addEventListener("click", runStoryCoverage);
+  $("#runStoryCoverageAllBtn").addEventListener("click", () => runBulkJob("story_coverage"));
+  $("#generateTestCasesAllBtn").addEventListener("click", () => runBulkJob("test_generation"));
+  $("#verifyTestCasesAllBtn").addEventListener("click", () => runBulkJob("test_verification"));
+  $("#getStoryCoverageContextBtn").addEventListener("click", getStoryCoverageContextForSelected);
+  $("#submitStoryRequirementsBtn").addEventListener("click", submitStoryRequirementsForSelected);
+  $("#storyFilterStatusSelect").addEventListener("change", renderStoryRequirementsList);
+  $("#storyFilterTypeSelect").addEventListener("change", renderStoryRequirementsList);
+  $("#storyRequirementsListAll").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".generate-tc-from-req-btn");
+    if (btn) generateTestCaseFromRequirement(btn.dataset.docId, btn.dataset.reqId, btn);
+  });
+
+  $("#detectJourneysBtn").addEventListener("click", (ev) => detectJourneys(ev.currentTarget));
+  $("#journeysListAll").addEventListener("click", (ev) => {
+    const deriveBtn = ev.target.closest(".derive-journey-btn");
+    if (deriveBtn) deriveJourneyRequirements(deriveBtn.dataset.journeyId, deriveBtn);
+    const genBtn = ev.target.closest(".generate-journey-tc-btn");
+    if (genBtn) generateJourneyTestCase(genBtn.dataset.journeyId, genBtn);
+    const confirmBtn = ev.target.closest(".confirm-req-btn");
+    if (confirmBtn) confirmJourneyRequirement(confirmBtn.dataset.reqId, confirmBtn.dataset.status, confirmBtn);
+  });
+
   $("#moduleGenList").addEventListener("click", (ev) => {
-    const btn = ev.target.closest(".module-gen-btn");
-    if (btn) runTestGenerationForModule(btn.dataset.module, btn);
+    const genBtn = ev.target.closest(".module-gen-btn");
+    if (genBtn) runTestGenerationForModule(genBtn.dataset.module, genBtn);
+    const clearBtn = ev.target.closest(".module-clear-btn");
+    if (clearBtn) clearModuleTestCases(clearBtn.dataset.module);
   });
   $("#moduleGenSearch").addEventListener("input", renderModuleGenList);
   $("#moduleNamesBanner").addEventListener("click", (ev) => {
     const btn = ev.target.closest("#nameModulesBtn");
     if (btn) generateModuleLabels(btn);
   });
-  $("#testCaseFilterModuleSelect").addEventListener("change", renderTestCaseList);
+  $("#testCaseFilterModuleSelect").addEventListener("change", () => {
+    renderTestCaseList();
+    updateClearModuleButtonState();
+  });
+  $("#clearModuleTestCasesBtn").addEventListener("click", () => clearModuleTestCases($("#testCaseFilterModuleSelect").value));
   $("#testCaseFilterCategorySelect").addEventListener("change", renderTestCaseList);
+  $("#testCaseFilterStoryDocSelect").addEventListener("change", renderTestCaseList);
+  $all("#testCaseSourceSegmented .seg-btn").forEach((b) => b.addEventListener("click", () => setTestCaseSourceFilter(b.dataset.value)));
 });
