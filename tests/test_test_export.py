@@ -37,7 +37,8 @@ class CsvTests(unittest.TestCase):
         self.assertEqual((head[col["Step Action"]], head[col["Step Expected"]]), ('Click "Add To Cart"', "The cart shows 1 item"))
         self.assertEqual(head[col["Priority"]], "1")
         self.assertIn("Preconditions: A product page is open", head[col["Description"]])
-        self.assertIn("Code traceability: module components.cart; covers AddToCart", head[col["Description"]])
+        # readable name AND technical path, so "module components.cart" alone never has to be decoded
+        self.assertIn("Code traceability: module Shopping Cart (components.cart); covers AddToCart", head[col["Description"]])
         self.assertEqual(head[col["Tags"]], "Shopping Cart; Happy path; Add to cart")     # plain-English module name, not the dotted one
         for step, n in ((s2, "2"), (s3, "3")):                                            # later steps carry no case fields
             self.assertEqual((step[col["Work Item Type"]], step[col["Title"]], step[col["Test Step"]]), ("", "", n))
@@ -48,13 +49,33 @@ class CsvTests(unittest.TestCase):
         self.assertIn("covers AddToCart, CartService.addItem, CartModal", rows(ex.to_csv([many], LABELS))[1][col["Description"]])
         none = {**CASE, "covers": []}
         d = rows(ex.to_csv([none], LABELS))[1][col["Description"]]
-        self.assertIn("Code traceability: module components.cart", d)                    # module still traced
+        self.assertIn("Code traceability: module Shopping Cart (components.cart)", d)     # module still traced
         bare = {"title": "t", "category": "happy_path", "steps": [{"action": "a", "expected": "e"}]}
         # no module, no covers, no description, no preconditions -- but the two traceability
         # lines are never silently dropped, each says explicitly that it found nothing
         d = rows(ex.to_csv([bare], LABELS))[1][col["Description"]]
         self.assertIn("Code traceability: not linked to any code module", d)
         self.assertIn("User story traceability: not linked to any user story", d)
+
+    def test_a_module_with_no_label_shows_its_raw_name_once_not_duplicated(self):
+        # The bug a real export hit: module "code" had a label ("Authentication") in one
+        # repo but not another -- an unlabeled module must show its raw name plainly, never
+        # "code (code)".
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        unlabeled = {**CASE, "module": "code"}
+        d = rows(ex.to_csv([unlabeled], {}))[1][col["Description"]]
+        self.assertIn("Code traceability: module code; covers AddToCart", d)
+
+    def test_a_labeled_module_shows_its_readable_name_alongside_the_raw_one(self):
+        # The exact complaint this fixes: a reader seeing only "module code" in an export
+        # has no idea what "code" refers to, even though the UI already has a readable
+        # name ("Authentication") for it via module_labels -- the raw name alone wasn't
+        # pulling its weight, so both are shown together.
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        labels = {"code": {"name": "Authentication", "kind": "supporting", "description": None}}
+        labeled = {**CASE, "module": "code", "covers": ["AuthService.login"]}
+        d = rows(ex.to_csv([labeled], labels))[1][col["Description"]]
+        self.assertIn("Code traceability: module Authentication (code); covers AuthService.login", d)
 
     def test_a_case_with_no_user_story_link_at_all_says_so_explicitly(self):
         col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
@@ -110,7 +131,7 @@ class MarkdownAndJsonTests(unittest.TestCase):
     def test_markdown_groups_by_module_name_with_a_steps_table(self):
         md = ex.to_markdown([CASE, LEGACY], LABELS, "commerce", DOCS, JOURNEYS)
         for needle in ("# Test cases: commerce", "## Shopping Cart", "_Add and remove items._", "### Verify that a shopper can add a product",
-                       "**Preconditions:** A product page is open", "_Code traceability: module components.cart; covers AddToCart_",
+                       "**Preconditions:** A product page is open", "_Code traceability: module Shopping Cart (components.cart); covers AddToCart_",
                        "_User story traceability: not linked to any user story_",
                        "| 1 | Click \"Add To Cart\" | The cart shows 1 item |", "Priority 1 · Happy path · Add to cart"):
             self.assertIn(needle, md)
@@ -130,10 +151,11 @@ class MarkdownAndJsonTests(unittest.TestCase):
 
     def test_json_code_traceability_reflects_presence_and_absence(self):
         out = json.loads(ex.to_json([CASE], LABELS))["test_cases"][0]
-        self.assertEqual(out["code_traceability"], {"linked": True, "module": "components.cart", "covers": ["AddToCart"]})
+        self.assertEqual(out["code_traceability"],
+                         {"linked": True, "module": "components.cart", "module_name": "Shopping Cart", "covers": ["AddToCart"]})
         bare = {"title": "t", "category": "happy_path", "steps": [{"action": "a", "expected": "e"}]}
         out = json.loads(ex.to_json([bare], LABELS))["test_cases"][0]
-        self.assertEqual(out["code_traceability"], {"linked": False, "module": None, "covers": []})
+        self.assertEqual(out["code_traceability"], {"linked": False, "module": None, "module_name": "", "covers": []})
 
     def test_json_user_story_traceability_reflects_presence_and_absence(self):
         out = json.loads(ex.to_json([CASE], LABELS, DOCS, JOURNEYS))["test_cases"][0]

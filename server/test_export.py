@@ -74,16 +74,23 @@ def _safe_cell(value) -> str:
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
-def _code_traceability(case: dict) -> str:
-    """Which code this case exercises: the module's technical (dotted) name -- the display
-    name in Tags is for people, this is what to search for in the repo -- and the real
-    function/class/`Class.method` names the model cited. Explicit "not linked" line, never
-    blank, so a reader can tell "no code citations" apart from "I forgot to check"."""
+def _code_traceability(case: dict, labels: dict) -> str:
+    """Which code this case exercises: the plain-English module name (e.g. "Authentication") --
+    the same name shown in Tags, so a reader never has to decode a bare technical module
+    name like "code" on its own -- alongside its technical (dotted) path, which is what to
+    search for in the repo, and the real function/class/`Class.method` names the model
+    cited. Explicit "not linked" line, never blank, so a reader can tell "no code citations"
+    apart from "I forgot to check"."""
     covers = [c for c in (case.get("covers") or []) if c]
     module = case.get("module") or ""
     if not covers and not module:
         return "Code traceability: not linked to any code module"
-    line = f"Code traceability: module {module}" if module else "Code traceability:"
+    if module:
+        display = _module_name(case, labels)
+        shown = f"{display} ({module})" if display != module else module
+        line = f"Code traceability: module {shown}"
+    else:
+        line = "Code traceability:"
     return f"{line}; covers {', '.join(covers)}" if covers else line
 
 
@@ -122,14 +129,14 @@ def _story_traceability(case: dict, documents: dict, journeys: dict) -> str:
     return f"User story traceability: {names}"
 
 
-def _description(case: dict, documents: dict, journeys: dict) -> str:
+def _description(case: dict, labels: dict, documents: dict, journeys: dict) -> str:
     """Description for the CSV. Traceability rides here rather than in a new column:
     Description is a field every ADO test case has, so the import can't reject it the way
     it may reject an unrecognised column."""
     parts = [str(case.get("description") or "").strip()]
     if (case.get("preconditions") or "").strip():
         parts.append(f"Preconditions: {case['preconditions'].strip()}")
-    parts.append(_code_traceability(case))
+    parts.append(_code_traceability(case, labels))
     parts.append(_story_traceability(case, documents, journeys))
     return "\n".join(p for p in parts if p)
 
@@ -145,7 +152,7 @@ def to_csv(cases: list[dict], labels: dict, documents: dict | None = None, journ
         tags = "; ".join(t for t in (_module_name(c, labels), _CATEGORY_LABELS.get(c.get("category"), c.get("category")), c.get("feature")) if t)
         w.writerow([
             "", "Test Case", _safe_cell(c.get("title")), 1, _safe_cell(steps[0]["action"]), _safe_cell(steps[0]["expected"]),
-            c.get("priority") or "", _safe_cell(_description(c, documents, journeys)), _safe_cell(tags), "", "Design",
+            c.get("priority") or "", _safe_cell(_description(c, labels, documents, journeys)), _safe_cell(tags), "", "Design",
         ])
         for n, s in enumerate(steps[1:], 2):
             w.writerow(["", "", "", n, _safe_cell(s["action"]), _safe_cell(s["expected"]), "", "", "", "", ""])
@@ -176,7 +183,7 @@ def to_markdown(cases: list[dict], labels: dict, repo_name: str, documents: dict
                 lines += [c["description"].strip(), ""]
             if (c.get("preconditions") or "").strip():
                 lines += [f"**Preconditions:** {c['preconditions'].strip()}", ""]
-            lines += [f"_{_code_traceability(c)}_", ""]
+            lines += [f"_{_code_traceability(c, labels)}_", ""]
             lines += [f"_{_story_traceability(c, documents, journeys)}_", ""]
             lines += ["| # | Action | Expected result |", "|---|--------|-----------------|"]
             lines += [f"| {n} | {_md_cell(s['action'])} | {_md_cell(s['expected'])} |" for n, s in enumerate(_steps(c), 1)]
@@ -191,13 +198,14 @@ def to_json(cases: list[dict], labels: dict, documents: dict | None = None, jour
     for c in cases:
         covers = c.get("covers") or []
         module = c.get("module") or None
+        module_name = _module_name(c, labels)
         story_entries = _story_entries(c, documents, journeys)
         out.append({
             "title": c.get("title"), "description": c.get("description"), "priority": c.get("priority"),
             "category": c.get("category"), "feature": c.get("feature"), "preconditions": c.get("preconditions"),
-            "module": module, "module_name": _module_name(c, labels),
+            "module": module, "module_name": module_name,
             "steps": _steps(c), "covers": covers,
-            "code_traceability": {"linked": bool(module or covers), "module": module, "covers": covers},
+            "code_traceability": {"linked": bool(module or covers), "module": module, "module_name": module_name, "covers": covers},
             "user_story_traceability": {"linked": bool(story_entries), "stories": story_entries},
         })
     return json.dumps({"test_cases": out}, indent=2, ensure_ascii=False)
