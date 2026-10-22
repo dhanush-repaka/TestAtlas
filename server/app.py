@@ -1453,7 +1453,13 @@ def api_delete_test_cases_by_module(repo_id: str, module: str):
 def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", category: str = ""):
     """Downloads the repo's generated test cases as a file -- `csv` (Azure DevOps Test
     Plans import shape, opens in Excel), `md` (readable document) or `json`. `module`
-    and `category` narrow it the same way the Test Cases tab's filters do."""
+    and `category` narrow it the same way the Test Cases tab's filters do. Every case
+    carries its own code traceability (module/covers) AND user story traceability
+    (the document or journey it's linked to, direct or via a shared code citation with
+    an already-judged Story Coverage requirement -- same signal api_list_test_cases's
+    link_requirements_to_cases computes for the UI) -- each spelled out explicitly, including
+    when one side is absent, since a case can be linked to only one, the other, both, or
+    neither, regardless of how it was generated."""
     repo = db.get_repo(repo_id)
     if not repo:
         raise HTTPException(404, "repo not found")
@@ -1463,10 +1469,14 @@ def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", c
              if (not module or c.get("module") == module) and (not category or c.get("category") == category)]
     if not cases:
         raise HTTPException(404, "no test cases to export -- generate some first")
+    requirements = db.list_story_requirements(repo_id)
+    cases = llm_story_coverage.link_requirements_to_cases(cases, requirements)
     labels = db.get_module_label_details(repo_id)
-    body = {"csv": lambda: test_export.to_csv(cases, labels),
-            "md": lambda: test_export.to_markdown(cases, labels, repo["name"]),
-            "json": lambda: test_export.to_json(cases, labels)}[format]()
+    documents = {d["id"]: d["name"] for d in db.list_documents(repo_id)}
+    journeys = {j["id"]: j["name"] for j in db.list_journeys(repo_id)}
+    body = {"csv": lambda: test_export.to_csv(cases, labels, documents, journeys),
+            "md": lambda: test_export.to_markdown(cases, labels, repo["name"], documents, journeys),
+            "json": lambda: test_export.to_json(cases, labels, documents, journeys)}[format]()
     media_type, ext = test_export.FORMATS[format]
     return Response(body, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{test_export.filename(repo["name"], ext)}"'})

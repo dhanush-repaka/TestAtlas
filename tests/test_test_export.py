@@ -9,6 +9,8 @@ import unittest
 from server import test_export as ex
 
 LABELS = {"components.cart": {"name": "Shopping Cart", "kind": "feature", "description": "Add and remove items."}}
+DOCS = {"doc-1": "5111-inventory-reservation"}
+JOURNEYS = {"journey-1": "Checkout flow"}
 CASE = {
     "module": "components.cart", "title": "Verify that a shopper can add a product", "description": "Core purchase flow.",
     "priority": 1, "category": "happy_path", "feature": "Add to cart", "preconditions": "A product page is open",
@@ -46,9 +48,46 @@ class CsvTests(unittest.TestCase):
         self.assertIn("covers AddToCart, CartService.addItem, CartModal", rows(ex.to_csv([many], LABELS))[1][col["Description"]])
         none = {**CASE, "covers": []}
         d = rows(ex.to_csv([none], LABELS))[1][col["Description"]]
-        self.assertTrue(d.endswith("Code traceability: module components.cart"))         # module still traced
+        self.assertIn("Code traceability: module components.cart", d)                    # module still traced
         bare = {"title": "t", "category": "happy_path", "steps": [{"action": "a", "expected": "e"}]}
-        self.assertEqual(rows(ex.to_csv([bare], LABELS))[1][col["Description"]], "")     # nothing to trace, nothing added
+        # no module, no covers, no description, no preconditions -- but the two traceability
+        # lines are never silently dropped, each says explicitly that it found nothing
+        d = rows(ex.to_csv([bare], LABELS))[1][col["Description"]]
+        self.assertIn("Code traceability: not linked to any code module", d)
+        self.assertIn("User story traceability: not linked to any user story", d)
+
+    def test_a_case_with_no_user_story_link_at_all_says_so_explicitly(self):
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        d = rows(ex.to_csv([CASE], LABELS, DOCS, JOURNEYS))[1][col["Description"]]
+        self.assertIn("User story traceability: not linked to any user story", d)
+
+    def test_a_case_generated_directly_from_a_document_names_it(self):
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        story_case = {**CASE, "source_doc_id": "doc-1"}
+        d = rows(ex.to_csv([story_case], LABELS, DOCS, JOURNEYS))[1][col["Description"]]
+        self.assertIn('User story traceability: "5111-inventory-reservation"', d)
+
+    def test_a_case_generated_from_a_journey_names_it(self):
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        journey_case = {**CASE, "source_journey_id": "journey-1"}
+        d = rows(ex.to_csv([journey_case], LABELS, DOCS, JOURNEYS))[1][col["Description"]]
+        self.assertIn('User story traceability: "Checkout flow"', d)
+
+    def test_a_code_driven_case_surfaces_a_user_story_it_only_shares_a_citation_with(self):
+        # This is the case the user flagged: a module-level case has no source_doc_id of
+        # its own, but Story Coverage's own heuristic (related_requirements, computed by
+        # llm_story_coverage.link_requirements_to_cases before export) ties it to a
+        # document through a shared code citation -- that must still show up here.
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        linked = {**CASE, "related_requirements": [{"doc_id": "doc-1", "text": "x", "status": "supported"}]}
+        d = rows(ex.to_csv([linked], LABELS, DOCS, JOURNEYS))[1][col["Description"]]
+        self.assertIn('User story traceability: "5111-inventory-reservation"', d)
+
+    def test_a_doc_id_with_no_matching_name_degrades_gracefully_instead_of_erroring(self):
+        col = {n: i for i, n in enumerate(ex.CSV_COLUMNS)}
+        story_case = {**CASE, "source_doc_id": "doc-unknown"}
+        d = rows(ex.to_csv([story_case], LABELS, DOCS, JOURNEYS))[1][col["Description"]]
+        self.assertIn('User story traceability: "an unknown document"', d)
 
     def test_bom_for_excel_and_commas_quotes_newlines_survive(self):
         tricky = {**CASE, "title": 'Verify "quoted", commas', "steps": [{"action": "Line one\nline two", "expected": "a, b"}]}
@@ -69,11 +108,17 @@ class CsvTests(unittest.TestCase):
 
 class MarkdownAndJsonTests(unittest.TestCase):
     def test_markdown_groups_by_module_name_with_a_steps_table(self):
-        md = ex.to_markdown([CASE, LEGACY], LABELS, "commerce")
+        md = ex.to_markdown([CASE, LEGACY], LABELS, "commerce", DOCS, JOURNEYS)
         for needle in ("# Test cases: commerce", "## Shopping Cart", "_Add and remove items._", "### Verify that a shopper can add a product",
-                       "**Preconditions:** A product page is open", "_Code traceability: module components.cart; covers AddToCart_", "| 1 | Click \"Add To Cart\" | The cart shows 1 item |", "Priority 1 · Happy path · Add to cart"):
+                       "**Preconditions:** A product page is open", "_Code traceability: module components.cart; covers AddToCart_",
+                       "_User story traceability: not linked to any user story_",
+                       "| 1 | Click \"Add To Cart\" | The cart shows 1 item |", "Priority 1 · Happy path · Add to cart"):
             self.assertIn(needle, md)
         self.assertEqual(md.count("## Shopping Cart"), 1)
+
+    def test_markdown_names_the_linked_user_story(self):
+        md = ex.to_markdown([{**CASE, "source_doc_id": "doc-1"}], LABELS, "commerce", DOCS, JOURNEYS)
+        self.assertIn('_User story traceability: "5111-inventory-reservation"_', md)
 
     def test_markdown_escapes_pipes_so_tables_dont_break(self):
         md = ex.to_markdown([{**CASE, "steps": [{"action": "a | b", "expected": "c"}]}], LABELS, "r")
@@ -82,6 +127,26 @@ class MarkdownAndJsonTests(unittest.TestCase):
     def test_json_carries_names_steps_and_covers(self):
         out = json.loads(ex.to_json([CASE], LABELS))["test_cases"][0]
         self.assertEqual((out["module_name"], len(out["steps"]), out["covers"]), ("Shopping Cart", 3, ["AddToCart"]))
+
+    def test_json_code_traceability_reflects_presence_and_absence(self):
+        out = json.loads(ex.to_json([CASE], LABELS))["test_cases"][0]
+        self.assertEqual(out["code_traceability"], {"linked": True, "module": "components.cart", "covers": ["AddToCart"]})
+        bare = {"title": "t", "category": "happy_path", "steps": [{"action": "a", "expected": "e"}]}
+        out = json.loads(ex.to_json([bare], LABELS))["test_cases"][0]
+        self.assertEqual(out["code_traceability"], {"linked": False, "module": None, "covers": []})
+
+    def test_json_user_story_traceability_reflects_presence_and_absence(self):
+        out = json.loads(ex.to_json([CASE], LABELS, DOCS, JOURNEYS))["test_cases"][0]
+        self.assertEqual(out["user_story_traceability"], {"linked": False, "stories": []})
+        story_case = {**CASE, "source_doc_id": "doc-1"}
+        out = json.loads(ex.to_json([story_case], LABELS, DOCS, JOURNEYS))["test_cases"][0]
+        self.assertEqual(out["user_story_traceability"],
+                         {"linked": True, "stories": [{"kind": "document", "id": "doc-1", "name": "5111-inventory-reservation"}]})
+
+    def test_json_journey_case_is_distinguished_from_a_document_case(self):
+        journey_case = {**CASE, "source_journey_id": "journey-1"}
+        out = json.loads(ex.to_json([journey_case], LABELS, DOCS, JOURNEYS))["test_cases"][0]
+        self.assertEqual(out["user_story_traceability"]["stories"], [{"kind": "journey", "id": "journey-1", "name": "Checkout flow"}])
 
     def test_filename_is_a_safe_slug(self):
         self.assertEqual(ex.filename("commerce (Next.js storefront)", "csv"), "commerce-next-js-storefront-test-cases.csv")
