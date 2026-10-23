@@ -94,5 +94,36 @@ class CallAndLogTests(unittest.TestCase):
         self.assertEqual(ll.read_recent(), [])
 
 
+class ModelFamilyHelpersTests(unittest.TestCase):
+    """gpt-6-luna (and OpenAI's other reasoning models) use a different Chat
+    Completions parameter contract than gpt-4o/gpt-4o-mini -- confirmed empirically
+    against the real API, not inferred from docs alone: a reasoning model 400s on
+    any non-default `temperature` and accepts `reasoning_effort` instead; a legacy
+    chat model is the exact opposite, 400ing on `reasoning_effort` outright. Every
+    call site branches through sampling_kwargs() so switching OPENAI_TEST_MODEL
+    (or its siblings) between either family never needs a second code change."""
+
+    def test_reasoning_models_are_recognized_by_prefix(self):
+        for model in ("gpt-6-luna", "gpt-6-sol", "gpt-5", "gpt-5.1", "o1", "o1-mini", "o3", "o3-mini", "o4-mini"):
+            self.assertTrue(ll.is_reasoning_model(model), model)
+
+    def test_legacy_chat_models_are_not_reasoning_models(self):
+        for model in ("gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4"):
+            self.assertFalse(ll.is_reasoning_model(model), model)
+
+    def test_sampling_kwargs_for_a_reasoning_model_passes_effort_not_temperature(self):
+        self.assertEqual(ll.sampling_kwargs("gpt-6-luna"), {"reasoning_effort": "none"})
+        self.assertEqual(ll.sampling_kwargs("gpt-6-luna", reasoning_effort="high"), {"reasoning_effort": "high"})
+
+    def test_sampling_kwargs_for_a_legacy_model_passes_temperature_not_effort(self):
+        self.assertEqual(ll.sampling_kwargs("gpt-4o-mini"), {"temperature": 0})
+        self.assertEqual(ll.sampling_kwargs("gpt-4o-mini", temperature=0.3), {"temperature": 0.3})
+
+    def test_model_output_ceiling_known_vs_fallback(self):
+        self.assertEqual(ll.model_output_ceiling("gpt-6-luna"), 128_000)
+        self.assertEqual(ll.model_output_ceiling("gpt-4o-mini"), 16_384)
+        self.assertEqual(ll.model_output_ceiling("some-future-model-this-app-has-never-heard-of"), 16_384)
+
+
 if __name__ == "__main__":
     unittest.main()

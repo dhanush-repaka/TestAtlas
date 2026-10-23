@@ -120,6 +120,16 @@ class PromptAndCountTests(unittest.TestCase):
         self.assertIn("boundary-value analysis", prompt.lower())
         self.assertIn("NOT duplicate cases", prompt)
 
+    def test_prompt_instructs_treating_qualifying_words_and_interactions_as_their_own_cases(self):
+        # Same fix as the story-driven generators: a qualifying word in a name/purpose/
+        # UI text ("unique", "expires", "once"...) is its own testable property, and
+        # distinct features of the same module that plausibly act on the same data
+        # (reserve then release) deserve an interaction case -- a single-criterion-style
+        # pass structurally can't see either without being told to look for them.
+        prompt = gen._build_prompt(CONTEXT)
+        self.assertIn("qualifying word", prompt)
+        self.assertIn("INTERACTIONS between this module's distinct features", prompt)
+
     def test_functional_count_scales_slowly_with_units(self):
         # 2 functions + CartService(1 + 2 methods) = 5 real units -> the floor, not 1.5x like the unit-style version
         self.assertEqual(gen._target_case_count(CONTEXT), 3)
@@ -170,7 +180,14 @@ class PromptAndCountTests(unittest.TestCase):
             self.assertIn(needle, p)
 
     def test_cap_is_derived_from_the_token_budget(self):
-        self.assertLessEqual(gen.HARD_CASE_CAP * gen._TOKENS_PER_CASE + gen._PROMPT_OVERHEAD_TOKENS, gen._MODEL_TOKEN_CEILING)
+        self.assertLessEqual(gen.HARD_CASE_CAP * gen._TOKENS_PER_CASE + gen._PROMPT_OVERHEAD_TOKENS, gen._model_token_ceiling(gen.DEFAULT_MODEL))
+
+    def test_token_ceiling_falls_back_safely_for_an_unlisted_model_override(self):
+        # OPENAI_TEST_MODEL can be overridden to a model this app has no ceiling entry for --
+        # that must fall back to the smaller, safe gpt-4o-mini/gpt-4o ceiling, not error or
+        # silently request more tokens than an unknown model actually allows.
+        self.assertEqual(gen._model_token_ceiling("some-future-model"), 16384)
+        self.assertEqual(gen._model_token_ceiling("gpt-6-luna"), 128_000)
 
     def test_real_source_is_included_in_the_prompt_when_given(self):
         # Module-level generation is now grounded in the actual code body, not just its name --

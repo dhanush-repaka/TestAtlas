@@ -36,14 +36,17 @@ from __future__ import annotations
 import json
 import os
 
-from llm_logging import call_and_log
+from llm_logging import call_and_log, sampling_kwargs
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
-from server.llm_test_generation import _check_case, _MODEL_TOKEN_CEILING
+from server.llm_test_generation import _check_case, _model_token_ceiling
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-6-luna"
 # A safety rail against a pathological response, not a target -- the prompt
-# never mentions this number to the model (see module docstring).
-SCENARIO_SAFETY_CAP = 30
+# never mentions this number to the model (see module docstring). Bumped
+# alongside the move to gpt-6-luna: its real output ceiling (128k vs
+# gpt-4o-mini's 16k) means a rich document can legitimately warrant far more
+# than 30 scenarios before this becomes the thing truncating the count.
+SCENARIO_SAFETY_CAP = 100
 
 
 def _build_prompt(requirement: dict) -> str:
@@ -56,7 +59,7 @@ Decide for yourself how many DISTINCT, independently-checkable scenarios this on
 
 If this criterion involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, an amount, a count, a size), apply boundary-value analysis explicitly: write a SEPARATE test case for each meaningfully distinct boundary, not one representative case for the whole range -- e.g. the minimum/zero value, a typical mid-range value, the maximum valid value, a value just past the limit, a value far past the limit, and a fractional/decimal value if the domain allows one. These are NOT artificial variations of each other -- real bugs hide at exactly these boundaries (off-by-one at the limit, rounding at a fraction, a sign error at zero), so each one is its own independently-checkable scenario, not padding. "Never pad" means don't invent scenarios that test nothing new -- it does not mean collapsing a whole numeric range down to one case.
 
-A simple, atomic criterion with no real internal structure still yields exactly one case; never invent a scenario that has nothing to do with what this criterion is actually about.
+Pay attention to every qualifying word in the criterion, not just its main clause -- a word like "single-use", "secure", "unique", "expires", "required", or "valid" is itself a testable property with its own natural failure mode (a single-use token implies a reuse attempt must be rejected; an expiring token implies an expired-token attempt must be rejected), and each one warrants its own scenario even if the criterion's main sentence doesn't spell that failure mode out explicitly. A criterion with genuinely no qualifying words and no internal structure still yields exactly one case -- never invent a scenario with no textual anchor at all in the criterion's wording.
 
 For EACH scenario, write: title, category ("happy_path", "edge_case", or "error_handling"), priority (1 = critical path .. 4 = rare), optional preconditions, and steps as an ordered list of {{"action": ..., "expected": ...}} pairs (at least one step).
 
@@ -88,8 +91,9 @@ def generate_test_cases_from_requirement(requirement: dict, model: str | None = 
             model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=_MODEL_TOKEN_CEILING,  # the model may legitimately propose dozens of scenarios -- don't cap it below its own ceiling
+            # the model may legitimately propose dozens of scenarios -- don't cap it below its own ceiling
+            max_completion_tokens=_model_token_ceiling(model),
+            **sampling_kwargs(model),
         ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
@@ -134,6 +138,8 @@ STORY ("{doc['name']}"):
 
 Decide for yourself how many DISTINCT, independently-checkable scenarios this whole story warrants -- there is no target count or quota. Don't just restate each acceptance criterion as one paraphrased case: think like an experienced QA engineer scoping this feature for real -- for each piece of behavior the story implies, also consider the boundary values, common error conditions, and realistic edge cases a feature like this typically needs, even where the story's own wording doesn't spell every one out explicitly.
 
+Pay attention to every qualifying word across the whole story, not just each criterion's main clause -- a word like "correctly", "never", "proportionally", "valid", "unique", or "required" is itself a testable property with its own natural failure mode, and each one warrants its own scenario even if no single criterion spells that failure mode out explicitly. Also consider realistic INTERACTIONS between the story's different criteria (e.g. two of its guarded behaviors applied to the same order, in either order) where the criteria, read together, imply a combined behavior worth checking even though no single bullet states it alone -- a whole-story prompt like this one is exactly where that cross-criterion reasoning belongs, since a single-criterion generation pass structurally can't see it.
+
 If a criterion involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, an amount, a count, a size), apply boundary-value analysis explicitly: write a SEPARATE test case for each meaningfully distinct boundary, not one representative case for the whole range -- e.g. the minimum/zero value, a typical mid-range value, the maximum valid value, a value just past the limit, a value far past the limit, and a fractional/decimal value if the domain allows one. These are NOT artificial variations of each other -- real bugs hide at exactly these boundaries (off-by-one at the limit, rounding at a fraction, a sign error at zero), so each one is its own independently-checkable scenario, not padding.
 
 A simple, narrow story may only need a handful of cases; a well-scoped, meaty story (a full login flow, or a pricing rule with several numeric limits) can easily warrant well over a dozen once you account for its happy path, each distinct edge case, each guard/error condition, and each boundary value a numeric criterion implies. Let the story's own real complexity decide -- "never pad" means don't invent scenarios that test nothing new, not collapsing a whole numeric range down to one case -- and never under-cover a genuinely rich story just to keep the list short.
@@ -165,8 +171,8 @@ def generate_test_cases_from_document(doc: dict, model: str | None = None) -> li
             model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=_MODEL_TOKEN_CEILING,
+            max_completion_tokens=_model_token_ceiling(model),
+            **sampling_kwargs(model),
         ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e

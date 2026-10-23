@@ -30,6 +30,50 @@ from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
+# OpenAI's reasoning models (o-series, gpt-5+, gpt-6+) use a different sampling
+# contract than the older chat models: `reasoning_effort` instead of `temperature`
+# (a non-default temperature is a 400 -- only the model's own default, 1, is
+# accepted) and `max_completion_tokens` has a real per-model ceiling that a
+# request above it also 400s on, rather than silently clamping. Confirmed
+# empirically against the real API (gpt-6-luna vs gpt-4o-mini), not inferred from
+# docs alone -- OpenAI's own reasoning-model guide doesn't spell out the
+# Chat-Completions-specific parameter differences.
+_REASONING_MODEL_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
+
+# Real max-completion-tokens ceiling per model, used so a token budget is computed
+# from the model actually in play rather than a number tuned for gpt-4o-mini --
+# which would either waste a bigger model's real ceiling or 400 if the
+# OPENAI_TEST_MODEL/OPENAI_REQUIREMENT_TEST_MODEL override falls back to a
+# smaller one. Any model not listed falls back to gpt-4o-mini/gpt-4o's own
+# ceiling, the safe assumption for an override this app doesn't know about yet.
+_MODEL_OUTPUT_CEILINGS = {"gpt-6-luna": 128_000}
+_DEFAULT_OUTPUT_CEILING = 16_384
+
+
+def is_reasoning_model(model: str) -> bool:
+    return model.startswith(_REASONING_MODEL_PREFIXES)
+
+
+def model_output_ceiling(model: str) -> int:
+    return _MODEL_OUTPUT_CEILINGS.get(model, _DEFAULT_OUTPUT_CEILING)
+
+
+def sampling_kwargs(model: str, *, temperature: float = 0, reasoning_effort: str = "none") -> dict:
+    """The extra chat.completions.create kwargs this model's family needs, beyond
+    messages/response_format/max_completion_tokens. `reasoning_effort` defaults to
+    "none": against this app's actual test-generation prompts (not a toy "list as
+    many as you can" prompt -- that's misleading here, see below), "none" through
+    "high" came back with the SAME case count, so "none" is cheaper and faster for
+    identical output quality, not chosen for a count difference that isn't real.
+    (A toy, unconstrained enumeration prompt DID show effort hurting count sharply
+    -- 96 scenarios at "none" vs 52-66 at "low"/"medium"/"high" -- but this app's
+    real prompts carry heavy "don't pad, stay in scope" instructions that this
+    model follows much more strictly than gpt-4o-mini regardless of effort, so
+    that toy result doesn't transfer and isn't the reason for this default.)"""
+    if is_reasoning_model(model):
+        return {"reasoning_effort": reasoning_effort}
+    return {"temperature": temperature}
+
 # Story Coverage's judge calls now run concurrently (a bounded thread pool,
 # see server/llm_story_coverage.py) -- several threads can call _emit() at
 # once, and a bare file append isn't safe against interleaved writes.

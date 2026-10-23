@@ -107,6 +107,20 @@ class GenerateTestCasesFromRequirementTests(unittest.TestCase):
         self.assertIn("boundary-value analysis", prompt.lower())
         self.assertIn("NOT artificial variations", prompt)
 
+    def test_prompt_instructs_treating_qualifying_words_as_their_own_scenarios(self):
+        # A real-world comparison surfaced that "single-use"/"secure"/"expires" style
+        # qualifiers were being left untested: "Verify that a password reset email
+        # includes a secure, single-use token" generated exactly one happy-path case
+        # and never a case for a reuse attempt being rejected, even though "single-use"
+        # textually implies that failure mode. This instruction fixes that gap without
+        # reopening padding: the anchor must still be in the criterion's own wording.
+        _, client = self._run([{"title": "x", "category": "happy_path", "priority": 1,
+                                 "steps": [{"action": "a", "expected": "b"}]}])
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("qualifying word", prompt)
+        self.assertIn("single-use", prompt)
+        self.assertIn("textual anchor", prompt)
+
     def test_one_invalid_scenario_among_valid_ones_is_dropped_not_fatal(self):
         cases, _ = self._run([
             {"title": "ok one", "category": "error_handling", "priority": 1,
@@ -212,6 +226,20 @@ class GenerateTestCasesFromDocumentTests(unittest.TestCase):
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         self.assertIn("boundary-value analysis", prompt.lower())
         self.assertIn("NOT artificial variations", prompt)
+
+    def test_prompt_instructs_qualifying_words_and_cross_criterion_interactions(self):
+        # A real-world comparison against the 5110-discounts-and-coupons document
+        # surfaced this document-level gap specifically: our generation produced 10
+        # cases per criterion in isolation, missing the combined "discount AND coupon
+        # applied to the same order" scenarios a thorough QA pass -- and an external
+        # ChatGPT comparison -- included. A whole-document prompt is the one place
+        # that can reason about interactions BETWEEN criteria; a single-criterion
+        # prompt structurally cannot.
+        _, client = self._run([{"title": "x", "category": "happy_path", "priority": 1,
+                                 "steps": [{"action": "a", "expected": "b"}]}])
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("qualifying word", prompt)
+        self.assertIn("INTERACTIONS between the story's different criteria", prompt)
 
 
 class CreateTestCaseStorageTests(unittest.TestCase):

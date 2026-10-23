@@ -40,32 +40,51 @@ import re
 from dataclasses import dataclass, field
 
 from kg.doc_gaps import known_code_names as _known_code_names, canonical_cover as _canonical_cover
-from llm_logging import call_and_log
+from llm_logging import call_and_log, model_output_ceiling, sampling_kwargs
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 
 ALLOWED_TEST_CASE_CATEGORIES = {"happy_path", "edge_case", "error_handling"}
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-6-luna"
 
 
 def _model(override: str | None = None) -> str:
     """OPENAI_TEST_MODEL (a plain env var, not a secret) picks the model without a code
-    change. gpt-4o-mini is the default because it costs roughly an order of magnitude
-    less per token -- but it's the weaker instruction-follower, so if functional test
-    quality matters more than cost, switch this one feature to a stronger model
-    (`fly secrets set OPENAI_TEST_MODEL=gpt-4o`)."""
+    change. gpt-6-luna is the default: a reasoning model, called with
+    reasoning_effort="none" (see llm_logging.sampling_kwargs -- "none" is cheaper and
+    faster than higher effort for the SAME case count on this app's real prompts, not
+    chosen for a count boost). Against real prompts, raw case COUNT came back roughly
+    the same as gpt-4o-mini's, or lower on a narrowly-scoped single criterion -- the
+    real, empirically-confirmed win is QUALITY: it follows this app's "don't pad,
+    stay in scope" instructions far more strictly (gpt-4o-mini padded with
+    near-duplicate phrasings and scenarios outside the criterion's own text), and it
+    reliably writes BOTH boundary cases a "just past / far past the limit" rule asks
+    for where gpt-4o-mini sometimes collapsed them into one. Its real output ceiling
+    (128k vs 16384 tokens) also means a genuinely large module or document is no
+    longer artificially truncated. Override back with `fly secrets set
+    OPENAI_TEST_MODEL=gpt-4o-mini` if cost matters more than any of that."""
     return override or os.environ.get("OPENAI_TEST_MODEL") or DEFAULT_MODEL
 
-# gpt-4o-mini's own output ceiling is 16384 tokens. A functional case -- title,
-# description, preconditions and 3-8 steps each with an action AND an expected
-# result -- runs ~520 tokens (the earlier unit-style case, with one flat
-# expected result, was ~230); ~1500 tokens go to the model echoing/reasoning
-# over the prompt. Asking for more than fits truncates the response mid-JSON
-# (a real failure hit earlier in this project), so the cap is derived, not round.
+
+def _model_token_ceiling(model: str) -> int:
+    """The model's own real max-completion-tokens ceiling (llm_logging's per-model
+    table) -- requesting more is a hard 400, not silently clamped, so every token
+    budget below is computed from the model actually in play, not a number tuned
+    for gpt-4o-mini: that would either waste gpt-6-luna's much bigger ceiling or
+    break the OPENAI_TEST_MODEL=gpt-4o-mini override path outright."""
+    return model_output_ceiling(model)
+
+# A functional case -- title, description, preconditions and 3-8 steps each with an
+# action AND an expected result -- runs ~520 tokens (the earlier unit-style case,
+# with one flat expected result, was ~230); ~1500 tokens go to the model
+# echoing/reasoning over the prompt. Asking for more than a model's own ceiling
+# allows truncates the response mid-JSON (a real failure hit earlier in this
+# project) or is rejected outright, so HARD_CASE_CAP is derived from the DEFAULT
+# model's real ceiling, not round -- it's a client-side safety backstop against a
+# pathological response, never a number communicated to the model as a target.
 _PROMPT_OVERHEAD_TOKENS = 1500
 _TOKENS_PER_CASE = 520
-_MODEL_TOKEN_CEILING = 16384
-HARD_CASE_CAP = (_MODEL_TOKEN_CEILING - _PROMPT_OVERHEAD_TOKENS) // _TOKENS_PER_CASE - 3  # 3-case safety margin
+HARD_CASE_CAP = (model_output_ceiling(DEFAULT_MODEL) - _PROMPT_OVERHEAD_TOKENS) // _TOKENS_PER_CASE - 3  # safety margin
 
 # A functional case needs at least one step with its own expected result. This was 2 at first
 # ("a one-step scenario is an assertion, not a test") -- and that was WRONG: negative cases are
@@ -208,6 +227,7 @@ Two rules on top of that:
 1. Negative and edge cases matter as much as happy paths -- aim for at least a third of your cases to be "edge_case" or "error_handling", and don't leave a message the UI can show (see "ui_text") untested in favor of more happy paths.
 2. Every case is a distinct scenario. Don't write the same flow twice under different wording (for instance "update quantity" and "edit quantity"), and keep implementation details -- cookies, tokens, caches, function names -- out of titles and steps unless the user or consumer can actually see them.
 3. If a feature involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, a price, a quantity, a count), apply boundary-value analysis explicitly: write a SEPARATE case for each meaningfully distinct boundary, not one representative case for the whole range -- the minimum/zero value, a typical mid-range value, the maximum valid value, a value just past the limit, a value far past the limit, and a fractional/decimal value if the domain allows one. These are NOT duplicate cases -- real bugs hide at exactly these boundaries (off-by-one at the limit, rounding at a fraction, a sign error at zero), so each is its own case, not filler.
+4. Pay attention to every qualifying word in a name, purpose, or UI text above, not just the main action -- a word like "unique", "required", "expires", "once", "duplicate", or "maximum" is itself a testable property with its own natural failure mode, and each one warrants its own case even if nothing above spells that failure mode out explicitly. Also consider realistic INTERACTIONS between this module's distinct features where they plausibly act on the same data (reserving something and then releasing it, adding something twice, undoing an action) -- these are cases a user genuinely would hit, not filler, as long as the module's own contents anchor both sides of the interaction.
 
 {must_block}
 GROUNDING
@@ -424,8 +444,12 @@ def _ask(prompt: str, max_tokens: int, model: str) -> list:
             model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.3,  # a little variety helps cover more distinct scenarios than temperature=0
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
+            # temperature=0.3 for a non-reasoning override ("a little variety helps cover more
+            # distinct scenarios than temperature=0"); reasoning_effort="none" for the gpt-6-luna
+            # default (see llm_logging.sampling_kwargs's docstring for why low effort, not high,
+            # is what returns more scenarios).
+            **sampling_kwargs(model, temperature=0.3),
         ), prompt_chars=len(prompt))
     except Exception as e:  # noqa: BLE001 -- surface any API failure (auth, rate limit, network) plainly
         raise RuntimeError(f"OpenAI API call failed: {e}") from e
@@ -464,7 +488,7 @@ def generate_test_cases(context: dict, model: str | None = None, sources: dict[s
     # than a budget scaled to a guessed target; HARD_CASE_CAP (derived from
     # that same ceiling) is the client-side safety rail on how many we'll
     # accept, not a target communicated to the model.
-    max_tokens = _MODEL_TOKEN_CEILING
+    max_tokens = _model_token_ceiling(model)
 
     canon = _known_code_names(context)
     ui = _has_ui(context)
@@ -486,7 +510,7 @@ def generate_test_cases(context: dict, model: str | None = None, sources: dict[s
     if missing and len(result.cases) < HARD_CASE_CAP:
         before = len(result.cases)
         prompt = _build_repair_prompt(context, missing, [c["title"] for c in result.cases], must, sources)
-        take(_ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(missing) * _TOKENS_PER_CASE), model))
+        take(_ask(prompt, min(_model_token_ceiling(model), _PROMPT_OVERHEAD_TOKENS + len(missing) * _TOKENS_PER_CASE), model))
         result.repaired = len(result.cases) - before
     result.still_uncovered = _uncovered(must, result.cases)
 
@@ -494,7 +518,7 @@ def generate_test_cases(context: dict, model: str | None = None, sources: dict[s
     if thin:
         prompt = _build_deepen_prompt(context, thin, must, sources)
         by_title = {c["title"].lower(): i for i, c in enumerate(result.cases)}
-        for raw in _ask(prompt, min(_MODEL_TOKEN_CEILING, _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
+        for raw in _ask(prompt, min(_model_token_ceiling(model), _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
             case, _ = _check_case(raw, canon, ui)
             i = by_title.get(case["title"].lower()) if case else None
             if i is not None and len(case["steps"]) > len(result.cases[i]["steps"]):
