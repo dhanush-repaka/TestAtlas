@@ -211,6 +211,24 @@ CREATE TABLE IF NOT EXISTS bulk_jobs (
     finished_at TEXT,
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
+
+-- One row per (repo, day) -- a daily snapshot of the traceability dashboard's own
+-- summary numbers (see server/traceability_dashboard.py), so the dashboard can show
+-- a trend line without a much bigger per-item history design. Written opportunistically
+-- (upserted) whenever the dashboard is fetched on a day that doesn't have a row yet --
+-- there's no scheduler in this app, so "whoever looks at the dashboard that day" is
+-- what advances the trend, same as this app's other read-triggered computations.
+-- `summary_json` is the same summary dict the live dashboard renders, the same
+-- JSON-blob-column precedent `runs.stats_json` already established.
+CREATE TABLE IF NOT EXISTS dashboard_snapshots (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    date TEXT NOT NULL,                -- "YYYY-MM-DD", one row per repo per day
+    summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_snapshots_repo_date ON dashboard_snapshots(repo_id, date);
 """
 
 
@@ -953,3 +971,35 @@ def get_bulk_job(job_id: str) -> dict | None:
     d = dict(row)
     d["results"] = json.loads(d["results_json"]) if d.get("results_json") else []
     return d
+
+
+# --------------------------------------------------------------------------- dashboard snapshots
+
+def upsert_dashboard_snapshot(repo_id: str, date: str, summary: dict) -> None:
+    """One row per (repo_id, date) -- INSERT OR REPLACE keyed on the unique
+    index, so calling this more than once on the same day (every dashboard
+    view does) updates that day's row in place rather than accumulating
+    duplicates. A fresh id on every call is fine: the unique index is what
+    enforces one-per-day, not the primary key."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO dashboard_snapshots (id, repo_id, date, summary_json, created_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(repo_id, date) DO UPDATE SET summary_json = excluded.summary_json""",
+            (str(uuid.uuid4()), repo_id, date, json.dumps(summary), now()),
+        )
+
+
+def list_dashboard_snapshots(repo_id: str, limit: int = 90) -> list[dict]:
+    """Oldest first (chart-ready order) -- the most recent `limit` days."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM dashboard_snapshots WHERE repo_id = ? ORDER BY date DESC LIMIT ?",
+            (repo_id, limit),
+        ).fetchall()
+    out = []
+    for r in reversed(rows):
+        d = dict(r)
+        d["summary"] = json.loads(d.pop("summary_json"))
+        out.append(d)
+    return out

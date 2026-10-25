@@ -4,6 +4,7 @@ import html
 import os
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -35,8 +36,8 @@ from kg.visualize import to_pyvis_html
 from . import (
     auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_journey_requirements,
     llm_journey_test_generation, llm_module_naming, llm_requirement_test_generation,
-    llm_story_coverage, llm_test_generation, llm_test_verification, test_export, uploads,
-    work_item_import,
+    llm_story_coverage, llm_test_generation, llm_test_verification, test_export,
+    traceability_dashboard, uploads, work_item_import,
 )
 from .diff import diff_runs
 from .runner import resolve_source_dir, run_analysis
@@ -1480,6 +1481,33 @@ def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", c
     media_type, ext = test_export.FORMATS[format]
     return Response(body, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{test_export.filename(repo["name"], ext)}"'})
+
+
+@api.get("/repos/{repo_id}/dashboard")
+def api_traceability_dashboard(repo_id: str):
+    """The project-status dashboard: user story -> code, test case -> user story,
+    test case -> code, and the gaps in each direction, rolled up from the same
+    Story Coverage + test-case data the Story Coverage/Test Cases tabs already
+    show one document/module at a time (see server/traceability_dashboard.py --
+    pure computation, no LLM call, so this is free and instant). Code (module)
+    coverage needs a successful analysis run; the story/test sections don't, so
+    a repo with no run yet still gets a useful dashboard with modules zeroed out
+    rather than a 400. Also records today's summary as a trend-chart snapshot
+    (server/db.py's dashboard_snapshots) -- upserted, so viewing the dashboard
+    more than once today never creates more than one row for today."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    documents = db.list_documents(repo_id)
+    requirements = db.list_story_requirements(repo_id)
+    cases = db.list_test_cases(repo_id)
+    labels = db.get_module_label_details(repo_id)
+    run = db.get_latest_successful_run(repo_id)
+    module_scores = (run.get("stats") or {}).get("module_scores") or [] if run else []
+    summary = traceability_dashboard.compute_summary(documents, requirements, cases, module_scores, labels)
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.upsert_dashboard_snapshot(repo_id, today, summary)
+    trend = db.list_dashboard_snapshots(repo_id)
+    return {**summary, "trend": trend}
 
 
 @api.get("/test-generation/config")

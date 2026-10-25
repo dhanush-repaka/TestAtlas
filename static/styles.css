@@ -376,6 +376,68 @@ mean "All repos" then re-scan a grid, every single time.
   .ov-span-2 { grid-column: span 1; }
 }
 
+/* --------------------------------------------------------------------- traceability dashboard */
+
+.td-subhead { font-size: 13px; font-weight: 700; color: var(--muted); margin: 24px 0 10px; }
+.td-subhead:first-of-type { margin-top: 4px; }
+
+.td-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  border-radius: 12px; padding: 16px 20px; margin-bottom: 16px;
+}
+.td-banner-red { background: var(--danger-soft); }
+.td-banner-amber { background: var(--warn-soft); }
+.td-banner-green { background: var(--ok-soft); }
+.td-banner-label { font-size: 13px; font-weight: 700; margin: 0 0 3px; }
+.td-banner-red .td-banner-label { color: var(--danger); }
+.td-banner-amber .td-banner-label { color: var(--warn); }
+.td-banner-green .td-banner-label { color: var(--ok); }
+.td-banner-headline { font-size: 14.5px; margin: 0; }
+.td-banner-icon { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; font-size: 20px; }
+.td-banner-red .td-banner-icon { background: var(--danger); color: var(--danger-contrast, #fff); }
+.td-banner-amber .td-banner-icon { background: var(--warn); color: var(--warn-contrast, #1a1203); }
+.td-banner-green .td-banner-icon { background: var(--ok); color: var(--ok-contrast, #fff); }
+
+.td-chart-box { position: relative; width: 100%; height: 170px; margin-bottom: 1.5rem; background: var(--panel-2); border-radius: 10px; padding: 12px 14px; box-sizing: border-box; }
+.td-chart-box-health { height: 140px; }
+.td-chart-box-priority { height: 150px; }
+
+.td-trend-svg { width: 100%; height: 180px; display: block; }
+
+.td-gap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+
+.td-gap-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+.td-gap-item { padding: 9px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.td-gap-item:hover { background: var(--panel-2); }
+.td-gap-item-doc { margin-bottom: 2px; }
+
+.td-risk-item {
+  list-style: none; padding: 10px 14px; margin-bottom: 8px; font-size: 13px; cursor: pointer;
+  background: var(--panel); border-left: 3px solid var(--danger); border-radius: 0 8px 8px 0;
+}
+.td-risk-item:hover { background: var(--panel-2); }
+
+.td-critical-badge {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 8px;
+  font-size: 10.5px; font-weight: 700; color: var(--accent-strong); vertical-align: middle;
+}
+.td-critical-badge .ic { width: 11px; height: 11px; flex: none; }
+
+.td-story-list { border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden; }
+.td-story-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 11px 16px; cursor: pointer; border-bottom: 1px solid var(--border-soft);
+}
+.td-story-row:last-child { border-bottom: none; }
+.td-story-row:hover { background: var(--panel-2); }
+.td-story-name { font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+
+.td-chip { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; flex: none; }
+
+.td-more { margin-top: 28px; }
+.td-more summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 0; }
+.td-more[open] summary { margin-bottom: 8px; }
+
 .repo-tile {
   position: relative;
   background: var(--panel);

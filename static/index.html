@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=54" />
+<link rel="stylesheet" href="static/styles.css?v=58" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -168,6 +168,7 @@
       <div class="tabs-wrap">
         <div class="tabs" id="tabsScroll">
           <button class="tab active" data-tab="overview"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="12" width="4" height="9" rx="1" fill="currentColor"/><rect x="10" y="7" width="4" height="14" rx="1" fill="currentColor"/><rect x="17" y="3" width="4" height="18" rx="1" fill="currentColor"/></svg>Overview</button>
+          <button class="tab" data-tab="traceability" title="Project status for stakeholders -- user story, code and test-case coverage in one place, with trends"><svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="5" r="2.4" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="19" r="2.4" stroke="currentColor" stroke-width="1.6"/><circle cx="19" cy="5" r="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M5 7.4V12a3 3 0 003 3h1M19 7.4V12a3 3 0 01-3 3h-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Dashboard</button>
           <button class="tab" data-tab="findings"><svg class="ic" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.86L1.8 18a1.5 1.5 0 001.3 2.25h17.9A1.5 1.5 0 0022.3 18L13.7 3.86a1.5 1.5 0 00-2.6 0z" stroke="currentColor" stroke-width="1.6"/></svg>Findings</button>
           <button class="tab" data-tab="graph"><svg class="ic" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="6" r="2.6" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="18" r="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M8.2 7.3L11 16M15.8 7.3L13 16M8.6 6h6.8" stroke="currentColor" stroke-width="1.4"/></svg>Graph</button>
           <button class="tab" data-tab="insights"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>Insights</button>
@@ -195,6 +196,43 @@
             <tbody></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="tab-panel" id="panel-traceability" hidden>
+        <div id="tdBanner" class="td-banner"></div>
+        <div class="card-grid" id="tdStatCards"></div>
+        <p class="td-subhead">Where every story stands</p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdHealthChart"></canvas></div>
+        <p class="td-subhead">Test cases by category <span id="tdCaseTotal" class="muted small"></span></p>
+        <div class="td-chart-box"><canvas id="tdCategoryChart"></canvas></div>
+        <p class="td-subhead">Test cases by priority</p>
+        <div class="td-chart-box td-chart-box-priority"><canvas id="tdPriorityChart"></canvas></div>
+        <p class="td-subhead">Top risk</p>
+        <div id="tdTopRisks"></div>
+        <p class="td-subhead">Every story</p>
+        <div id="tdStoryList"></div>
+        <details class="td-more">
+          <summary>More detail</summary>
+          <div class="td-gap-grid">
+            <div class="ov-card">
+              <h3>Needs a human answer</h3>
+              <div id="tdNeedsHuman"></div>
+            </div>
+            <div class="ov-card">
+              <h3>Code with no tests</h3>
+              <div id="tdModulesGap"></div>
+            </div>
+            <div class="ov-card">
+              <h3>Trend</h3>
+              <div id="tdTrend"></div>
+            </div>
+            <div class="ov-card">
+              <h3>Your most critical code</h3>
+              <p class="muted small" style="margin:0 0 10px;">By PageRank — most of this codebase structurally depends on these.</p>
+              <div id="tdCriticalModules"></div>
+            </div>
+          </div>
+        </details>
       </section>
 
       <section class="tab-panel" id="panel-findings" hidden>
@@ -507,6 +545,7 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="static/app.js?v=69"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+  <script src="static/app.js?v=75"></script>
 </body>
 </html>

@@ -656,6 +656,7 @@ async function showRepoDetail(id, tab = currentTabName(), opts = {}) {
   await loadStoryCoveragePanel();
   await loadJourneysPanel();
   await loadTestCasesPanel();
+  await loadDashboardPanel();
 }
 
 async function loadModuleLabels() {
@@ -1952,6 +1953,328 @@ function isTestModuleName(name) {
     );
 }
 
+// --------------------------------------------------------------------------- traceability dashboard
+//
+// Project status for a PRODUCT OWNER: how much of the scope is actually built,
+// how much of what's built is actually correct, and what's broken right now --
+// rolled up from the same Story Coverage + test-case data the Story
+// Coverage/Test Cases tabs already compute one document/module at a time, not a
+// new LLM call (server/traceability_dashboard.py is pure computation).
+// Deliberately never shows test-case ORIGIN (code-driven vs story-driven vs
+// journey-driven) -- that's how a test was generated, an implementation detail
+// of this tool, not a signal about the project. A product owner doesn't care.
+
+let activeDashboard = null;
+
+const TD_HEALTH_COLOR = {
+  verified: "var(--ok)", broken: "var(--danger)", needs_clarification: "var(--warn)",
+  partially_built: "var(--accent)", not_started: "var(--muted-2)",
+  not_analyzed: "color-mix(in srgb, var(--muted-2) 40%, transparent)",
+};
+const TD_HEALTH_LABEL = {
+  verified: "Built & verified correct", broken: "Built but broken", needs_clarification: "Needs clarification",
+  partially_built: "Partially built", not_started: "Not started", not_analyzed: "Not analyzed yet",
+};
+const TD_HEALTH_ORDER = ["verified", "broken", "partially_built", "needs_clarification", "not_started", "not_analyzed"];
+
+function tdPct(n, d) {
+  return d ? Math.round((n / d) * 100) : 0;
+}
+
+const TD_STATUS_ICON = { red: "ti-alert-triangle", amber: "ti-clock", green: "ti-check" };
+
+async function loadDashboardPanel() {
+  const repoId = activeRepoId;
+  activeDashboard = await api(`/repos/${repoId}/dashboard`).catch(() => null);
+  if (repoId !== activeRepoId) return; // stale response from a repo we've since navigated away from
+  renderDashboardBanner();
+  renderDashboardStatCards();
+  renderDashboardHealthChart();
+  renderDashboardCategoryChart();
+  renderDashboardPriorityChart();
+  renderDashboardGapList("#tdTopRisks", activeDashboard?.gaps.contradicted_requirements, tdReqGapItemHtml,
+    "Nothing contradicted — every tested criterion matches the code.");
+  renderDashboardStoryList();
+  renderDashboardGapList("#tdNeedsHuman", activeDashboard?.gaps.needs_human_input_requirements, tdQuestionGapItemHtml,
+    "No open questions.");
+  renderDashboardGapList("#tdModulesGap", activeDashboard?.gaps.modules_without_tests, tdModuleGapItemHtml,
+    activeDashboard && activeDashboard.modules.total === 0
+      ? "Run analysis first to see code module coverage."
+      : "Every analyzed module has at least one test case.");
+  renderDashboardTrend();
+  renderDashboardCriticalModules();
+}
+
+function renderDashboardCriticalModules() {
+  const el = $("#tdCriticalModules");
+  const modules = activeDashboard?.modules.critical || [];
+  if (!modules.length) { el.innerHTML = `<p class="muted small">Run analysis first to see this.</p>`; return; }
+  el.innerHTML = `<ul class="td-gap-list">${modules.map((m) =>
+    `<li class="td-gap-item" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`
+  ).join("")}</ul>`;
+}
+
+// The single headline verdict -- five seconds, red/amber/green, one sentence
+// why (server/traceability_dashboard.py's _overall_status).
+function renderDashboardBanner() {
+  const el = $("#tdBanner");
+  if (!activeDashboard) { el.innerHTML = `<p class="muted small">Couldn't load the dashboard.</p>`; return; }
+  const { status, headline } = activeDashboard.overall;
+  const label = status === "red" ? "Project status: at risk" : status === "green" ? "Project status: on track" : "Project status: in progress";
+  el.className = `td-banner td-banner-${status}`;
+  el.innerHTML = `
+    <div>
+      <p class="td-banner-label">${label}</p>
+      <p class="td-banner-headline">${escapeHtml(headline)}</p>
+    </div>
+    <div class="td-banner-icon"><i class="ti ${TD_STATUS_ICON[status]}" aria-hidden="true"></i></div>`;
+}
+
+function renderDashboardStatCards() {
+  const el = $("#tdStatCards");
+  if (!activeDashboard) { el.innerHTML = ""; return; }
+  const { documents, requirements } = activeDashboard;
+  const notStartedPct = tdPct(documents.by_health.not_started + documents.by_health.not_analyzed, documents.total);
+  el.innerHTML = [
+    statCard(`${documents.verified_pct}%`, "Delivered & verified", `${documents.by_health.verified}/${documents.total} user stories`),
+    statCard(`${requirements.correctness_rate}%`, "Correctness rate", "of what's actually been built"),
+    statCard(documents.by_health.broken, "Stories broken", `${requirements.by_status.contradicted} contradicted criteria`),
+    statCard(`${notStartedPct}%`, "Not started", `${documents.by_health.not_started + documents.by_health.not_analyzed}/${documents.total} user stories`),
+  ].join("");
+}
+
+// Resolves a CSS custom property to its actual color so Chart.js (which
+// paints on a <canvas>, not through the CSS cascade) picks up this app's
+// real theme colors instead of a hardcoded palette -- re-read on every
+// chart render so switching light/dark mid-session stays correct.
+function tdCssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// Resolves ANY CSS color expression (var(), color-mix(), etc.) to a concrete
+// color canvas can paint -- a canvas fillStyle can't resolve custom
+// properties on its own, since it isn't part of the CSS cascade.
+function tdResolveColor(cssValue) {
+  const probe = document.createElement("span");
+  probe.style.color = cssValue;
+  probe.style.display = "none";
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+  return resolved;
+}
+
+const TD_CHART_FONT = { family: getComputedStyle(document.body).fontFamily, size: 12 };
+
+function tdDestroyChart(canvasId) {
+  const existing = Chart.getChart(canvasId);
+  if (existing) existing.destroy();
+}
+
+function tdChartBaseOptions(indexAxis) {
+  const ink = tdCssVar("--muted");
+  const grid = tdCssVar("--border");
+  return {
+    indexAxis, responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { titleFont: TD_CHART_FONT, bodyFont: TD_CHART_FONT } },
+    scales: {
+      x: { beginAtZero: true, ticks: { color: ink, font: TD_CHART_FONT }, grid: { color: grid, display: indexAxis === "y" } },
+      y: { beginAtZero: true, ticks: { color: ink, font: TD_CHART_FONT }, grid: { color: grid, display: indexAxis !== "y" } },
+    },
+  };
+}
+
+// Every story's health bucket as an actual bar chart (not a hand-rolled CSS
+// div bar) -- following explicit feedback that the earlier flat bar didn't
+// read as "visual" enough. Horizontal, since health labels are long.
+function renderDashboardHealthChart() {
+  tdDestroyChart("tdHealthChart");
+  const canvas = $("#tdHealthChart");
+  if (!activeDashboard || !activeDashboard.documents.total) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No user stories yet — add one in the Docs tab.</p>`;
+    return;
+  }
+  const counts = activeDashboard.documents.by_health;
+  const present = TD_HEALTH_ORDER.filter((k) => counts[k] > 0);
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: present.map((k) => TD_HEALTH_LABEL[k]),
+      datasets: [{ data: present.map((k) => counts[k]), backgroundColor: present.map((k) => tdResolveColor(TD_HEALTH_COLOR[k])), borderRadius: 4, maxBarThickness: 28 }],
+    },
+    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
+  });
+}
+
+// Test-case stats, distinct from the already-rejected "origin" breakdown:
+// category (happy path / edge case / error handling) is a real quality
+// signal -- is testing well-rounded, or only covering the easy path.
+function renderDashboardCategoryChart() {
+  tdDestroyChart("tdCategoryChart");
+  const canvas = $("#tdCategoryChart");
+  const tc = activeDashboard?.test_cases;
+  $("#tdCaseTotal").textContent = tc?.total ? `— ${tc.total} total` : "";
+  const byCategory = tc?.by_category || {};
+  const labels = Object.keys(byCategory);
+  if (!labels.length) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No test cases yet.</p>`;
+    return;
+  }
+  const palette = [tdCssVar("--accent"), tdCssVar("--warn"), tdCssVar("--danger"), tdCssVar("--muted-2")];
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: labels.map(tdCategoryLabel),
+      datasets: [{ data: labels.map((k) => byCategory[k]), backgroundColor: labels.map((_, i) => palette[i % palette.length]), borderRadius: 4, maxBarThickness: 48 }],
+    },
+    options: tdChartBaseOptions("x"),
+  });
+}
+
+function tdCategoryLabel(key) {
+  return { happy_path: "Happy path", edge_case: "Edge case", error_handling: "Error handling" }[key] || key;
+}
+
+function tdPriorityLabel(key) {
+  return { 1: "P1 · critical path", 2: "P2 · important", 3: "P3 · less common", 4: "P4 · rare" }[key] || `P${key}`;
+}
+
+// Priority mix -- a heavy skew toward low priority would mean testing effort
+// isn't going where it matters most.
+function renderDashboardPriorityChart() {
+  tdDestroyChart("tdPriorityChart");
+  const canvas = $("#tdPriorityChart");
+  const byPriority = activeDashboard?.test_cases?.by_priority || {};
+  const labels = Object.keys(byPriority).sort((a, b) => Number(a) - Number(b));
+  if (!labels.length) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No test cases yet.</p>`;
+    return;
+  }
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: labels.map(tdPriorityLabel),
+      datasets: [{ data: labels.map((k) => byPriority[k]), backgroundColor: tdCssVar("--accent"), borderRadius: 4, maxBarThickness: 28 }],
+    },
+    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
+  });
+}
+
+function renderDashboardTrend() {
+  const el = $("#tdTrend");
+  const trend = activeDashboard?.trend || [];
+  if (trend.length < 2) {
+    el.innerHTML = `<p class="muted small">Check back after this dashboard has been viewed on a couple of different days to see a trend here.</p>`;
+    return;
+  }
+  const series = [
+    { label: "Verified correct", color: "var(--ok)", value: (s) => s.summary.documents.verified_pct },
+    { label: "Correctness rate", color: "var(--accent)", value: (s) => s.summary.requirements.correctness_rate },
+    { label: "Delivered (coded)", color: "var(--muted-2)", value: (s) => s.summary.documents.coded_pct },
+  ];
+  const W = 640, H = 180, PAD_L = 32, PAD = 12;
+  const n = trend.length;
+  const x = (i) => PAD_L + (i / (n - 1)) * (W - PAD_L - PAD);
+  const y = (v) => H - PAD - (v / 100) * (H - PAD * 2);
+  const gridlines = [0, 25, 50, 75, 100]
+    .map((v) => `
+      <line x1="${PAD_L}" y1="${y(v)}" x2="${W - PAD}" y2="${y(v)}" stroke="var(--border-soft)" stroke-width="1"></line>
+      <text x="${PAD_L - 6}" y="${y(v) + 3}" text-anchor="end" font-size="10" fill="var(--muted)">${v}</text>`)
+    .join("");
+  const polylines = series
+    .map((s) => `<polyline points="${trend.map((snap, i) => `${x(i)},${y(s.value(snap))}`).join(" ")}" fill="none" stroke="${s.color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>`)
+    .join("");
+  const dots = series
+    .map((s) => trend.map((snap, i) => `<circle cx="${x(i)}" cy="${y(s.value(snap))}" r="3" fill="${s.color}"></circle>`).join(""))
+    .join("");
+  const last = trend[n - 1];
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="td-trend-svg" preserveAspectRatio="none" role="img" aria-label="Coverage trend over time">${gridlines}${polylines}${dots}</svg>
+    <ul class="ov-lang-legend">
+      ${series.map((s) => `<li><span class="dot" style="background:${s.color}"></span>${s.label}<span class="muted">${s.value(last)}%</span></li>`).join("")}
+    </ul>
+    <div class="muted small">${escapeHtml(trend[0].date)} → ${escapeHtml(last.date)}</div>`;
+}
+
+function renderDashboardGapList(selector, items, itemHtmlFn, emptyMsg) {
+  const el = $(selector);
+  if (!items) { el.innerHTML = `<p class="muted small">Couldn't load this.</p>`; return; }
+  if (!items.length) { el.innerHTML = `<p class="muted small">${emptyMsg}</p>`; return; }
+  el.innerHTML = `<ul class="td-gap-list">${items.map(itemHtmlFn).join("")}</ul>`;
+}
+
+// Reuses the exact icon/wording repoTileHtml already uses for "most critical
+// module" (highest PageRank -- most of the codebase structurally depends on
+// it), so the same visual means the same thing everywhere in this app.
+function tdCriticalBadgeHtml() {
+  return `<span class="td-critical-badge" title="Touches one of this repo's most structurally critical modules — most of the codebase depends on it">${ICON_CRITICAL}critical code</span>`;
+}
+
+function tdReqGapItemHtml(r) {
+  return `<li class="td-risk-item" data-jump-doc="${escapeHtml(r.doc_id || "")}">
+    <div class="td-gap-item-doc muted small">${escapeHtml(r.doc_name || "Unknown document")}${r.touches_critical_code ? tdCriticalBadgeHtml() : ""}</div>
+    <div>${escapeHtml(r.text)}</div>
+    ${r.rationale ? `<div class="muted small">${escapeHtml(r.rationale)}</div>` : ""}
+  </li>`;
+}
+
+function tdQuestionGapItemHtml(r) {
+  return `<li class="td-gap-item" data-jump-doc="${escapeHtml(r.doc_id || "")}">
+    <div class="td-gap-item-doc muted small">${escapeHtml(r.doc_name || "Unknown document")}</div>
+    <div>${escapeHtml(r.text)}</div>
+    ${r.question ? `<div class="muted small">${escapeHtml(r.question)}</div>` : ""}
+  </li>`;
+}
+
+function tdModuleGapItemHtml(m) {
+  return `<li class="td-gap-item" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`;
+}
+
+function tdHealthChipHtml(health) {
+  const color = TD_HEALTH_COLOR[health];
+  return `<span class="td-chip" style="color:${color}; background:color-mix(in srgb, ${color} 18%, transparent)">${TD_HEALTH_LABEL[health]}</span>`;
+}
+
+// The dashboard's primary story-level view -- one compact row per user story:
+// name + a little traceability context, status pill on the right. Replaces
+// both the old health donut's legend and the old traceability matrix table --
+// one list instead of two, since they were really answering the same question
+// ("where does each story stand") from two different places.
+function renderDashboardStoryList() {
+  const el = $("#tdStoryList");
+  const rows = activeDashboard?.document_rollup || [];
+  if (!rows.length) { el.innerHTML = `<p class="muted small">No user stories yet — add one in the Docs tab.</p>`; return; }
+  el.innerHTML = `<div class="td-story-list">${rows.map((d) => {
+    const modulesText = d.modules.length ? d.modules.map((m) => escapeHtml(moduleDisplayName(m))).join(", ") : "no code found yet";
+    const meta = d.requirement_count
+      ? `${d.requirement_count} criteria · ${d.test_case_count} test case${d.test_case_count === 1 ? "" : "s"} · ${modulesText}`
+      : "not analyzed yet";
+    return `<div class="td-story-row" data-jump-doc="${escapeHtml(d.id)}">
+      <div>
+        <div class="td-story-name">${escapeHtml(d.name)}${d.touches_critical_code ? tdCriticalBadgeHtml() : ""}</div>
+        <div class="muted small">${meta}</div>
+      </div>
+      ${tdHealthChipHtml(d.health)}
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function jumpToDocInStoryCoverage(docId) {
+  if (!docId) return;
+  activateTab("story");
+  const sel = $("#storyCoverageDocSelect");
+  if ([...sel.options].some((o) => o.value === docId)) sel.value = docId;
+  loadStoryRequirementsForSelectedDoc();
+}
+
+function jumpToModuleGeneration(moduleRaw) {
+  activateTab("tests");
+  const input = $("#moduleGenSearch");
+  input.value = moduleDisplayName(moduleRaw);
+  renderModuleGenList();
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 async function loadTestCasesPanel() {
   const repoId = activeRepoId;
   if (!activeDocuments.length) activeDocuments = await api(`/repos/${repoId}/documents`).catch(() => []);
@@ -2707,4 +3030,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#testCaseFilterCategorySelect").addEventListener("change", renderTestCaseList);
   $("#testCaseFilterStoryDocSelect").addEventListener("change", renderTestCaseList);
   $all("#testCaseSourceSegmented .seg-btn").forEach((b) => b.addEventListener("click", () => setTestCaseSourceFilter(b.dataset.value)));
+  $("#panel-traceability").addEventListener("click", (ev) => {
+    const docEl = ev.target.closest("[data-jump-doc]");
+    if (docEl && docEl.dataset.jumpDoc) jumpToDocInStoryCoverage(docEl.dataset.jumpDoc);
+    const moduleGenEl = ev.target.closest("[data-jump-module-gen]");
+    if (moduleGenEl) jumpToModuleGeneration(moduleGenEl.dataset.jumpModuleGen);
+  });
 });
