@@ -1977,6 +1977,13 @@ const TD_HEALTH_LABEL = {
 };
 const TD_HEALTH_ORDER = ["verified", "broken", "partially_built", "needs_clarification", "not_started", "not_analyzed"];
 
+// Same status colors as the existing .dot.status-* convention (Story Coverage
+// tab) -- these are plain var() names, not nested expressions, so tdCssVar
+// resolves them directly without needing tdResolveColor's DOM probe.
+const TD_REQ_STATUS_COLOR = { supported: "--ok", contradicted: "--danger", needs_human_input: "--warn", unknown: "--muted-2" };
+const TD_REQ_STATUS_LABEL = { supported: "Supported", contradicted: "Contradicted", needs_human_input: "Needs human input", unknown: "Unknown" };
+const TD_REQ_STATUS_ORDER = ["supported", "contradicted", "needs_human_input", "unknown"];
+
 function tdPct(n, d) {
   return d ? Math.round((n / d) * 100) : 0;
 }
@@ -1990,6 +1997,7 @@ async function loadDashboardPanel() {
   renderDashboardBanner();
   renderDashboardStatCards();
   renderDashboardHealthChart();
+  renderDashboardRequirementStatusChart();
   renderDashboardCategoryChart();
   renderDashboardPriorityChart();
   renderDashboardGapList("#tdTopRisks", activeDashboard?.gaps.contradicted_requirements, tdReqGapItemHtml,
@@ -2103,6 +2111,33 @@ function renderDashboardHealthChart() {
       datasets: [{ data: present.map((k) => counts[k]), backgroundColor: present.map((k) => tdResolveColor(TD_HEALTH_COLOR[k])), borderRadius: 4, maxBarThickness: 28 }],
     },
     options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
+  });
+}
+
+// Zoomed-in view beneath the story-health chart: that one buckets whole
+// STORIES (one contradicted criterion marks the entire story "broken"), so
+// it hides scale -- a story with 1-of-10 criteria wrong looks the same as
+// one with 10-of-10 wrong. This counts individual acceptance CRITERIA, so a
+// large contradicted bar here (versus a small "broken" bucket above) is
+// itself a signal: a few stories are carrying a lot of the actual breakage.
+function renderDashboardRequirementStatusChart() {
+  tdDestroyChart("tdReqStatusChart");
+  const canvas = $("#tdReqStatusChart");
+  const total = activeDashboard?.requirements?.total || 0;
+  $("#tdReqTotal").textContent = total ? `— ${total} total` : "";
+  if (!total) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No acceptance criteria decomposed yet.</p>`;
+    return;
+  }
+  const counts = activeDashboard.requirements.by_status;
+  const present = TD_REQ_STATUS_ORDER.filter((k) => counts[k] > 0);
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: present.map((k) => TD_REQ_STATUS_LABEL[k]),
+      datasets: [{ data: present.map((k) => counts[k]), backgroundColor: present.map((k) => tdCssVar(TD_REQ_STATUS_COLOR[k])), borderRadius: 4, maxBarThickness: 28 }],
+    },
+    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: Math.max(1, Math.ceil(total / 10)) } } } },
   });
 }
 

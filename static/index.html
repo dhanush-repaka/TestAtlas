@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=58" />
+<link rel="stylesheet" href="static/styles.css?v=59" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -203,10 +203,12 @@
         <div class="card-grid" id="tdStatCards"></div>
         <p class="td-subhead">Where every story stands</p>
         <div class="td-chart-box td-chart-box-health"><canvas id="tdHealthChart"></canvas></div>
+        <p class="td-subhead">Acceptance criteria by status <span id="tdReqTotal" class="muted small"></span></p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdReqStatusChart"></canvas></div>
         <p class="td-subhead">Test cases by category <span id="tdCaseTotal" class="muted small"></span></p>
         <div class="td-chart-box"><canvas id="tdCategoryChart"></canvas></div>
         <p class="td-subhead">Test cases by priority</p>
-        <div class="td-chart-box td-chart-box-priority"><canvas id="tdPriorityChart"></canvas></div>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdPriorityChart"></canvas></div>
         <p class="td-subhead">Top risk</p>
         <div id="tdTopRisks"></div>
         <p class="td-subhead">Every story</p>
@@ -546,6 +548,6 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-  <script src="static/app.js?v=75"></script>
+  <script src="static/app.js?v=76"></script>
 </body>
 </html>
