@@ -86,19 +86,36 @@ def _extract_pptx(data: bytes) -> str:
     return "\n\n".join(slides_text)
 
 
+def _normalize_cell(value: str) -> str:
+    """Collapses any run of whitespace -- including an embedded newline, routine
+    inside a real ADO "Acceptance Criteria" field exported as a multi-line
+    bulleted list -- down to a single space, and strips the ends. Downstream
+    (server/work_item_import.py) reads this text one LINE per work-item row,
+    so a cell that keeps an internal newline would silently fragment its own
+    row into several, truncating that row's own content and producing
+    orphaned garbage lines that don't match any real row shape."""
+    return " ".join(value.split())
+
+
 def _extract_csv(data: bytes) -> str:
     """Same "cell | cell | cell" per-row shape _extract_xlsx produces, so
     anything downstream that reads a pipe-delimited table (server/
     work_item_import.py's header/row detection, for an ADO work-item export)
     doesn't care whether the original file was a real spreadsheet or a plain
     CSV -- one format either way. Uses csv.reader, not a naive split(','), so
-    a quoted field containing a comma or an embedded newline (routine in an
-    ADO "Acceptance Criteria" export) is handled correctly."""
+    a quoted field containing a comma is handled correctly, and
+    _normalize_cell handles one containing a newline. Keeps every cell,
+    including a blank one, rather than dropping it -- work_item_import.py
+    looks a row's fields up by the HEADER's column index, so a blank
+    "Description" (routine on a real ADO export -- plenty of stories skip
+    it) must not shift every column after it out of position, silently
+    misattributing a later row's Acceptance Criteria to the wrong field. A
+    row with nothing in it at all is still skipped, same as before."""
     text = data.decode("utf-8-sig", errors="replace")  # utf-8-sig: strips an Excel-added BOM if present
     rows_text = []
     for row in csv.reader(io.StringIO(text)):
-        cells = [c.strip() for c in row if c.strip()]
-        if cells:
+        cells = [_normalize_cell(c) for c in row]
+        if any(cells):
             rows_text.append(" | ".join(cells))
     return "\n".join(rows_text)
 
@@ -111,8 +128,12 @@ def _extract_xlsx(data: bytes) -> str:
     for ws in workbook.worksheets:
         rows_text = []
         for row in ws.iter_rows(values_only=True):
-            cells = [str(c) for c in row if c is not None]
-            if cells:
+            # Same positional-alignment and embedded-newline fix as _extract_csv:
+            # a blank cell stays a blank cell in the row (never dropped, which
+            # would shift later columns out of position), and a cell's own
+            # internal newline is collapsed so it can never fragment its row.
+            cells = [_normalize_cell(str(c)) if c is not None else "" for c in row]
+            if any(cells):
                 rows_text.append(" | ".join(cells))
         if rows_text:
             sheets_text.append(f"--- Sheet: {ws.title} ---\n" + "\n".join(rows_text))
