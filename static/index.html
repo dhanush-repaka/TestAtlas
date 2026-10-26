@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=59" />
+<link rel="stylesheet" href="static/styles.css?v=62" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -199,6 +199,12 @@
       </section>
 
       <section class="tab-panel" id="panel-traceability" hidden>
+        <div class="td-glow td-glow-1" aria-hidden="true"></div>
+        <div class="td-glow td-glow-2" aria-hidden="true"></div>
+        <div class="td-content">
+        <div class="td-toolbar">
+          <button type="button" class="btn btn-sm" data-export-pdf title="Opens your browser's print dialog -- choose &quot;Save as PDF&quot; for a clean, shareable snapshot of this dashboard"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>Export</button>
+        </div>
         <div id="tdBanner" class="td-banner"></div>
         <div class="card-grid" id="tdStatCards"></div>
         <p class="td-subhead">Where every story stands</p>
@@ -235,6 +241,7 @@
             </div>
           </div>
         </details>
+        </div>
       </section>
 
       <section class="tab-panel" id="panel-findings" hidden>
@@ -548,6 +555,6 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-  <script src="static/app.js?v=76"></script>
+  <script src="static/app.js?v=79"></script>
 </body>
 </html>

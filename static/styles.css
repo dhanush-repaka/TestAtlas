@@ -377,32 +377,89 @@ mean "All repos" then re-scan a grid, every single time.
 }
 
 /* --------------------------------------------------------------------- traceability dashboard */
+/* A "glass" treatment -- frosted cards over a glowing gradient backdrop --
+   that DOES follow the app's own light/dark toggle, just with its own two
+   variants rather than literally reusing the site's normal flat panel
+   colors (a translucent card needs real contrast behind it to read as
+   glass at all). Dark is the default block below; the light variant lives
+   in the :root[data-theme="light"] override right after it. Both pin every
+   var(--x) this section already uses (banner colors, chart ink, hover
+   states, the SVG trend's stroke="var(--ok)" etc.), so nothing downstream
+   needs to change to render correctly in either theme. Chart.js is the one
+   exception -- it bakes colors in at canvas-draw time rather than reading
+   the live CSS cascade, so applyTheme() (app.js) explicitly repaints this
+   tab's charts on every toggle. */
+#panel-traceability {
+  --text: #f1f3f8; --muted: #8d93a8; --muted-2: #8b93a8;
+  --accent: #22d3c7; --accent-strong: #5ee8de;
+  --danger: #ff6b6b; --danger-soft: rgba(255, 107, 107, 0.16);
+  --warn: #f0ab3d; --warn-soft: rgba(240, 171, 61, 0.16);
+  --ok: #3ddb93; --ok-soft: rgba(61, 219, 147, 0.16);
+  --border: #2c3650; --border-soft: rgba(255, 255, 255, 0.11);
+  --panel: rgba(255, 255, 255, 0.055); --panel-2: rgba(255, 255, 255, 0.09);
+  --radius-lg: 18px;
+  --shadow-card: 0 8px 28px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  position: relative; overflow: hidden; isolation: isolate;
+  border-radius: 28px; padding: 26px 24px;
+  background: radial-gradient(circle at 15% 10%, #1a2a4a 0%, #0b1220 55%), linear-gradient(160deg, #0d1424, #060a14);
+}
+:root[data-theme="light"] #panel-traceability {
+  --text: #171a24; --muted: #5c6276; --muted-2: #5c6276;
+  --accent: #0b7a71; --accent-strong: #085f58;
+  --danger: #d64545; --danger-soft: rgba(214, 69, 69, 0.11);
+  --warn: #b8790a; --warn-soft: rgba(184, 121, 10, 0.11);
+  --ok: #148062; --ok-soft: rgba(20, 128, 98, 0.11);
+  --border: #dde0ec; --border-soft: rgba(15, 23, 42, 0.08);
+  --panel: rgba(255, 255, 255, 0.55); --panel-2: rgba(255, 255, 255, 0.8);
+  --shadow-card: 0 8px 24px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+
+  background: radial-gradient(circle at 15% 10%, #e8f6f4 0%, #f3f5fb 55%), linear-gradient(160deg, #eef1f8, #f9fafc);
+}
+:root[data-theme="light"] .td-glow-1 { opacity: .16; }
+:root[data-theme="light"] .td-glow-2 { opacity: .12; }
+/* Sets `color` directly (not just the --text variable) so every descendant
+   that gets its text color purely by inheritance -- stat-card numbers, card
+   headings -- actually picks up the pinned dark value. A descendant that only
+   references var(--text) itself would still resolve correctly without this,
+   but one that inherits an already-computed `color` from body (which resolves
+   var(--text) at ITS OWN scope, i.e. the page's real theme) would not. */
+.td-content { position: relative; z-index: 1; color: var(--text); }
+/* One accent color only (the app's own brand teal), not a rainbow of glow
+   blobs -- two soft instances of the same hue for a little depth, nothing
+   else competing for attention. */
+.td-glow { position: absolute; z-index: 0; border-radius: 50%; pointer-events: none; background: #22d3c7; }
+.td-glow-1 { width: 380px; height: 380px; top: -160px; left: -120px; filter: blur(110px); opacity: .18; }
+.td-glow-2 { width: 320px; height: 320px; bottom: -140px; right: -100px; filter: blur(110px); opacity: .12; }
 
 .td-subhead { font-size: 13px; font-weight: 700; color: var(--muted); margin: 24px 0 10px; }
 .td-subhead:first-of-type { margin-top: 4px; }
 
 .td-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  border-radius: 12px; padding: 16px 20px; margin-bottom: 16px;
+  border: 1px solid var(--border-soft); border-radius: 20px; padding: 18px 22px; margin-bottom: 22px;
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: var(--shadow-card);
 }
-.td-banner-red { background: var(--danger-soft); }
-.td-banner-amber { background: var(--warn-soft); }
-.td-banner-green { background: var(--ok-soft); }
-.td-banner-label { font-size: 13px; font-weight: 700; margin: 0 0 3px; }
+.td-banner-red { background: var(--danger-soft); border-color: rgba(255, 107, 107, 0.35); }
+.td-banner-amber { background: var(--warn-soft); border-color: rgba(240, 171, 61, 0.35); }
+.td-banner-green { background: var(--ok-soft); border-color: rgba(61, 219, 147, 0.35); }
+.td-banner-label { font-size: 12.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; margin: 0 0 4px; }
 .td-banner-red .td-banner-label { color: var(--danger); }
 .td-banner-amber .td-banner-label { color: var(--warn); }
 .td-banner-green .td-banner-label { color: var(--ok); }
-.td-banner-headline { font-size: 14.5px; margin: 0; }
-.td-banner-icon { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; font-size: 20px; }
-.td-banner-red .td-banner-icon { background: var(--danger); color: var(--danger-contrast, #fff); }
-.td-banner-amber .td-banner-icon { background: var(--warn); color: var(--warn-contrast, #1a1203); }
-.td-banner-green .td-banner-icon { background: var(--ok); color: var(--ok-contrast, #fff); }
+.td-banner-headline { font-size: 15px; margin: 0; color: var(--text); line-height: 1.4; }
+.td-banner-icon { width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; font-size: 20px; }
+.td-banner-red .td-banner-icon { background: var(--danger); color: #fff; box-shadow: 0 0 24px rgba(255, 107, 107, .5); }
+.td-banner-amber .td-banner-icon { background: var(--warn); color: #1a1203; box-shadow: 0 0 24px rgba(240, 171, 61, .4); }
+.td-banner-green .td-banner-icon { background: var(--ok); color: #fff; box-shadow: 0 0 24px rgba(61, 219, 147, .4); }
 
-.td-chart-box {
-  position: relative; width: 100%; height: 180px; margin-bottom: 20px; box-sizing: border-box;
+#panel-traceability .stat-card, .td-chart-box, #panel-traceability .ov-card {
   background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card); padding: 16px 18px;
+  box-shadow: var(--shadow-card); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
 }
+#panel-traceability .stat-card:hover { transform: translateY(-2px); }
+
+.td-chart-box { position: relative; width: 100%; height: 180px; margin-bottom: 20px; box-sizing: border-box; padding: 16px 18px; }
 .td-chart-box-health { height: 150px; }
 
 .td-trend-svg { width: 100%; height: 180px; display: block; }
@@ -415,8 +472,9 @@ mean "All repos" then re-scan a grid, every single time.
 .td-gap-item-doc { margin-bottom: 2px; }
 
 .td-risk-item {
-  list-style: none; padding: 10px 14px; margin-bottom: 8px; font-size: 13px; cursor: pointer;
-  background: var(--panel); border-left: 3px solid var(--danger); border-radius: 0 8px 8px 0;
+  list-style: none; padding: 12px 16px; margin-bottom: 10px; font-size: 13px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border-soft); border-left: 3px solid var(--danger);
+  border-radius: 0 14px 14px 0; backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
 }
 .td-risk-item:hover { background: var(--panel-2); }
 
@@ -426,20 +484,61 @@ mean "All repos" then re-scan a grid, every single time.
 }
 .td-critical-badge .ic { width: 11px; height: 11px; flex: none; }
 
-.td-story-list { border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden; }
+.td-story-list {
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden;
+  background: var(--panel); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+}
 .td-story-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 11px 16px; cursor: pointer; border-bottom: 1px solid var(--border-soft);
 }
 .td-story-row:last-child { border-bottom: none; }
 .td-story-row:hover { background: var(--panel-2); }
-.td-story-name { font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+.td-story-name { font-size: 13.5px; font-weight: 600; margin-bottom: 2px; color: var(--text); }
 
 .td-chip { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; flex: none; }
 
 .td-more { margin-top: 28px; }
 .td-more summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 0; }
 .td-more[open] summary { margin-bottom: 8px; }
+
+.td-toolbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+
+/* Export-to-PDF: applied by app.js's exportDashboardPdf() right before
+   window.print(), not by @media print alone -- Chart.js bakes its colors
+   into the canvas at draw time, so the charts need an actual repaint against
+   these print-safe values, not just a CSS rule that only applies during the
+   print render pass. !important here is deliberate: this class must win over
+   BOTH the dark default and the :root[data-theme="light"] override above,
+   regardless of which is active when printing starts. */
+#panel-traceability.td-printing {
+  --text: #171a24 !important; --muted: #5c6276 !important; --muted-2: #5c6276 !important;
+  --accent: #0b7a71 !important; --accent-strong: #085f58 !important;
+  --danger: #c0392b !important; --danger-soft: #fdecea !important;
+  --warn: #9a6400 !important; --warn-soft: #fdf3e3 !important;
+  --ok: #148062 !important; --ok-soft: #e7f5ef !important;
+  --border: #d8dbe6 !important; --border-soft: #e4e6ef !important;
+  --panel: #ffffff !important; --panel-2: #f3f4f8 !important;
+  --shadow-card: none !important;
+  background: #ffffff !important;
+}
+#panel-traceability.td-printing .td-glow { display: none !important; }
+#panel-traceability.td-printing .td-banner,
+#panel-traceability.td-printing .stat-card,
+#panel-traceability.td-printing .td-chart-box,
+#panel-traceability.td-printing .ov-card,
+#panel-traceability.td-printing .td-risk-item,
+#panel-traceability.td-printing .td-story-list {
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  box-shadow: none !important; border: 1px solid var(--border-soft) !important;
+}
+
+@media print {
+  body * { visibility: hidden; }
+  #panel-traceability, #panel-traceability * { visibility: visible; }
+  #panel-traceability { position: absolute; top: 0; left: 0; width: 100%; margin: 0; border-radius: 0; }
+  .td-toolbar { display: none !important; }
+}
 
 .repo-tile {
   position: relative;

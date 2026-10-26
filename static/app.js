@@ -1428,6 +1428,16 @@ function applyTheme(theme) {
   $all(".theme-sun").forEach((el) => el.classList.toggle("is-hidden", theme === "light"));
   $all(".theme-moon").forEach((el) => el.classList.toggle("is-hidden", theme !== "light"));
   try { localStorage.setItem("ta-theme", theme); } catch (e) {}
+  // Everything else on this tab re-themes live through the CSS cascade, but
+  // Chart.js bakes its colors in at canvas-draw time -- repaint the
+  // dashboard's charts too, or they'd stay stuck on the old theme's palette
+  // if that tab happens to be open when you toggle.
+  if (activeDashboard && !$("#panel-traceability").hidden) {
+    renderDashboardHealthChart();
+    renderDashboardRequirementStatusChart();
+    renderDashboardCategoryChart();
+    renderDashboardPriorityChart();
+  }
 }
 function toggleTheme() {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
@@ -2054,19 +2064,25 @@ function renderDashboardStatCards() {
 // Resolves a CSS custom property to its actual color so Chart.js (which
 // paints on a <canvas>, not through the CSS cascade) picks up this app's
 // real theme colors instead of a hardcoded palette -- re-read on every
-// chart render so switching light/dark mid-session stays correct.
+// chart render so switching light/dark mid-session stays correct. Read off
+// #panel-traceability itself, NOT document.documentElement -- the dashboard
+// pins its own dark-theme values on that element (see styles.css) regardless
+// of the app's light/dark toggle, and those only take effect at or below
+// that element in the cascade.
 function tdCssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return getComputedStyle($("#panel-traceability")).getPropertyValue(name).trim();
 }
 
 // Resolves ANY CSS color expression (var(), color-mix(), etc.) to a concrete
 // color canvas can paint -- a canvas fillStyle can't resolve custom
-// properties on its own, since it isn't part of the CSS cascade.
+// properties on its own, since it isn't part of the CSS cascade. The probe is
+// appended INSIDE #panel-traceability, not document.body, for the same
+// scoping reason as tdCssVar above.
 function tdResolveColor(cssValue) {
   const probe = document.createElement("span");
   probe.style.color = cssValue;
   probe.style.display = "none";
-  document.body.appendChild(probe);
+  $("#panel-traceability").appendChild(probe);
   const resolved = getComputedStyle(probe).color;
   probe.remove();
   return resolved;
@@ -2155,12 +2171,18 @@ function renderDashboardCategoryChart() {
     canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No test cases yet.</p>`;
     return;
   }
-  const palette = [tdCssVar("--accent"), tdCssVar("--warn"), tdCssVar("--danger"), tdCssVar("--muted-2")];
+  // One hue (the brand accent), tinted lighter per bar at full opacity --
+  // category isn't a severity signal the way health/status are, so a
+  // traffic-light palette here would wrongly imply one category is "worse"
+  // than another. Tinting toward white (not fading toward transparent) keeps
+  // every bar fully legible against the dark glass backdrop.
+  const accent = tdCssVar("--accent");
+  const tints = [0, 30, 55, 75];
   new Chart(canvas, {
     type: "bar",
     data: {
       labels: labels.map(tdCategoryLabel),
-      datasets: [{ data: labels.map((k) => byCategory[k]), backgroundColor: labels.map((_, i) => palette[i % palette.length]), borderRadius: 4, maxBarThickness: 48 }],
+      datasets: [{ data: labels.map((k) => byCategory[k]), backgroundColor: labels.map((_, i) => tdResolveColor(`color-mix(in srgb, white ${tints[i % tints.length]}%, ${accent})`)), borderRadius: 4, maxBarThickness: 48 }],
     },
     options: tdChartBaseOptions("x"),
   });
@@ -2308,6 +2330,39 @@ function jumpToModuleGeneration(moduleRaw) {
   input.value = moduleDisplayName(moduleRaw);
   renderModuleGenList();
   input.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Hands stakeholders a shareable snapshot via the browser's own print dialog
+// ("Save as PDF") instead of a new export format -- no server route, no new
+// dependency. The glass look doesn't survive printing (most browsers strip
+// background graphics unless the user opts in, and Chart.js bakes its colors
+// into the canvas at draw time rather than reading the live CSS cascade), so
+// this swaps the dashboard to a plain light palette and repaints its charts
+// before printing, then restores the live theme afterwards.
+function exportDashboardPdf() {
+  const panel = $("#panel-traceability");
+  const moreDetails = $(".td-more", panel);
+  const wasOpen = moreDetails ? moreDetails.open : false;
+  if (moreDetails) moreDetails.open = true; // otherwise its contents are missing from the printout
+  panel.classList.add("td-printing");
+  const repaint = () => {
+    renderDashboardHealthChart();
+    renderDashboardRequirementStatusChart();
+    renderDashboardCategoryChart();
+    renderDashboardPriorityChart();
+  };
+  repaint();
+  const restore = () => {
+    panel.classList.remove("td-printing");
+    if (moreDetails) moreDetails.open = wasOpen;
+    repaint();
+    window.removeEventListener("afterprint", restore);
+  };
+  window.addEventListener("afterprint", restore);
+  // Two rAFs: one for the DOM/class change to apply, one for Chart.js's own
+  // redraw to actually finish painting the print-safe colors before the
+  // print snapshot is taken.
+  requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
 }
 
 async function loadTestCasesPanel() {
@@ -3070,5 +3125,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (docEl && docEl.dataset.jumpDoc) jumpToDocInStoryCoverage(docEl.dataset.jumpDoc);
     const moduleGenEl = ev.target.closest("[data-jump-module-gen]");
     if (moduleGenEl) jumpToModuleGeneration(moduleGenEl.dataset.jumpModuleGen);
+    if (ev.target.closest("[data-export-pdf]")) exportDashboardPdf();
   });
 });
