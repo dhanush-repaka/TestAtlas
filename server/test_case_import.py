@@ -75,7 +75,12 @@ def parse_test_cases(text: str) -> tuple[list[dict], str | None]:
     file doesn't match the expected shape or contains no usable rows -- never
     raises. Each case dict: {title, category, priority, description, steps:
     [{action, expected}, ...], expected_result}, ready for db.import_test_cases."""
-    lines = [line for line in text.splitlines() if line.strip()]
+    # server/doc_extract.py's XLSX extraction inserts a "--- Sheet: X ---"
+    # marker line ahead of each sheet's own rows -- real structure, not a row
+    # of data. Left in, it gets mistaken for the header line itself (breaking
+    # header recognition on EVERY .xlsx upload, not just a multi-sheet one).
+    # Drop every such marker before header detection or row grouping sees it.
+    lines = [line for line in text.splitlines() if line.strip() and not line.startswith("---")]
     if not lines:
         return [], "That file doesn't have any content to import."
 

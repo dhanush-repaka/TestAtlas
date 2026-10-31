@@ -112,6 +112,25 @@ class ParseTestCasesTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(len(cases), 1)
 
+    def test_round_trip_through_the_real_xlsx_export_and_extraction(self):
+        """Regression: an .xlsx upload was rejected with "no recognizable
+        Title column" on every single file, even a well-formed one --
+        server/doc_extract.py's XLSX extraction inserts a "--- Sheet: X ---"
+        marker line ahead of the real header row, which this module was
+        mistaking FOR the header. Found by manual QA on 2026-10-31."""
+        text = "\n".join([
+            "--- Sheet: Sheet1 ---",
+            _header("ID", "Work Item Type", "Title", "Test Step", "Step Action", "Step Expected",
+                    "Priority", "Description", "Tags", "Area Path", "State"),
+            _row("", "Test Case", "Reserve inventory", 1, "Request 2 units", "2 units reserved",
+                 1, "Checks reservation", "inventory; Happy path; reserve", "", "Design"),
+        ])
+        cases, error = parse_test_cases(text)
+        self.assertIsNone(error)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["title"], "Reserve inventory")
+        self.assertEqual(cases[0]["category"], "happy_path")
+
     def test_round_trip_through_the_real_csv_export_and_extraction(self):
         """server/test_export.to_csv -> server/doc_extract.extract_text ->
         this module -- the exact path TestAtlas's own round-tripped export

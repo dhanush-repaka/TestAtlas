@@ -55,7 +55,13 @@ def split_work_items(text: str) -> list[dict]:
     "use the uploaded filename", same as today's single-document upload)
     when no recognizable header exists -- never raises, never drops the
     upload's content on an unrecognized shape."""
-    lines = [line for line in text.splitlines() if line.strip()]
+    # server/doc_extract.py's XLSX/PPTX extraction inserts a "--- Sheet: X ---"
+    # or "--- Slide N ---" marker line ahead of each sheet/slide's own rows --
+    # real structure, not a row of data. Left in, it gets mistaken for the
+    # header line itself (breaking header recognition on EVERY .xlsx upload,
+    # not just a multi-sheet one) or for a malformed data row. Drop every such
+    # marker before header detection or row splitting ever sees it.
+    lines = [line for line in text.splitlines() if line.strip() and not line.startswith("---")]
     if not lines:
         return []
 

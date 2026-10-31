@@ -61,6 +61,23 @@ class SplitWorkItemsTests(unittest.TestCase):
     def test_empty_text_returns_no_items(self):
         self.assertEqual(split_work_items(""), [])
 
+    def test_an_xlsx_sheet_marker_line_is_skipped_not_mistaken_for_the_header(self):
+        """Regression: server/doc_extract.py's XLSX extraction inserts a
+        "--- Sheet: X ---" marker line ahead of the real header row for every
+        .xlsx upload -- this was being read as the header itself, so EVERY
+        .xlsx work-item import (not just a multi-sheet one) silently fell
+        back to "one whole-file document" instead of splitting per row.
+        Found by manual QA on 2026-10-31."""
+        text = "\n".join([
+            "--- Sheet: Sheet1 ---",
+            "ID | Title | Description | Acceptance Criteria",
+            "101 | Add to cart | Shoppers add items to their cart | Given an item, when added, then it appears in the cart",
+        ])
+        items = split_work_items(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["name"], "101: Add to cart")
+        self.assertIn("Shoppers add items to their cart", items[0]["content"])
+
     def test_a_row_with_no_id_or_title_falls_back_to_untitled(self):
         text = "\n".join([
             "ID | Title | Description",
