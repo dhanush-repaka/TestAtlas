@@ -36,8 +36,8 @@ from kg.visualize import to_pyvis_html
 from . import (
     auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_journey_requirements,
     llm_journey_test_generation, llm_module_naming, llm_requirement_test_generation,
-    llm_story_coverage, llm_test_generation, llm_test_verification, test_export,
-    traceability_dashboard, uploads, work_item_import,
+    llm_story_coverage, llm_test_generation, llm_test_verification, test_case_import,
+    test_export, traceability_dashboard, uploads, work_item_import,
 )
 from .diff import diff_runs
 from .runner import resolve_source_dir, run_analysis
@@ -626,7 +626,7 @@ async def api_import_work_items(repo_id: str, file: UploadFile = File(...)):
         raise HTTPException(400, "no content found in that file")
     fallback_name = file.filename.rsplit(".", 1)[0] if file.filename else "Untitled document"
     return [
-        db.create_document(repo_id, {"name": item["name"] or fallback_name, "content": item["content"]})
+        db.create_document(repo_id, {"name": item["name"] or fallback_name, "content": item["content"], "created_via": "imported"})
         for item in items
     ]
 
@@ -1206,6 +1206,61 @@ def api_verify_test_cases_all_documents(repo_id: str):
     return job
 
 
+def _imported_verification_bulk_worker(job_id: str, repo_id: str, batches: list[list[dict]]) -> None:
+    """Bulk counterpart to _document_verification_bulk_worker, but chunked by
+    a fixed batch size instead of one document at a time -- an imported
+    legacy suite has no document to group by, and could be large enough
+    (hundreds of cases) that one single LLM call risks the same context/size
+    pressure document-scoped generation already avoids by going per-document.
+    Loads the run/graph/index ONCE, same as the per-document worker."""
+    try:
+        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+    except RuntimeError as e:
+        db.finish_bulk_job(job_id, "failed", str(e))
+        return
+    for i, batch in enumerate(batches, 1):
+        label = f"Imported batch {i} of {len(batches)}"
+        try:
+            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, batch)
+            detail = f"{len(result.results)} case(s) verified"
+            if result.dropped:
+                detail += f", {len(result.dropped)} dropped"
+            db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": True, "detail": detail})
+        except RuntimeError as e:
+            db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": False, "detail": str(e)})
+    db.finish_bulk_job(job_id, "success")
+
+
+_IMPORTED_VERIFY_BATCH_SIZE = 15
+
+
+@api.post("/repos/{repo_id}/test-cases/verify-imported")
+def api_verify_imported_test_cases(repo_id: str):
+    """Verify-against-code for imported test cases (server/test_case_import.py)
+    -- the same citation-validated judgment Story Coverage and the other
+    Verify routes already use, reusing _verify_cases_for_document completely
+    unchanged (it only ever reads id/title/steps/expected_result/covers off
+    a case, never its origin). A dedicated route rather than folding this
+    into the per-document bulk worker, matching this codebase's existing
+    style of one small, precisely-scoped function per origin type (e.g.
+    delete_test_cases_by_source_doc vs. delete_test_cases_by_module)."""
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "Test case verification isn't configured on this deployment (no OPENAI_API_KEY).")
+    repo = db.get_repo(repo_id)
+    if not repo:
+        raise HTTPException(404, "repo not found")
+    cases = [c for c in db.list_test_cases(repo_id) if c.get("created_via") == "imported"]
+    if not cases:
+        raise HTTPException(400, "no imported test cases to verify -- import some first")
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "this repo has no successful analysis run yet -- run analysis first")
+    batches = [cases[i:i + _IMPORTED_VERIFY_BATCH_SIZE] for i in range(0, len(cases), _IMPORTED_VERIFY_BATCH_SIZE)]
+    job = db.create_bulk_job(repo_id, "imported_test_verification", len(batches))
+    threading.Thread(target=_imported_verification_bulk_worker, args=(job["id"], repo_id, batches), daemon=True).start()
+    return job
+
+
 @api.get("/repos/{repo_id}/test-cases/verify-jobs/{job_id}")
 def api_get_test_verification_job(repo_id: str, job_id: str):
     job = db.get_bulk_job(job_id)
@@ -1481,6 +1536,30 @@ def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", c
     media_type, ext = test_export.FORMATS[format]
     return Response(body, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{test_export.filename(repo["name"], ext)}"'})
+
+
+@api.post("/repos/{repo_id}/test-cases/import")
+async def api_import_test_cases(repo_id: str, file: UploadFile = File(...)):
+    """Brings an already-existing test suite into TestAtlas (e.g. a QA team's
+    real Azure DevOps Test Plans export, or TestAtlas's own CSV export
+    round-tripped back in) -- the counterpart to api_export_test_cases.
+    Imported cases land alongside generated ones (created_via='imported',
+    never deleting anything existing -- see db.import_test_cases) with no
+    code or story link yet; run "Verify imported test cases" afterward to
+    resolve those. See server/test_case_import.py."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "file too large (max 20MB)")
+    try:
+        text = doc_extract.extract_text(file.filename or "", data)
+    except doc_extract.UnsupportedDocumentError as e:
+        raise HTTPException(400, str(e))
+    cases, error = test_case_import.parse_test_cases(text)
+    if not cases:
+        raise HTTPException(400, error or "no test cases found in that file")
+    return db.import_test_cases(repo_id, cases)
 
 
 @api.get("/repos/{repo_id}/dashboard")

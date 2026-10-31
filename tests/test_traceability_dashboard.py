@@ -309,12 +309,72 @@ class ComputeSummaryTestCaseStatsTests(unittest.TestCase):
             "total": 3,
             "by_category": {"happy_path": 2, "edge_case": 1},
             "by_priority": {1: 1, 2: 2},
+            "by_origin": {},
+            "with_story_link": 0, "without_story_link": 3,
+            "with_code_coverage": 0, "without_code_coverage": 3,
         })
 
     def test_a_case_missing_the_field_is_skipped_not_counted_as_a_bucket(self):
         cases = [case("c1", category="happy_path"), case("c2")]
         out = td.compute_summary([], [], cases, [], {})
         self.assertEqual(out["test_cases"]["by_category"], {"happy_path": 1})
+
+
+class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
+    """Imported-vs-generated is a DIFFERENT signal from the still-excluded
+    generation-mechanism origin (code/story/journey-driven) -- see the
+    module's own docstring. These cover test_cases.by_origin,
+    documents.by_origin, and the new test-case-level story/code coverage
+    counts."""
+
+    def test_test_cases_by_origin_counts_generated_vs_imported(self):
+        cases = [
+            case("c1", created_via="generated"),
+            case("c2", created_via="generated"),
+            case("c3", created_via="imported"),
+        ]
+        out = td.compute_summary([], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["by_origin"], {"generated": 2, "imported": 1})
+
+    def test_documents_by_origin_counts_manual_vs_imported(self):
+        docs = [
+            {**DOC_A, "created_via": "manual"},
+            {**DOC_B, "created_via": "imported"},
+            {"id": "doc-c", "name": "another", "created_via": "imported"},
+        ]
+        out = td.compute_summary(docs, [], [], [], {})
+        self.assertEqual(out["documents"]["by_origin"], {"manual": 1, "imported": 2})
+
+    def test_a_case_with_real_code_citations_counts_as_code_covered(self):
+        cases = [case("c1", covers=["Inventory.reserve"]), case("c2", covers=[])]
+        out = td.compute_summary([], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["with_code_coverage"], 1)
+        self.assertEqual(out["test_cases"]["without_code_coverage"], 1)
+
+    def test_a_directly_sourced_case_counts_as_story_linked_even_with_no_citation_overlap(self):
+        # source_doc_id set, but covers=[] and no requirement shares a citation --
+        # the direct generation-time link alone must still count.
+        cases = [case("c1", source_doc_id="doc-a", covers=[])]
+        out = td.compute_summary([DOC_A], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["with_story_link"], 1)
+
+    def test_a_pure_code_driven_case_becomes_story_linked_purely_via_citation_overlap(self):
+        # No source_* columns at all (imported OR ordinary code-driven) -- only
+        # link_requirements_to_cases' own heuristic (a shared code citation
+        # with an already-judged requirement) makes this one story-linked.
+        cases = [case("c1", created_via="imported", covers=["Inventory.reserve"])]
+        reqs = [req("r1", "doc-a", "supported", covers=["Inventory.reserve"])]
+        out = td.compute_summary([DOC_A], reqs, cases, [], {})
+        self.assertEqual(out["test_cases"]["with_story_link"], 1)
+        self.assertEqual(out["test_cases"]["without_story_link"], 0)
+
+    def test_an_imported_case_with_no_link_at_all_counts_as_unlinked(self):
+        cases = [case("c1", created_via="imported", covers=[])]
+        out = td.compute_summary([], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["with_story_link"], 0)
+        self.assertEqual(out["test_cases"]["without_story_link"], 1)
+        self.assertEqual(out["test_cases"]["with_code_coverage"], 0)
+        self.assertEqual(out["test_cases"]["without_code_coverage"], 1)
 
 
 class DashboardSnapshotStorageTests(unittest.TestCase):
@@ -426,7 +486,10 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(body["requirements"]["correctness_rate"], 0.0)  # the one coded criterion is wrong
         self.assertEqual(body["document_rollup"][0]["health"], "broken")
         self.assertEqual(body["documents"]["by_health"]["broken"], 1)
-        self.assertNotIn("by_origin", body["test_cases"])  # deliberately not a PO-facing signal, see module docstring
+        # Imported-vs-generated IS surfaced (a different signal from the still-hidden
+        # generation-mechanism origin, see module docstring) -- this fixture's one
+        # seeded case is AI-generated, never imported.
+        self.assertEqual(body["test_cases"]["by_origin"], {"generated": 1})
         # The broken story's only module IS the repo's one critical module -- the
         # headline must say so, not stay generic.
         self.assertTrue(body["document_rollup"][0]["touches_critical_code"])

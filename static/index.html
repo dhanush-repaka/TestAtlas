@@ -215,6 +215,14 @@
         <div class="td-chart-box"><canvas id="tdCategoryChart"></canvas></div>
         <p class="td-subhead">Test cases by priority</p>
         <div class="td-chart-box td-chart-box-health"><canvas id="tdPriorityChart"></canvas></div>
+        <p class="td-subhead">Test cases: generated vs. imported</p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdCaseOriginChart"></canvas></div>
+        <p class="td-subhead">User stories: authored vs. imported</p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdDocOriginChart"></canvas></div>
+        <p class="td-subhead">Test cases linked to a user story</p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdStoryLinkChart"></canvas></div>
+        <p class="td-subhead">Test cases linked to real code</p>
+        <div class="td-chart-box td-chart-box-health"><canvas id="tdCodeLinkChart"></canvas></div>
         <p class="td-subhead">Top risk</p>
         <div id="tdTopRisks"></div>
         <p class="td-subhead">Every story</p>
@@ -425,6 +433,11 @@
             </select>
           </label>
           <label class="field-inline is-hidden" id="testCaseStoryDocFilterRow">User story<select id="testCaseFilterStoryDocSelect"><option value="">All stories</option></select></label>
+          <span class="export-group" role="group" aria-label="Import an already-existing test suite">
+            <button type="button" class="btn btn-sm" id="importTestCasesBtn" title="Brings in test cases from a CSV/Excel file -- TestAtlas's own export, or a similar Azure DevOps Test Plans export">Import test cases (CSV/Excel)</button>
+            <input type="file" id="importTestCasesInput" accept=".csv,.xlsx" hidden />
+            <button type="button" class="btn btn-sm" id="verifyImportedTestCasesBtn" title="Judges every imported test case against the real codebase -- resolves its module and code citations, the same way generated cases get verified">Verify imported test cases</button>
+          </span>
           <span class="export-group" id="testCaseExport" role="group" aria-label="Export the test cases shown">
             <span class="small muted">Export</span>
             <a class="btn btn-sm" data-format="csv" href="#" title="Azure DevOps Test Plans import format — also opens in Excel">CSV (Azure DevOps)</a>
@@ -555,6 +568,6 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-  <script src="static/app.js?v=79"></script>
+  <script src="static/app.js?v=80"></script>
 </body>
 </html>

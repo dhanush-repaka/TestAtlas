@@ -15,11 +15,19 @@ time, from data other features already produced:
     latest successful run's own module_scores knows about, does at least one
     stored test case cite it.
 
-Deliberately does NOT surface test-case origin (code-driven vs story-driven vs
-journey-driven) anywhere in this summary -- that's how a case was generated, an
-implementation detail of this tool, not a signal about the PROJECT'S status. A
-product owner doesn't care how a test was written, only whether the story behind
-it is actually built and actually correct.
+Deliberately does NOT surface GENERATION-MECHANISM origin (code-driven vs
+story-driven vs journey-driven) anywhere in this summary -- that's how a
+generated case was produced, an implementation detail of this tool, not a
+signal about the PROJECT'S status. A product owner doesn't care how a test
+was written, only whether the story behind it is actually built and
+actually correct.
+
+IMPORTED-vs-generated (test_cases.by_origin / documents.by_origin,
+server/test_case_import.py and server/work_item_import.py's created_via
+column) is a DIFFERENT, deliberately-surfaced signal: once a real suite can
+be imported, "how much of this is inherited/manual vs. AI-assisted" is a
+genuine stakeholder question, not an implementation detail -- distinct from
+the still-hidden generation-mechanism distinction above.
 """
 from __future__ import annotations
 
@@ -247,6 +255,21 @@ def compute_summary(
     # early-stage project, and overstates it on a mature one.
     coded_reqs = req_status["supported"] + req_status["contradicted"]
     verified_pct = _pct(health_counts["verified"], total_docs)
+
+    # A case is story-linked if it has a real generation-time source
+    # (source_doc_id/source_requirement_id/source_journey_id) OR
+    # link_requirements_to_cases' own citation-overlap heuristic already
+    # attached a related requirement -- the same two-direction definition
+    # document_rollup's has_test_coverage already uses, just counted from the
+    # test-case side instead of the story side. linked_cases (not test_cases)
+    # carries the resolved source_doc_id and related_requirements.
+    with_story_link = sum(
+        1 for c in linked_cases
+        if c.get("source_doc_id") or c.get("source_requirement_id") or c.get("source_journey_id")
+        or c.get("related_requirements")
+    )
+    with_code_coverage = sum(1 for c in linked_cases if c.get("covers"))
+
     return {
         "overall": _overall_status(health_counts, total_docs, verified_pct, critical_broken),
         "documents": {
@@ -262,6 +285,7 @@ def compute_summary(
             "by_health": health_counts,
             "verified_pct": verified_pct,
             "critical_at_risk": critical_at_risk,
+            "by_origin": _count_by(documents, "created_via"),
         },
         "requirements": {
             "total": total_reqs,
@@ -274,6 +298,11 @@ def compute_summary(
             "total": len(test_cases),
             "by_category": _count_by(test_cases, "category"),
             "by_priority": _count_by(test_cases, "priority"),
+            "by_origin": _count_by(test_cases, "created_via"),
+            "with_story_link": with_story_link,
+            "without_story_link": len(test_cases) - with_story_link,
+            "with_code_coverage": with_code_coverage,
+            "without_code_coverage": len(test_cases) - with_code_coverage,
         },
         "modules": {
             "total": len(module_names),

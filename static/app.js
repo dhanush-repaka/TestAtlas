@@ -28,6 +28,7 @@ const READ_ONLY_LOCKED_IDS = [
   "runStoryCoverageBtn", "submitStoryRequirementsBtn", "detectJourneysBtn", "generateDocTestCasesBtn",
   "importWorkItemsBtn", "runStoryCoverageAllBtn", "generateTestCasesAllBtn",
   "verifyDocTestCasesBtn", "verifyTestCasesAllBtn", "clearModuleTestCasesBtn",
+  "importTestCasesBtn", "verifyImportedTestCasesBtn",
 ];
 
 // Each tile's latest run, kept across dashboard visits (not just within one
@@ -1437,6 +1438,10 @@ function applyTheme(theme) {
     renderDashboardRequirementStatusChart();
     renderDashboardCategoryChart();
     renderDashboardPriorityChart();
+    renderDashboardCaseOriginChart();
+    renderDashboardDocOriginChart();
+    renderDashboardStoryLinkChart();
+    renderDashboardCodeLinkChart();
   }
 }
 function toggleTheme() {
@@ -1734,22 +1739,27 @@ async function runStoryCoverage() {
 
 let _bulkJobPollTimer = null;
 
+const _BULK_JOB_KINDS = {
+  story_coverage: { path: (id) => `/repos/${id}/story-coverage/run-all`, jobPath: (id, jobId) => `/repos/${id}/story-coverage/jobs/${jobId}`,
+    label: "Story Coverage", progress: "Running Story Coverage", btn: "runStoryCoverageAllBtn" },
+  test_generation: { path: (id) => `/repos/${id}/test-cases/generate-all-documents`, jobPath: (id, jobId) => `/repos/${id}/test-cases/jobs/${jobId}`,
+    label: "Test generation", progress: "Generating test cases", btn: "generateTestCasesAllBtn" },
+  test_verification: { path: (id) => `/repos/${id}/test-cases/verify-all-documents`, jobPath: (id, jobId) => `/repos/${id}/test-cases/verify-jobs/${jobId}`,
+    label: "Test verification", progress: "Verifying test cases", btn: "verifyTestCasesAllBtn" },
+  imported_test_verification: { path: (id) => `/repos/${id}/test-cases/verify-imported`, jobPath: (id, jobId) => `/repos/${id}/test-cases/verify-jobs/${jobId}`,
+    label: "Imported test verification", progress: "Verifying imported test cases", btn: "verifyImportedTestCasesBtn" },
+};
+
 async function runBulkJob(kind) {
-  // kind: "story_coverage" | "test_generation" | "test_verification"
-  const path = kind === "story_coverage" ? `/repos/${activeRepoId}/story-coverage/run-all`
-    : kind === "test_generation" ? `/repos/${activeRepoId}/test-cases/generate-all-documents`
-    : `/repos/${activeRepoId}/test-cases/verify-all-documents`;
-  $("#runStoryCoverageAllBtn").disabled = true;
-  $("#generateTestCasesAllBtn").disabled = true;
-  $("#verifyTestCasesAllBtn").disabled = true;
+  const cfg = _BULK_JOB_KINDS[kind];
+  const btns = Object.values(_BULK_JOB_KINDS).map((c) => $(`#${c.btn}`));
+  btns.forEach((b) => { b.disabled = true; });
   try {
-    const job = await api(path, { method: "POST" });
+    const job = await api(cfg.path(activeRepoId), { method: "POST" });
     pollBulkJob(kind, job);
   } catch (e) {
     toast(e.message, "error");
-    $("#runStoryCoverageAllBtn").disabled = readOnly;
-    $("#generateTestCasesAllBtn").disabled = readOnly;
-    $("#verifyTestCasesAllBtn").disabled = readOnly;
+    btns.forEach((b) => { b.disabled = readOnly; });
   }
 }
 
@@ -1760,23 +1770,18 @@ function pollBulkJob(kind, job) {
   if (job.status !== "running") { finishBulkJob(kind, job); return; }
   _bulkJobPollTimer = setTimeout(async () => {
     if (repoId !== activeRepoId) return; // navigated to a different repo -- stop polling this one
-    const jobPath = kind === "story_coverage" ? `/repos/${repoId}/story-coverage/jobs/${job.id}`
-      : kind === "test_generation" ? `/repos/${repoId}/test-cases/jobs/${job.id}`
-      : `/repos/${repoId}/test-cases/verify-jobs/${job.id}`;
-    const updated = await api(jobPath).catch(() => null);
+    const updated = await api(_BULK_JOB_KINDS[kind].jobPath(repoId, job.id)).catch(() => null);
     if (!updated || repoId !== activeRepoId) return;
     pollBulkJob(kind, updated);
   }, 1500);
 }
 
 async function finishBulkJob(kind, job) {
-  $("#runStoryCoverageAllBtn").disabled = readOnly;
-  $("#generateTestCasesAllBtn").disabled = readOnly;
-  $("#verifyTestCasesAllBtn").disabled = readOnly;
+  Object.values(_BULK_JOB_KINDS).forEach((c) => { $(`#${c.btn}`).disabled = readOnly; });
   const results = job.results || [];
   const succeeded = results.filter((r) => r.ok).length;
   const failed = results.length - succeeded;
-  const label = kind === "story_coverage" ? "Story Coverage" : kind === "test_generation" ? "Test generation" : "Test verification";
+  const label = _BULK_JOB_KINDS[kind].label;
   if (job.status === "failed") toast(`${label} job failed: ${job.error || "unknown error"}`, "error");
   else toast(`${label}: ${succeeded} of ${job.total} document${job.total === 1 ? "" : "s"} succeeded${failed ? `, ${failed} failed` : ""}`, failed ? "error" : "ok");
   // Refresh whichever tab's data this job could have changed, regardless of
@@ -1786,13 +1791,13 @@ async function finishBulkJob(kind, job) {
 }
 
 function renderBulkJobProgress(kind, job) {
-  // story_coverage's progress lives in the Story Coverage tab; the other two
-  // (test generation/verification) moved to the Test Cases tab along with
-  // their own trigger buttons.
+  // story_coverage's progress lives in the Story Coverage tab; the rest
+  // (test generation/verification, imported or not) share the Test Cases
+  // tab's progress container along with their own trigger buttons.
   const el = $(kind === "story_coverage" ? "#bulkJobProgress" : "#bulkJobProgressTests");
   el.classList.remove("is-hidden");
   const pct = job.total ? Math.round((job.processed / job.total) * 100) : 100;
-  const label = kind === "story_coverage" ? "Running Story Coverage" : kind === "test_generation" ? "Generating test cases" : "Verifying test cases";
+  const label = _BULK_JOB_KINDS[kind].progress;
   const statusText = job.status === "running"
     ? `${label} — ${job.processed} of ${job.total}${job.current_document_name ? ` (currently: ${escapeHtml(job.current_document_name)})` : ""}`
     : `${label} finished — ${job.processed} of ${job.total}`;
@@ -1825,6 +1830,28 @@ async function handleImportWorkItemsInput(ev) {
     await loadGapsPanel();
     await loadStoryCoveragePanel();
     toast(`Imported ${created.length} document${created.length === 1 ? "" : "s"} from "${file.name}"`, "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = readOnly;
+    btn.textContent = originalLabel;
+  }
+}
+
+async function handleImportTestCasesInput(ev) {
+  const file = ev.target.files[0];
+  ev.target.value = ""; // allow re-selecting the same file name later
+  if (!file) return;
+  const btn = $("#importTestCasesBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "Importing…";
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const created = await api(`/repos/${activeRepoId}/test-cases/import`, { method: "POST", body: fd, headers: {} });
+    await loadTestCasesPanel();
+    toast(`Imported ${created.length} test case${created.length === 1 ? "" : "s"} from "${file.name}" -- run "Verify imported test cases" to link them to code and user stories`, "ok");
   } catch (e) {
     toast(e.message, "error");
   } finally {
@@ -2010,6 +2037,10 @@ async function loadDashboardPanel() {
   renderDashboardRequirementStatusChart();
   renderDashboardCategoryChart();
   renderDashboardPriorityChart();
+  renderDashboardCaseOriginChart();
+  renderDashboardDocOriginChart();
+  renderDashboardStoryLinkChart();
+  renderDashboardCodeLinkChart();
   renderDashboardGapList("#tdTopRisks", activeDashboard?.gaps.contradicted_requirements, tdReqGapItemHtml,
     "Nothing contradicted — every tested criterion matches the code.");
   renderDashboardStoryList();
@@ -2217,6 +2248,59 @@ function renderDashboardPriorityChart() {
   });
 }
 
+// Shared shape for all 4 "imported vs generated" / "linked vs not" charts --
+// each is just a two-bar split of the same metric, so one generic renderer
+// instead of four near-identical ones. Same one-hue-tinted-lighter palette as
+// renderDashboardCategoryChart, not a second arbitrary color: per explicit
+// feedback earlier in this project, a traffic-light palette here would wrongly
+// imply "imported" or "not yet linked" is a severity judgment, which it isn't.
+function tdRenderBinarySplitChart(canvasId, emptyMessage, labels, values) {
+  tdDestroyChart(canvasId);
+  const canvas = $(`#${canvasId}`);
+  if (!values.reduce((a, b) => a + b, 0)) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">${emptyMessage}</p>`;
+    return;
+  }
+  const accent = tdCssVar("--accent");
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: [accent, tdResolveColor(`color-mix(in srgb, white 55%, ${accent})`)],
+        borderRadius: 4, maxBarThickness: 28,
+      }],
+    },
+    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
+  });
+}
+
+function renderDashboardCaseOriginChart() {
+  const tc = activeDashboard?.test_cases;
+  const byOrigin = tc?.by_origin || {};
+  tdRenderBinarySplitChart("tdCaseOriginChart", "No test cases yet.",
+    ["Generated", "Imported"], [byOrigin.generated || 0, byOrigin.imported || 0]);
+}
+
+function renderDashboardDocOriginChart() {
+  const byOrigin = activeDashboard?.documents?.by_origin || {};
+  tdRenderBinarySplitChart("tdDocOriginChart", "No user stories yet — add one in the Docs tab.",
+    ["Authored", "Imported"], [byOrigin.manual || 0, byOrigin.imported || 0]);
+}
+
+function renderDashboardStoryLinkChart() {
+  const tc = activeDashboard?.test_cases;
+  tdRenderBinarySplitChart("tdStoryLinkChart", "No test cases yet.",
+    ["Linked to a user story", "Not linked"], [tc?.with_story_link || 0, tc?.without_story_link || 0]);
+}
+
+function renderDashboardCodeLinkChart() {
+  const tc = activeDashboard?.test_cases;
+  tdRenderBinarySplitChart("tdCodeLinkChart", "No test cases yet.",
+    ["Linked to real code", "Not linked"], [tc?.with_code_coverage || 0, tc?.without_code_coverage || 0]);
+}
+
 function renderDashboardTrend() {
   const el = $("#tdTrend");
   const trend = activeDashboard?.trend || [];
@@ -2350,6 +2434,10 @@ function exportDashboardPdf() {
     renderDashboardRequirementStatusChart();
     renderDashboardCategoryChart();
     renderDashboardPriorityChart();
+    renderDashboardCaseOriginChart();
+    renderDashboardDocOriginChart();
+    renderDashboardStoryLinkChart();
+    renderDashboardCodeLinkChart();
   };
   repaint();
   const restore = () => {
@@ -2380,6 +2468,9 @@ async function loadTestCasesPanel() {
   }
   $("#generateTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
   $("#verifyTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
+  // Import itself is free (local parsing, no API call) and always shown;
+  // only verifying an imported case against code needs the same paid gate.
+  $("#verifyImportedTestCasesBtn").classList.toggle("is-hidden", !testGenAvailable);
   populateTestCaseGenDocSelect();
 
   const cases = await api(`/repos/${repoId}/test-cases`).catch(() => []);
@@ -3082,6 +3173,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#runStoryCoverageAllBtn").addEventListener("click", () => runBulkJob("story_coverage"));
   $("#generateTestCasesAllBtn").addEventListener("click", () => runBulkJob("test_generation"));
   $("#verifyTestCasesAllBtn").addEventListener("click", () => runBulkJob("test_verification"));
+  $("#importTestCasesBtn").addEventListener("click", () => $("#importTestCasesInput").click());
+  $("#importTestCasesInput").addEventListener("change", handleImportTestCasesInput);
+  $("#verifyImportedTestCasesBtn").addEventListener("click", () => runBulkJob("imported_test_verification"));
   $("#getStoryCoverageContextBtn").addEventListener("click", getStoryCoverageContextForSelected);
   $("#submitStoryRequirementsBtn").addEventListener("click", submitStoryRequirementsForSelected);
   $("#storyFilterStatusSelect").addEventListener("change", renderStoryRequirementsList);

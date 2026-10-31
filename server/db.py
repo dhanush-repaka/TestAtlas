@@ -301,6 +301,20 @@ _TEST_CASES_COLUMN_MIGRATIONS = {
     # status=NULL, covers=[], module=NULL (no code was ever shown at
     # generation time) and need a way to be found again afterward.
     "source_doc_id": "TEXT",
+    # 'generated' (default, every existing row) or 'imported' (server/test_case_import.py,
+    # for a case brought in from an already-existing suite, e.g. a QA team's real ADO
+    # export). Orthogonal to the source_* columns above, which are about which
+    # GENERATION mechanism produced a case -- an imported case has none of those set,
+    # same as an ordinary code-driven one, so this is the only way to tell them apart.
+    "created_via": "TEXT DEFAULT 'generated'",
+}
+
+_DOCUMENTS_COLUMN_MIGRATIONS = {
+    # 'manual' (default) or 'imported' (server/work_item_import.py, from a bulk
+    # work-item export). Existing rows default to 'manual' even where some were
+    # historically imported before this column existed -- that's an unavoidable
+    # data-quality gap on upgrade, not something worth trying to backfill.
+    "created_via": "TEXT DEFAULT 'manual'",
 }
 
 _STORY_REQUIREMENTS_COLUMN_MIGRATIONS = {
@@ -331,6 +345,7 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate_columns(conn, "repos", _REPO_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "test_cases", _TEST_CASES_COLUMN_MIGRATIONS)
+        _migrate_columns(conn, "documents", _DOCUMENTS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "module_labels", _MODULE_LABELS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "story_requirements", _STORY_REQUIREMENTS_COLUMN_MIGRATIONS)
         # The Playwright+BDD parser was retired -- any repo still configured
@@ -530,8 +545,10 @@ def create_document(repo_id: str, payload: dict) -> dict:
     ts = now()
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO documents (id, repo_id, name, content, domain, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            (doc_id, repo_id, payload["name"], payload["content"], payload.get("domain"), ts, ts),
+            """INSERT INTO documents (id, repo_id, name, content, domain, created_via, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (doc_id, repo_id, payload["name"], payload["content"], payload.get("domain"),
+             payload.get("created_via", "manual"), ts, ts),
         )
     return get_document(doc_id)
 
@@ -715,6 +732,37 @@ def create_test_case(
         "source_requirement_id": source_requirement_id, "source_journey_id": source_journey_id,
         "source_doc_id": source_doc_id,
     }
+
+
+def import_test_cases(repo_id: str, cases: list[dict]) -> list[dict]:
+    """Bulk-inserts externally-imported test cases (server/test_case_import.py).
+    ADDITIVE, never a delete -- unlike replace_test_cases' module-scoped
+    delete-then-insert for a fresh code-driven generation pass, an import is
+    new data arriving alongside whatever already exists, never a
+    regeneration of it. Each row starts exactly like an ungrounded,
+    not-yet-verified story-driven case (module=NULL, covers=[], status=NULL
+    -- see update_test_case_verification, which resolves these later), but
+    with created_via='imported' and every source_* column NULL, since an
+    import has no generation provenance at all."""
+    ts = now()
+    created = []
+    with get_conn() as conn:
+        for case in cases:
+            case_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO test_cases
+                   (id, repo_id, module, run_id, title, category, target, preconditions, steps, expected_result,
+                    edge_case_description, description, priority, covers, created_via, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    case_id, repo_id, None, None, case["title"], case["category"], case.get("target"),
+                    case.get("preconditions"), json.dumps(case["steps"]), case["expected_result"],
+                    None, case.get("description"), case.get("priority"), json.dumps(case.get("covers") or []),
+                    "imported", ts,
+                ),
+            )
+            created.append({**case, "id": case_id, "repo_id": repo_id, "module": None, "created_via": "imported"})
+    return created
 
 
 def update_test_case_verification(
