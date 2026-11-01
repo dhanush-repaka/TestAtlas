@@ -253,6 +253,17 @@ class ComputeSummaryOverallStatusTests(unittest.TestCase):
         self.assertEqual(out["overall"]["status"], "amber")
         self.assertIn("No user stories yet", out["overall"]["headline"])
 
+    def test_no_documents_but_real_test_cases_gives_a_useful_headline_not_add_one(self):
+        # A legacy repo can have hundreds of test cases (imported, or
+        # code-driven generated) with zero user stories ever entered into
+        # TestAtlas -- "add one in the Docs tab" is useless advice there.
+        cases = [case("c1", covers=["Inventory.reserve"]), case("c2", covers=[])]
+        out = td.compute_summary([], [], cases, [], {})
+        self.assertEqual(out["overall"]["status"], "amber")
+        self.assertNotIn("add one in the Docs tab", out["overall"]["headline"])
+        self.assertIn("2 test cases", out["overall"]["headline"])
+        self.assertIn("50.0% linked to real code", out["overall"]["headline"])
+
 
 class ComputeSummaryCorrectnessRateTests(unittest.TestCase):
     """Of the criteria actually CODED (judged against real code -- supported or
@@ -312,6 +323,9 @@ class ComputeSummaryTestCaseStatsTests(unittest.TestCase):
             "by_origin": {},
             "with_story_link": 0, "without_story_link": 3,
             "with_code_coverage": 0, "without_code_coverage": 3,
+            "story_link_pct": 0.0, "code_coverage_pct": 0.0,
+            "story_link_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
+            "code_coverage_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
         })
 
     def test_a_case_missing_the_field_is_skipped_not_counted_as_a_bucket(self):
@@ -375,6 +389,37 @@ class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
         self.assertEqual(out["test_cases"]["without_story_link"], 1)
         self.assertEqual(out["test_cases"]["with_code_coverage"], 0)
         self.assertEqual(out["test_cases"]["without_code_coverage"], 1)
+
+    def test_story_link_and_code_coverage_percentages(self):
+        cases = [
+            case("c1", source_doc_id="doc-a", covers=["Inventory.reserve"]),
+            case("c2", covers=[]),
+            case("c3", covers=[]),
+            case("c4", covers=[]),
+        ]
+        out = td.compute_summary([DOC_A], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["story_link_pct"], 25.0)
+        self.assertEqual(out["test_cases"]["code_coverage_pct"], 25.0)
+
+    def test_percentages_are_zero_not_an_error_with_no_test_cases_at_all(self):
+        out = td.compute_summary([], [], [], [], {})
+        self.assertEqual(out["test_cases"]["story_link_pct"], 0.0)
+        self.assertEqual(out["test_cases"]["code_coverage_pct"], 0.0)
+
+    def test_coverage_by_origin_keeps_generated_and_imported_separate(self):
+        # A blended percentage could hide one origin dragging the other down --
+        # this is what lets the dashboard show them side by side instead.
+        cases = [
+            case("c1", created_via="generated", covers=["Inventory.reserve"]),
+            case("c2", created_via="generated", covers=["Inventory.release"]),
+            case("c3", created_via="imported", covers=[]),
+            case("c4", created_via="imported", covers=[]),
+        ]
+        out = td.compute_summary([], [], cases, [], {})
+        self.assertEqual(out["test_cases"]["code_coverage_by_origin"], {
+            "generated": {"linked": 2, "not_linked": 0},
+            "imported": {"linked": 0, "not_linked": 2},
+        })
 
 
 class DashboardSnapshotStorageTests(unittest.TestCase):

@@ -2289,16 +2289,52 @@ function renderDashboardDocOriginChart() {
     ["Authored", "Imported"], [byOrigin.manual || 0, byOrigin.imported || 0]);
 }
 
+// Grouped by origin (generated vs. imported), not just one blended split --
+// a legacy imported suite often has real coverage very different from
+// freshly generated cases, and a blended number can hide one dragging the
+// other down. Also what keeps this section meaningful for a repo with many
+// test cases but zero user stories tracked in TestAtlas at all. Same
+// accent-vs-lighter-tint palette used everywhere else for generated/imported,
+// just with Chart.js's own legend turned on since two series need a key.
+function tdRenderOriginCoverageChart(canvasId, emptyMessage, byOrigin) {
+  tdDestroyChart(canvasId);
+  const canvas = $(`#${canvasId}`);
+  const generated = byOrigin?.generated || { linked: 0, not_linked: 0 };
+  const imported = byOrigin?.imported || { linked: 0, not_linked: 0 };
+  if (!(generated.linked + generated.not_linked + imported.linked + imported.not_linked)) {
+    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">${emptyMessage}</p>`;
+    return;
+  }
+  const accent = tdCssVar("--accent");
+  const importedColor = tdResolveColor(`color-mix(in srgb, white 55%, ${accent})`);
+  const base = tdChartBaseOptions("y");
+  new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: ["Linked", "Not linked"],
+      datasets: [
+        { label: "Generated", data: [generated.linked, generated.not_linked], backgroundColor: accent, borderRadius: 4, maxBarThickness: 20 },
+        { label: "Imported", data: [imported.linked, imported.not_linked], backgroundColor: importedColor, borderRadius: 4, maxBarThickness: 20 },
+      ],
+    },
+    options: {
+      ...base,
+      plugins: { ...base.plugins, legend: { display: true, position: "top", align: "end", labels: { color: tdCssVar("--muted"), boxWidth: 10, font: TD_CHART_FONT } } },
+      scales: { ...base.scales, x: { ...base.scales.x, ticks: { ...base.scales.x.ticks, stepSize: 1 } } },
+    },
+  });
+}
+
 function renderDashboardStoryLinkChart() {
   const tc = activeDashboard?.test_cases;
-  tdRenderBinarySplitChart("tdStoryLinkChart", "No test cases yet.",
-    ["Linked to a user story", "Not linked"], [tc?.with_story_link || 0, tc?.without_story_link || 0]);
+  $("#tdStoryLinkPct").textContent = tc?.total ? `— ${tc.story_link_pct}% linked` : "";
+  tdRenderOriginCoverageChart("tdStoryLinkChart", "No test cases yet.", tc?.story_link_by_origin);
 }
 
 function renderDashboardCodeLinkChart() {
   const tc = activeDashboard?.test_cases;
-  tdRenderBinarySplitChart("tdCodeLinkChart", "No test cases yet.",
-    ["Linked to real code", "Not linked"], [tc?.with_code_coverage || 0, tc?.without_code_coverage || 0]);
+  $("#tdCodeLinkPct").textContent = tc?.total ? `— ${tc.code_coverage_pct}% linked` : "";
+  tdRenderOriginCoverageChart("tdCodeLinkChart", "No test cases yet.", tc?.code_coverage_by_origin);
 }
 
 function renderDashboardTrend() {
@@ -2667,6 +2703,12 @@ function renderTestCaseList() {
   const storyDocFilter = $("#testCaseFilterStoryDocSelect").value; // a doc id, or "" (all stories)
   const matchesSource = (c) => {
     if (!srcFilter) return true;
+    if (srcFilter === "imported") return c.created_via === "imported";
+    // An imported case never gets a source_doc_id/source_requirement_id/
+    // source_journey_id, even once Verify resolves its code citations --
+    // without this, a verified imported case would silently fall through
+    // to "code" below and get miscategorized as AI-generated.
+    if (c.created_via === "imported") return false;
     if (srcFilter === "journey") return !!c.source_journey_id;
     if (srcFilter === "story") return !!c.source_requirement_id || !!c.source_doc_id;
     return !c.source_requirement_id && !c.source_journey_id && !c.source_doc_id; // "code"
@@ -2767,15 +2809,20 @@ function renderTestCaseCard(c) {
     </div>`;
 }
 
-// Three mutually-exclusive origins a test case can have: generated per-module
-// from code structure, from one Story Coverage requirement, or from a whole
-// Journey's member requirements (narrated as one multi-step case).
+// Four mutually-exclusive origins a test case can have: imported from an
+// existing suite (checked first -- an imported case never gets a source_*
+// column, even once Verify resolves its code citations, so without this
+// check it would silently fall through to "from code" below), generated
+// per-module from code structure, from one Story Coverage requirement, or
+// from a whole Journey's member requirements (narrated as one multi-step case).
 function testCaseOriginClass(c) {
+  if (c.created_via === "imported") return "tc-origin-imported";
   if (c.source_journey_id) return "tc-origin-journey";
   if (c.source_requirement_id || c.source_doc_id) return "tc-origin-story";
   return "tc-origin-code";
 }
 function testCaseOriginLabel(c) {
+  if (c.created_via === "imported") return "imported";
   if (c.source_journey_id) return "from journey";
   if (c.source_requirement_id || c.source_doc_id) return "from user story";
   return "from code";

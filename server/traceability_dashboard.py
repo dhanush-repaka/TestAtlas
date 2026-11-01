@@ -27,7 +27,16 @@ server/test_case_import.py and server/work_item_import.py's created_via
 column) is a DIFFERENT, deliberately-surfaced signal: once a real suite can
 be imported, "how much of this is inherited/manual vs. AI-assisted" is a
 genuine stakeholder question, not an implementation detail -- distinct from
-the still-hidden generation-mechanism distinction above.
+the still-hidden generation-mechanism distinction above. The two coverage
+splits (test_cases.story_link_pct/code_coverage_pct) are ALSO broken out
+per-origin (story_link_by_origin/code_coverage_by_origin), since a blended
+percentage can hide a legacy imported suite's real coverage dragging down
+(or propping up) freshly generated cases' own number.
+
+This also deliberately keeps the dashboard useful for a repo with zero user
+stories tracked in TestAtlas but many test cases (a legacy codebase that
+only ever gets its existing suite imported, never any stories entered) --
+see _overall_status's own docstring for how the headline adapts to that case.
 """
 from __future__ import annotations
 
@@ -75,6 +84,37 @@ def _count_by(items: list[dict], field: str) -> dict:
     return counts
 
 
+def _is_story_linked(case: dict) -> bool:
+    """A case counts as story-linked if it has a real generation-time source
+    (source_doc_id/source_requirement_id/source_journey_id) OR
+    link_requirements_to_cases' own citation-overlap heuristic already
+    attached a related requirement -- the same two-direction definition
+    document_rollup's has_test_coverage already uses, just checked from the
+    test-case side instead of the story side. Expects a case from
+    linked_cases (not raw test_cases), which carries the resolved
+    source_doc_id and related_requirements."""
+    return bool(
+        case.get("source_doc_id") or case.get("source_requirement_id") or case.get("source_journey_id")
+        or case.get("related_requirements")
+    )
+
+
+def _coverage_by_origin(linked_cases: list[dict], is_covered) -> dict:
+    """{"generated": {"linked": N, "not_linked": M}, "imported": {...}} for
+    whichever coverage check `is_covered` tests -- broken out by created_via
+    so the dashboard can show an imported legacy suite's real coverage
+    separately from freshly generated cases, rather than one blended number
+    that could hide one dragging the other down. Also what keeps this
+    section meaningful for a repo with many test cases but zero user
+    stories tracked in TestAtlas at all."""
+    out: dict = {}
+    for c in linked_cases:
+        origin = c.get("created_via") or "generated"
+        bucket = out.setdefault(origin, {"linked": 0, "not_linked": 0})
+        bucket["linked" if is_covered(c) else "not_linked"] += 1
+    return out
+
+
 # How many of a repo's modules count as "critical" for the dashboard's risk
 # framing -- matches the existing "most critical module" concept this app
 # already shows on each repo's tile (static/app.js's repoTileHtml, keyed off
@@ -93,16 +133,31 @@ def _critical_modules(module_scores: list[dict]) -> set[str]:
     return {m["module"] for m in ranked[:_CRITICAL_MODULE_COUNT]}
 
 
-def _overall_status(health_counts: dict[str, int], total_docs: int, verified_pct: float, critical_broken: int) -> dict:
+def _overall_status(
+    health_counts: dict[str, int], total_docs: int, verified_pct: float, critical_broken: int,
+    total_cases: int = 0, code_coverage_pct: float = 0.0,
+) -> dict:
     """The dashboard's single headline verdict -- a product owner scanning for
     five seconds should get "are we okay or not" from this alone, with the one
     sentence underneath explaining why. `red` if ANYTHING is confirmed broken
     (a single broken story is worth surfacing loudly, regardless of how many
     others are fine); `green` only once every story is actually verified
     correct, not just coded; everything else is `amber` -- genuinely in
-    progress, nothing on fire yet."""
+    progress, nothing on fire yet.
+
+    `total_cases`/`code_coverage_pct` only matter for the zero-user-story
+    case: a legacy repo can have hundreds of test cases (imported, or
+    code-driven generated) with no user stories ever entered into TestAtlas
+    at all -- "add one in the Docs tab" is useless advice there, and the rest
+    of the dashboard would look empty even though there's real signal in the
+    test-case-level numbers."""
     broken = health_counts["broken"]
     if total_docs == 0:
+        if total_cases:
+            return {"status": "amber", "headline": (
+                f"No user stories tracked yet. {total_cases} test case{'s' if total_cases != 1 else ''} on file, "
+                f"{code_coverage_pct}% linked to real code."
+            )}
         return {"status": "amber", "headline": "No user stories yet -- add one in the Docs tab."}
     if broken > 0:
         critical_note = ""
@@ -256,22 +311,21 @@ def compute_summary(
     coded_reqs = req_status["supported"] + req_status["contradicted"]
     verified_pct = _pct(health_counts["verified"], total_docs)
 
-    # A case is story-linked if it has a real generation-time source
-    # (source_doc_id/source_requirement_id/source_journey_id) OR
-    # link_requirements_to_cases' own citation-overlap heuristic already
-    # attached a related requirement -- the same two-direction definition
-    # document_rollup's has_test_coverage already uses, just counted from the
-    # test-case side instead of the story side. linked_cases (not test_cases)
-    # carries the resolved source_doc_id and related_requirements.
-    with_story_link = sum(
-        1 for c in linked_cases
-        if c.get("source_doc_id") or c.get("source_requirement_id") or c.get("source_journey_id")
-        or c.get("related_requirements")
-    )
+    with_story_link = sum(1 for c in linked_cases if _is_story_linked(c))
     with_code_coverage = sum(1 for c in linked_cases if c.get("covers"))
+    total_cases = len(test_cases)
+    story_link_pct = _pct(with_story_link, total_cases)
+    code_coverage_pct = _pct(with_code_coverage, total_cases)
+    # Same two splits, broken out by created_via -- a blended percentage can
+    # hide one origin dragging the other down (a legacy imported suite often
+    # has different real coverage than freshly generated cases), and this is
+    # also what keeps the dashboard useful for a repo with 100s of test cases
+    # but zero user stories tracked in TestAtlas at all.
+    story_link_by_origin = _coverage_by_origin(linked_cases, _is_story_linked)
+    code_coverage_by_origin = _coverage_by_origin(linked_cases, lambda c: bool(c.get("covers")))
 
     return {
-        "overall": _overall_status(health_counts, total_docs, verified_pct, critical_broken),
+        "overall": _overall_status(health_counts, total_docs, verified_pct, critical_broken, total_cases, code_coverage_pct),
         "documents": {
             "total": total_docs,
             "with_requirements": with_reqs,
@@ -303,6 +357,10 @@ def compute_summary(
             "without_story_link": len(test_cases) - with_story_link,
             "with_code_coverage": with_code_coverage,
             "without_code_coverage": len(test_cases) - with_code_coverage,
+            "story_link_pct": story_link_pct,
+            "code_coverage_pct": code_coverage_pct,
+            "story_link_by_origin": story_link_by_origin,
+            "code_coverage_by_origin": code_coverage_by_origin,
         },
         "modules": {
             "total": len(module_names),

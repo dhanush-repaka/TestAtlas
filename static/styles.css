@@ -892,6 +892,7 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .tc-origin-story { background: var(--accent-soft); color: var(--accent-strong); }
 .tc-origin-journey { background: var(--ok-soft); color: var(--ok); }
 .tc-origin-code { background: var(--panel-3); color: var(--muted); }
+.tc-origin-imported { background: var(--warn-soft); color: var(--warn); }
 
 /* --------------------------------------------------------------------- journeys */
 
