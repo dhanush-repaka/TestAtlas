@@ -185,8 +185,9 @@ class ComputeSummaryStoryHealthTests(unittest.TestCase):
 class ComputeSummaryCriticalityTests(unittest.TestCase):
     """A story "touches critical code" when one of its modules is among the
     repo's top-3-by-PageRank -- the same structural-centrality signal
-    static/app.js's repoTileHtml already calls "most critical" elsewhere in
-    this app, reused here rather than inventing a second notion of "critical"."""
+    static/app.js's repoTileHtml already calls "most structurally central"
+    elsewhere in this app, reused here rather than inventing a second notion
+    of "critical"."""
 
     def test_only_the_top_3_modules_by_pagerank_count_as_critical(self):
         module_scores = [{"module": "a", "pagerank": 0.9}, {"module": "b", "pagerank": 0.5},
@@ -216,7 +217,7 @@ class ComputeSummaryCriticalityTests(unittest.TestCase):
         requirements = [req("r1", "doc-a", "contradicted", covers=["x"])]
         cases = [case("c1", module="core", covers=["x"])]
         out = td.compute_summary([DOC_A], requirements, cases, module_scores, {})
-        self.assertIn("your most critical code", out["overall"]["headline"])
+        self.assertIn("your most structurally central code", out["overall"]["headline"])
 
     def test_overall_headline_stays_generic_when_the_broken_story_is_not_on_critical_code(self):
         # 4 modules ranked above "misc" so it's unambiguously outside the top 3.
@@ -236,7 +237,7 @@ class ComputeSummaryOverallStatusTests(unittest.TestCase):
         requirements = [req("r1", "doc-a", "supported"), req("r2", "doc-b", "contradicted")]
         out = td.compute_summary([DOC_A, DOC_B], requirements, [], [], {})
         self.assertEqual(out["overall"]["status"], "red")
-        self.assertIn("1 is confirmed broken", out["overall"]["headline"])
+        self.assertIn("1 is a potential implementation conflict", out["overall"]["headline"])
 
     def test_every_story_verified_is_green(self):
         requirements = [req("r1", "doc-a", "supported")]
@@ -539,7 +540,7 @@ class DashboardApiTests(unittest.TestCase):
         # headline must say so, not stay generic.
         self.assertTrue(body["document_rollup"][0]["touches_critical_code"])
         self.assertEqual(body["documents"]["critical_at_risk"], 1)
-        self.assertIn("your most critical code", body["overall"]["headline"])
+        self.assertIn("your most structurally central code", body["overall"]["headline"])
         self.assertTrue(body["gaps"]["contradicted_requirements"][0]["touches_critical_code"])
         self.assertEqual(len(body["trend"]), 1)  # today's snapshot
 

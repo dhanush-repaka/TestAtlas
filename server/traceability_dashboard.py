@@ -50,11 +50,11 @@ _REQUIREMENT_STATUSES = ("supported", "contradicted", "unknown", "needs_human_in
 # acceptance criteria, and wants "where do we actually stand", not a raw count.
 _STORY_HEALTH_LABELS = {
     "not_analyzed": "Not analyzed yet",
-    "broken": "Built but broken",
+    "broken": "Potential implementation conflict",
     "needs_clarification": "Needs clarification",
-    "not_started": "Not started",
+    "not_started": "No implementation evidence found",
     "partially_built": "Partially built",
-    "verified": "Built and verified correct",
+    "verified": "Implementation supported by AI review",
 }
 
 
@@ -162,15 +162,15 @@ def _overall_status(
     if broken > 0:
         critical_note = ""
         if critical_broken > 0:
-            critical_note = f" {critical_broken} {'touches' if critical_broken == 1 else 'touch'} your most critical code."
+            critical_note = f" {critical_broken} {'touches' if critical_broken == 1 else 'touch'} your most structurally central code."
         return {"status": "red", "headline": (
-            f"{health_counts['verified']} of {total_docs} stories are fully delivered and verified. "
-            f"{broken} {'is' if broken == 1 else 'are'} confirmed broken.{critical_note}"
+            f"{health_counts['verified']} of {total_docs} stories have implementation supported by AI review. "
+            f"{broken} {'is' if broken == 1 else 'are'} a potential implementation conflict.{critical_note}"
         )}
     if verified_pct >= 100:
-        return {"status": "green", "headline": f"All {total_docs} user stories are fully delivered and verified correct."}
+        return {"status": "green", "headline": f"All {total_docs} user stories have implementation supported by AI review."}
     return {"status": "amber", "headline": (
-        f"{health_counts['verified']} of {total_docs} stories are fully delivered and verified. "
+        f"{health_counts['verified']} of {total_docs} stories have implementation supported by AI review. "
         f"The rest are still in progress."
     )}
 

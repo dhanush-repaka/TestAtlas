@@ -277,7 +277,7 @@ function repoTileHtml(repo, latestRun) {
       <div class="tile-stats">
         ${stats ? `<span><b>${stats.nodes ?? "—"}</b> nodes</span><span><b>${moduleCount}</b> modules</span><span><b>${latestRun.finding_count ?? "—"}</b> findings</span>` : `<span class="muted">${latestRun ? "Last run failed" : "Not analyzed yet"}</span>`}
       </div>
-      ${topModule ? `<div class="tile-top-module" title="Highest PageRank module in this run — most of the codebase structurally depends on it">${ICON_CRITICAL}<b>${escapeHtml(topModule.module)}</b><span class="muted">most critical</span></div>` : ""}
+      ${topModule ? `<div class="tile-top-module" title="Highest PageRank module in this run — most of the codebase structurally depends on it">${ICON_CRITICAL}<b>${escapeHtml(topModule.module)}</b><span class="muted">most structurally central</span></div>` : ""}
       <div class="tile-footer">
         ${latestRun ? `<span class="status-pill status-${latestRun.status}">${latestRun.status}</span>` : `<span class="muted">—</span>`}
         <span class="muted">${fmtTimeAgo(latestRun && latestRun.started_at)}</span>
@@ -2009,8 +2009,8 @@ const TD_HEALTH_COLOR = {
   not_analyzed: "color-mix(in srgb, var(--muted-2) 40%, transparent)",
 };
 const TD_HEALTH_LABEL = {
-  verified: "Built & verified correct", broken: "Built but broken", needs_clarification: "Needs clarification",
-  partially_built: "Partially built", not_started: "Not started", not_analyzed: "Not analyzed yet",
+  verified: "Supported by AI review", broken: "Potential implementation conflict", needs_clarification: "Needs clarification",
+  partially_built: "Partially built", not_started: "No implementation evidence found", not_analyzed: "Not analyzed yet",
 };
 const TD_HEALTH_ORDER = ["verified", "broken", "partially_built", "needs_clarification", "not_started", "not_analyzed"];
 
@@ -2085,10 +2085,10 @@ function renderDashboardStatCards() {
   const { documents, requirements } = activeDashboard;
   const notStartedPct = tdPct(documents.by_health.not_started + documents.by_health.not_analyzed, documents.total);
   el.innerHTML = [
-    statCard(`${documents.verified_pct}%`, "Delivered & verified", `${documents.by_health.verified}/${documents.total} user stories`),
-    statCard(`${requirements.correctness_rate}%`, "Correctness rate", "of what's actually been built"),
-    statCard(documents.by_health.broken, "Stories broken", `${requirements.by_status.contradicted} contradicted criteria`),
-    statCard(`${notStartedPct}%`, "Not started", `${documents.by_health.not_started + documents.by_health.not_analyzed}/${documents.total} user stories`),
+    statCard(`${documents.verified_pct}%`, "AI-supported", `${documents.by_health.verified}/${documents.total} user stories`),
+    statCard(`${requirements.correctness_rate}%`, "AI-supported rate", "of what's cited as built, by AI review"),
+    statCard(documents.by_health.broken, "Potential conflicts", `${requirements.by_status.contradicted} contradicted criteria`),
+    statCard(`${notStartedPct}%`, "No evidence found", `${documents.by_health.not_started + documents.by_health.not_analyzed}/${documents.total} user stories`),
   ].join("");
 }
 
@@ -2384,7 +2384,7 @@ function renderDashboardGapList(selector, items, itemHtmlFn, emptyMsg) {
 // module" (highest PageRank -- most of the codebase structurally depends on
 // it), so the same visual means the same thing everywhere in this app.
 function tdCriticalBadgeHtml() {
-  return `<span class="td-critical-badge" title="Touches one of this repo's most structurally critical modules — most of the codebase depends on it">${ICON_CRITICAL}critical code</span>`;
+  return `<span class="td-critical-badge" title="Touches one of this repo's most structurally central modules (by PageRank) — most of the codebase depends on it">${ICON_CRITICAL}structurally central code</span>`;
 }
 
 function tdReqGapItemHtml(r) {
