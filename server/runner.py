@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import traceback
 from pathlib import Path
 
@@ -71,6 +72,21 @@ def resolve_source_dir(repo: dict) -> Path:
     raise RuntimeError(f"unknown source_type: {repo['source_type']}")
 
 
+def _capture_commit_sha(source_dir: Path) -> str | None:
+    """Best-effort `git rev-parse HEAD` in `source_dir` -- audit-trail only
+    (see server/evidence_rules.py's docstring for why staleness detection
+    uses run_id instead). Returns None, never raises, for a folder that
+    isn't a git checkout (e.g. source_type='upload') or if git isn't on PATH."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
 def run_analysis(repo_id: str) -> dict:
     repo = db.get_repo(repo_id, include_pat=True)
     if not repo:
@@ -78,8 +94,10 @@ def run_analysis(repo_id: str) -> dict:
 
     run = db.create_run(repo_id)
     run_id = run["id"]
+    commit_sha = None
     try:
         source_dir = resolve_source_dir(repo)
+        commit_sha = _capture_commit_sha(source_dir)
 
         # Mechanical layer: real syntax-tree parsing (Python's `ast`, tree-sitter for
         # TypeScript/JavaScript), not a framework-specific parser -- works on any
@@ -127,8 +145,9 @@ def run_analysis(repo_id: str) -> dict:
             findings=findings,
             graph_path=str(graph_path),
             html_path=str(html_path),
+            commit_sha=commit_sha,
         )
         return db.get_run(run_id)
     except Exception as e:  # noqa: BLE001 -- surface any failure into the run record
-        db.finish_run(run_id, status="failed", error=f"{e}\n{traceback.format_exc()}")
+        db.finish_run(run_id, status="failed", error=f"{e}\n{traceback.format_exc()}", commit_sha=commit_sha)
         return db.get_run(run_id)

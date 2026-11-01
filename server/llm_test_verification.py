@@ -108,6 +108,7 @@ def _check_verification(item, valid_ids: set[str], canon: dict[str, str]) -> tup
 class VerificationResult:
     results: list[dict]
     dropped: list[str] = field(default_factory=list)  # why each discarded model item was rejected
+    model: str = DEFAULT_MODEL  # which model actually judged this batch -- assessment provenance
 
 
 def generate_test_case_verifications(
@@ -148,7 +149,7 @@ def generate_test_case_verifications(
 
     valid_ids = {c["id"] for c in cases}
     canon = known_code_names(context)
-    result = VerificationResult(results=[])
+    result = VerificationResult(results=[], model=model)
     for item in verifications:
         checked, why = _check_verification(item, valid_ids, canon)
         if checked is None:

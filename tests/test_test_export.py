@@ -163,12 +163,18 @@ class MarkdownAndJsonTests(unittest.TestCase):
         story_case = {**CASE, "source_doc_id": "doc-1"}
         out = json.loads(ex.to_json([story_case], LABELS, DOCS, JOURNEYS))["test_cases"][0]
         self.assertEqual(out["user_story_traceability"],
-                         {"linked": True, "stories": [{"kind": "document", "id": "doc-1", "name": "5111-inventory-reservation"}]})
+                         {"linked": True, "stories": [{"kind": "document_direct", "id": "doc-1", "name": "5111-inventory-reservation"}]})
 
     def test_json_journey_case_is_distinguished_from_a_document_case(self):
         journey_case = {**CASE, "source_journey_id": "journey-1"}
         out = json.loads(ex.to_json([journey_case], LABELS, DOCS, JOURNEYS))["test_cases"][0]
-        self.assertEqual(out["user_story_traceability"]["stories"], [{"kind": "journey", "id": "journey-1", "name": "Checkout flow"}])
+        self.assertEqual(out["user_story_traceability"]["stories"], [{"kind": "journey_direct", "id": "journey-1", "name": "Checkout flow"}])
+
+    def test_json_inferred_story_link_is_distinguished_from_a_direct_one(self):
+        linked = {**CASE, "related_requirements": [{"doc_id": "doc-1", "text": "x", "status": "supported"}]}
+        out = json.loads(ex.to_json([linked], LABELS, DOCS, JOURNEYS))["test_cases"][0]
+        self.assertEqual(out["user_story_traceability"]["stories"],
+                          [{"kind": "document_inferred", "id": "doc-1", "name": "5111-inventory-reservation"}])
 
     def test_filename_is_a_safe_slug(self):
         self.assertEqual(ex.filename("commerce (Next.js storefront)", "csv"), "commerce-next-js-storefront-test-cases.csv")

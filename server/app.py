@@ -30,11 +30,11 @@ from kg.journeys import detect_journeys, name_journeys
 from kg.repo_parser import has_source_files
 from kg.source_lookup import (
     gather_module_sources, gather_journey_sources,
-    find_citation_domain_and_path, resolve_citation_node_id,
+    find_citation_domain_and_path, resolve_citation_node_id, resolve_cited_paths,
 )
 from kg.visualize import to_pyvis_html
 from . import (
-    auth, db, doc_extract, folder_picker, llm_gap_analysis, llm_journey_requirements,
+    auth, db, doc_extract, evidence_rules, folder_picker, llm_gap_analysis, llm_journey_requirements,
     llm_journey_test_generation, llm_module_naming, llm_requirement_test_generation,
     llm_story_coverage, llm_test_generation, llm_test_verification, test_case_import,
     test_export, traceability_dashboard, uploads, work_item_import,
@@ -543,6 +543,11 @@ class ConfirmRequirementIn(BaseModel):
     rationale: Optional[str] = None
 
 
+class HumanReviewIn(BaseModel):
+    decision: str  # one of evidence_rules.HUMAN_REVIEW_DECISIONS
+    note: Optional[str] = None
+
+
 @api.get("/repos/{repo_id}/documents")
 def api_list_documents(repo_id: str):
     if not db.get_repo(repo_id):
@@ -791,7 +796,9 @@ def api_run_story_coverage(repo_id: str, doc_id: str):
         result = llm_story_coverage.generate_story_requirements(doc, context, g, source_root, index_path)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements)
+    for r in result.requirements:
+        r["cited_paths"] = resolve_cited_paths(g, r.get("covers") or [])
+    db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model)
     return {
         "applied": len(result.requirements), "dropped": result.dropped,
         "requirements": _with_tested_status(repo_id, result.requirements),
@@ -819,7 +826,9 @@ def _story_coverage_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], r
             if not context["ok"]:
                 raise RuntimeError(context["message"])
             result = llm_story_coverage.generate_story_requirements(doc, context, g, source_root, index_path)
-            db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements)
+            for r in result.requirements:
+                r["cited_paths"] = resolve_cited_paths(g, r.get("covers") or [])
+            db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model)
             detail = f"{len(result.requirements)} requirement(s)"
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
@@ -1115,7 +1124,11 @@ def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: P
             if found:
                 module = found[0]
                 break
-        db.update_test_case_verification(v["id"], v["status"], v.get("rationale"), v.get("covers") or [], module)
+        cited_paths = resolve_cited_paths(g, v.get("covers") or [])
+        db.update_test_case_verification(
+            v["id"], v["status"], v.get("rationale"), v.get("covers") or [], module,
+            assessed_model=result.model, cited_paths=cited_paths,
+        )
     return result
 
 
@@ -1376,13 +1389,76 @@ def api_confirm_story_requirement(repo_id: str, requirement_id: str, payload: Co
     """A human answers a needs_human_input question -- flips `source` to
     'human_confirmed' (server/db.py's confirm_story_requirement); from this
     moment the row behaves exactly like a document-sourced one everywhere
-    else. This is the entire "answers compound over time" mechanism."""
+    else. This is the entire "answers compound over time" mechanism. ALSO
+    records a human_reviews row (server/db.py's record_human_review) -- the
+    status flip above changes what the requirement IS from now on; the
+    review row is a separate, durable, timestamped fact that a human looked
+    at it, read by server/evidence_rules.py and the review-accuracy endpoint."""
     if payload.status not in ("supported", "contradicted"):
         raise HTTPException(400, "status must be 'supported' or 'contradicted' -- a human resolves the ambiguity, it doesn't stay open")
     requirement = db.get_story_requirement(requirement_id)
     if not requirement or requirement["repo_id"] != repo_id:
         raise HTTPException(404, "requirement not found")
+    decision = "confirmed_supported" if payload.status == "supported" else "confirmed_contradicted"
+    db.record_human_review(repo_id, "story_requirement", requirement_id, decision, payload.rationale)
     return db.confirm_story_requirement(requirement_id, payload.status, payload.rationale)
+
+
+@api.post("/repos/{repo_id}/test-cases/{case_id}/review")
+def api_review_test_case(repo_id: str, case_id: str, payload: HumanReviewIn):
+    """Records a human's own judgment on a test case's AI assessment --
+    unlike story requirements' confirm route, this never overwrites the
+    case's status/rationale/covers (those stay the AI's own judgment,
+    see update_test_case_verification's docstring); the review is a
+    separate, durable fact surfaced ALONGSIDE the AI level, not instead of
+    it (server/evidence_rules.py). There was previously no per-test-case
+    review action at all -- only story requirements had one."""
+    if payload.decision not in evidence_rules.HUMAN_REVIEW_DECISIONS:
+        raise HTTPException(400, f"decision must be one of {sorted(evidence_rules.HUMAN_REVIEW_DECISIONS)}")
+    cases = [c for c in db.list_test_cases(repo_id) if c["id"] == case_id]
+    if not cases:
+        raise HTTPException(404, "test case not found")
+    return db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note)
+
+
+@api.get("/repos/{repo_id}/review-accuracy")
+def api_review_accuracy(repo_id: str):
+    """How well the AI's own judgments have held up against real human
+    review, computed purely from whatever human_reviews rows exist for this
+    repo -- an honest empty state with zero rows, never a fabricated number.
+    This is Stage 5 infrastructure, not a validation study: it measures
+    whatever reviews your own team has actually recorded, nothing more."""
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    reviews = db.list_human_reviews(repo_id)
+    cases_by_id = {c["id"]: c for c in db.list_test_cases(repo_id)}
+    requirements_by_id = {r["id"]: r for r in db.list_story_requirements(repo_id)}
+
+    false_support = false_conflict = needs_more_info = agreed = 0
+    for review in reviews:
+        target = (cases_by_id if review["target_type"] == "test_case" else requirements_by_id).get(review["target_id"])
+        ai_level = evidence_rules.evidence_level(target) if target else None
+        decision = review["decision"]
+        if decision == "needs_more_info":
+            needs_more_info += 1
+        elif decision == "rejected_ai_judgment":
+            if ai_level == "ai_supported":
+                false_support += 1
+            elif ai_level == "ai_conflict":
+                false_conflict += 1
+        elif (decision == "confirmed_supported" and ai_level == "ai_supported") or \
+             (decision == "confirmed_contradicted" and ai_level == "ai_conflict"):
+            agreed += 1
+
+    total = len(reviews)
+    return {
+        "total_reviews": total,
+        "agreed_with_ai": agreed,
+        "false_support_count": false_support,
+        "false_conflict_count": false_conflict,
+        "needs_more_info_count": needs_more_info,
+        "agreement_rate_pct": round((agreed / total) * 100, 1) if total else None,
+    }
 
 
 @api.post("/repos/{repo_id}/journeys/{journey_id}/generate-test-case")
@@ -1582,7 +1658,11 @@ def api_traceability_dashboard(repo_id: str):
     labels = db.get_module_label_details(repo_id)
     run = db.get_latest_successful_run(repo_id)
     module_scores = (run.get("stats") or {}).get("module_scores") or [] if run else []
-    summary = traceability_dashboard.compute_summary(documents, requirements, cases, module_scores, labels)
+    human_reviews = db.list_human_reviews(repo_id)
+    summary = traceability_dashboard.compute_summary(
+        documents, requirements, cases, module_scores, labels,
+        latest_run_id=run["id"] if run else None, human_reviews=human_reviews,
+    )
     today = datetime.now(timezone.utc).date().isoformat()
     db.upsert_dashboard_snapshot(repo_id, today, summary)
     trend = db.list_dashboard_snapshots(repo_id)

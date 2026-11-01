@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=63" />
+<link rel="stylesheet" href="static/styles.css?v=64" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -246,6 +246,11 @@
               <h3>Your most structurally central code</h3>
               <p class="muted small" style="margin:0 0 10px;">By PageRank — most of this codebase structurally depends on these.</p>
               <div id="tdCriticalModules"></div>
+            </div>
+            <div class="ov-card">
+              <h3>Review accuracy</h3>
+              <p class="muted small" style="margin:0 0 10px;">How often a human reviewer agreed with the AI's own judgment -- recorded via "Record review" on a test case or story requirement. Not a validation study: just whatever your team has reviewed so far.</p>
+              <div id="tdReviewAccuracy"></div>
             </div>
           </div>
         </details>
@@ -569,6 +574,6 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-  <script src="static/app.js?v=82"></script>
+  <script src="static/app.js?v=83"></script>
 </body>
 </html>

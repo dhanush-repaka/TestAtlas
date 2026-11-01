@@ -869,6 +869,7 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 .tc-col-n { width: 28px; color: var(--muted-2); font-weight: 700; }
 .tc-covers { display: flex; flex-wrap: wrap; gap: 5px; }
 .tc-covers code { font-size: 11px; padding: 1px 7px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border-soft); color: var(--muted); }
+.tc-review-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 /* The verification verdict -- deliberately louder than plain muted text so a
    "contradicted" reason doesn't blend into the rest of the card's quiet copy. */
 .tc-verdict { font-size: 13px; line-height: 1.5; padding: 8px 11px; border-radius: 8px; border-left: 3px solid; margin: 2px 0 4px; }

@@ -138,7 +138,7 @@ class BulkApiTests(unittest.TestCase):
         def fake_generate(doc, context, g, source_root, index_path):
             return mock.Mock(requirements=[
                 {"text": "Users can add items to the cart", "type": "positive", "status": "supported", "covers": ["Cart.add"]},
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         # The patch has to stay active for as long as the background worker
         # thread might still be running, not just for the POST call -- the
@@ -247,7 +247,7 @@ class BulkApiTests(unittest.TestCase):
         other_repo_id = r.json()["id"]
         with mock.patch("server.llm_story_coverage.is_configured", return_value=True), \
              mock.patch("server.llm_story_coverage.generate_story_requirements",
-                         return_value=mock.Mock(requirements=[], dropped=[])):
+                         return_value=mock.Mock(requirements=[], dropped=[], model="gpt-4o-mini")):
             r = self.client.post(f"/api/repos/{self.repo_id}/story-coverage/run-all")
             job_id = r.json()["id"]
             # Let the worker finish while the patch is still active -- leaving
@@ -329,7 +329,7 @@ class VerifyAllDocumentsBulkApiTests(unittest.TestCase):
         def fake_verify(cases, context, sources):
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):
@@ -358,7 +358,7 @@ class VerifyAllDocumentsBulkApiTests(unittest.TestCase):
         def fake_verify(cases, context, sources):
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):
@@ -377,7 +377,7 @@ class VerifyAllDocumentsBulkApiTests(unittest.TestCase):
         other_repo_id = r.json()["id"]
 
         def fake_verify(cases, context, sources):
-            return mock.Mock(results=[], dropped=[])
+            return mock.Mock(results=[], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):

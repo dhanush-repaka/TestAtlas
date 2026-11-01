@@ -40,6 +40,7 @@ see _overall_status's own docstring for how the headline adapts to that case.
 """
 from __future__ import annotations
 
+from server import evidence_rules
 from server.llm_story_coverage import compute_tested_status, link_requirements_to_cases
 
 _REQUIREMENT_STATUSES = ("supported", "contradicted", "unknown", "needs_human_input")
@@ -99,6 +100,24 @@ def _is_story_linked(case: dict) -> bool:
     )
 
 
+def _evidence_summary(items: list[dict], latest_run_id: str | None, reviews_by_target: dict[str, dict]) -> dict:
+    """Stage 4's replacement for a single blended coverage percentage: an
+    explicit count per server/evidence_rules.py evidence level, plus how many
+    are stale (judged against an analysis run that's no longer the latest)
+    and how many have a recorded human review -- shown alongside the AI
+    level, never collapsed into it (see evidence_rules's own docstring)."""
+    counts = {level: 0 for level in evidence_rules.EVIDENCE_LEVELS}
+    stale = 0
+    human_reviewed = 0
+    for item in items:
+        counts[evidence_rules.evidence_level(item)] += 1
+        if evidence_rules.is_stale(item, latest_run_id):
+            stale += 1
+        if item.get("id") in reviews_by_target:
+            human_reviewed += 1
+    return {**counts, "stale": stale, "human_reviewed": human_reviewed}
+
+
 def _coverage_by_origin(linked_cases: list[dict], is_covered) -> dict:
     """{"generated": {"linked": N, "not_linked": M}, "imported": {...}} for
     whichever coverage check `is_covered` tests -- broken out by created_via
@@ -135,7 +154,7 @@ def _critical_modules(module_scores: list[dict]) -> set[str]:
 
 def _overall_status(
     health_counts: dict[str, int], total_docs: int, verified_pct: float, critical_broken: int,
-    total_cases: int = 0, code_coverage_pct: float = 0.0,
+    total_cases: int = 0, code_coverage_pct: float = 0.0, total_stale: int = 0,
 ) -> dict:
     """The dashboard's single headline verdict -- a product owner scanning for
     five seconds should get "are we okay or not" from this alone, with the one
@@ -150,28 +169,35 @@ def _overall_status(
     code-driven generated) with no user stories ever entered into TestAtlas
     at all -- "add one in the Docs tab" is useless advice there, and the rest
     of the dashboard would look empty even though there's real signal in the
-    test-case-level numbers."""
+    test-case-level numbers.
+
+    `total_stale` (server/evidence_rules.py's is_stale, summed across test
+    cases and requirements) never changes red/amber/green -- a stale
+    assessment isn't itself bad news, it's a "this needs a fresh look"
+    signal -- but it's named in the headline whenever nonzero rather than
+    silently folded into either a good or bad count."""
+    stale_note = f" {total_stale} assessment{'s' if total_stale != 1 else ''} {'are' if total_stale != 1 else 'is'} stale and need reassessment." if total_stale else ""
     broken = health_counts["broken"]
     if total_docs == 0:
         if total_cases:
             return {"status": "amber", "headline": (
                 f"No user stories tracked yet. {total_cases} test case{'s' if total_cases != 1 else ''} on file, "
-                f"{code_coverage_pct}% linked to real code."
+                f"{code_coverage_pct}% linked to real code.{stale_note}"
             )}
-        return {"status": "amber", "headline": "No user stories yet -- add one in the Docs tab."}
+        return {"status": "amber", "headline": f"No user stories yet -- add one in the Docs tab.{stale_note}"}
     if broken > 0:
         critical_note = ""
         if critical_broken > 0:
             critical_note = f" {critical_broken} {'touches' if critical_broken == 1 else 'touch'} your most structurally central code."
         return {"status": "red", "headline": (
             f"{health_counts['verified']} of {total_docs} stories have implementation supported by AI review. "
-            f"{broken} {'is' if broken == 1 else 'are'} a potential implementation conflict.{critical_note}"
+            f"{broken} {'is' if broken == 1 else 'are'} a potential implementation conflict.{critical_note}{stale_note}"
         )}
     if verified_pct >= 100:
-        return {"status": "green", "headline": f"All {total_docs} user stories have implementation supported by AI review."}
+        return {"status": "green", "headline": f"All {total_docs} user stories have implementation supported by AI review.{stale_note}"}
     return {"status": "amber", "headline": (
         f"{health_counts['verified']} of {total_docs} stories have implementation supported by AI review. "
-        f"The rest are still in progress."
+        f"The rest are still in progress.{stale_note}"
     )}
 
 
@@ -202,6 +228,8 @@ def compute_summary(
     test_cases: list[dict],
     module_scores: list[dict],
     module_labels: dict[str, dict],
+    latest_run_id: str | None = None,
+    human_reviews: list[dict] | None = None,
 ) -> dict:
     """`documents`/`requirements`/`test_cases` -- server/db.py's list_documents/
     list_story_requirements/list_test_cases, unfiltered (every document in the
@@ -209,7 +237,12 @@ def compute_summary(
     stats["module_scores"] (db.get_latest_successful_run already parses this),
     or [] if there's no successful run yet -- code coverage is one section of
     the dashboard, not a precondition for the story/test sections. `module_labels`
-    -- db.get_module_label_details, for display names in the gap list."""
+    -- db.get_module_label_details, for display names in the gap list.
+    `latest_run_id` (db.get_latest_successful_run's own id) and `human_reviews`
+    (db.list_human_reviews) feed server/evidence_rules.py's staleness and
+    human-review signals -- both optional/None-safe, since a repo with no
+    successful run yet or no reviews recorded is a normal, common state."""
+    reviews_by_target = evidence_rules.latest_review_by_target(human_reviews or [])
     tested_requirements = compute_tested_status(requirements, test_cases)
     tested_by_id = {r["id"]: r for r in tested_requirements}
     linked_cases = link_requirements_to_cases(test_cases, requirements)
@@ -324,8 +357,14 @@ def compute_summary(
     story_link_by_origin = _coverage_by_origin(linked_cases, _is_story_linked)
     code_coverage_by_origin = _coverage_by_origin(linked_cases, lambda c: bool(c.get("covers")))
 
+    test_case_evidence = _evidence_summary(test_cases, latest_run_id, reviews_by_target)
+    requirement_evidence = _evidence_summary(requirements, latest_run_id, reviews_by_target)
+    total_stale = test_case_evidence["stale"] + requirement_evidence["stale"]
+
     return {
-        "overall": _overall_status(health_counts, total_docs, verified_pct, critical_broken, total_cases, code_coverage_pct),
+        "overall": _overall_status(
+            health_counts, total_docs, verified_pct, critical_broken, total_cases, code_coverage_pct, total_stale,
+        ),
         "documents": {
             "total": total_docs,
             "with_requirements": with_reqs,
@@ -347,6 +386,8 @@ def compute_summary(
             "contradiction_rate": _pct(req_status["contradicted"], total_reqs),
             "supported_rate": _pct(req_status["supported"], total_reqs),
             "correctness_rate": _pct(req_status["supported"], coded_reqs),
+            "correctness_rate_denominator": coded_reqs,
+            "evidence": requirement_evidence,
         },
         "test_cases": {
             "total": len(test_cases),
@@ -361,6 +402,7 @@ def compute_summary(
             "code_coverage_pct": code_coverage_pct,
             "story_link_by_origin": story_link_by_origin,
             "code_coverage_by_origin": code_coverage_by_origin,
+            "evidence": test_case_evidence,
         },
         "modules": {
             "total": len(module_names),

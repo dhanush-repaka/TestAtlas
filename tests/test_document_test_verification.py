@@ -176,7 +176,7 @@ class VerifyCasesForDocumentApiTests(unittest.TestCase):
         def fake_verify(cases, context, sources):
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):
@@ -207,7 +207,7 @@ class VerifyCasesForDocumentApiTests(unittest.TestCase):
             addressed_cases = [c for c in cases if c["title"] == "Addressed"]
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in addressed_cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):
@@ -229,7 +229,7 @@ class VerifyCasesForDocumentApiTests(unittest.TestCase):
         def fake_verify(cases, context, sources):
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         with mock.patch("server.llm_test_generation.is_configured", return_value=True), \
              mock.patch("server.llm_test_verification.generate_test_case_verifications", side_effect=fake_verify):

@@ -229,6 +229,24 @@ CREATE TABLE IF NOT EXISTS dashboard_snapshots (
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_snapshots_repo_date ON dashboard_snapshots(repo_id, date);
+
+-- A human's own judgment on an AI assessment (test case or story requirement),
+-- kept as its own durable, timestamped row rather than overwriting the AI's
+-- status in place -- a reviewer disagreeing with the AI is itself a fact worth
+-- keeping, not something that should erase what the AI originally said.
+-- server/evidence_rules.py reads these to compute each item's evidence_level,
+-- and the review-accuracy endpoint reads them to measure the AI against.
+CREATE TABLE IF NOT EXISTS human_reviews (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,         -- 'test_case' | 'story_requirement'
+    target_id TEXT NOT NULL,
+    decision TEXT NOT NULL,            -- 'confirmed_supported' | 'confirmed_contradicted' | 'rejected_ai_judgment' | 'needs_more_info'
+    note TEXT,
+    reviewed_at TEXT NOT NULL,
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+CREATE INDEX IF NOT EXISTS idx_human_reviews_target ON human_reviews(target_type, target_id);
 """
 
 
@@ -262,6 +280,14 @@ _REPO_COLUMN_MIGRATIONS = {
     "github_repo": "TEXT",
     "github_branch": "TEXT DEFAULT 'main'",
     "github_pat_enc": "TEXT",
+}
+
+_RUNS_COLUMN_MIGRATIONS = {
+    # Best-effort `git rev-parse HEAD` at analysis time (server/runner.py) --
+    # NULL for a repo that isn't a git checkout (e.g. source_type='upload').
+    # Audit trail only: staleness detection (server/evidence_rules.py) compares
+    # run_id, not commit_sha, since a reliable SHA isn't available for every repo.
+    "commit_sha": "TEXT",
 }
 
 _MODULE_LABELS_COLUMN_MIGRATIONS = {
@@ -307,6 +333,14 @@ _TEST_CASES_COLUMN_MIGRATIONS = {
     # GENERATION mechanism produced a case -- an imported case has none of those set,
     # same as an ordinary code-driven one, so this is the only way to tell them apart.
     "created_via": "TEXT DEFAULT 'generated'",
+    # When this case's status/covers were last written by an LLM pass, which
+    # model did it, and which real file each covers[] name resolved to
+    # (kg.source_lookup.find_citation_path, best-effort -- a name that doesn't
+    # resolve gets `null` in the list rather than being dropped). NULL/NULL/NULL
+    # means "never verified" -- same meaning status=NULL already carries.
+    "assessed_at": "TEXT",
+    "assessed_model": "TEXT",
+    "cited_paths": "TEXT",
 }
 
 _DOCUMENTS_COLUMN_MIGRATIONS = {
@@ -327,6 +361,10 @@ _STORY_REQUIREMENTS_COLUMN_MIGRATIONS = {
     # The yes/no question to show a human, only set when status='needs_human_input'
     # (server/llm_journey_requirements.py) -- NULL for every other row.
     "question": "TEXT",
+    # Same provenance fields as _TEST_CASES_COLUMN_MIGRATIONS above, same reasoning.
+    "assessed_at": "TEXT",
+    "assessed_model": "TEXT",
+    "cited_paths": "TEXT",
 }
 
 
@@ -344,6 +382,7 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate_columns(conn, "repos", _REPO_COLUMN_MIGRATIONS)
+        _migrate_columns(conn, "runs", _RUNS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "test_cases", _TEST_CASES_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "documents", _DOCUMENTS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "module_labels", _MODULE_LABELS_COLUMN_MIGRATIONS)
@@ -452,6 +491,7 @@ def delete_repo(repo_id: str) -> None:
         conn.execute("DELETE FROM story_requirements WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM journeys WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM bulk_jobs WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM human_reviews WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM documents WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM runs WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
@@ -471,11 +511,12 @@ def create_run(repo_id: str) -> dict:
 
 def finish_run(run_id: str, *, status: str, stats: dict | None = None,
                 findings: list | None = None, graph_path: str | None = None,
-                html_path: str | None = None, error: str | None = None) -> None:
+                html_path: str | None = None, error: str | None = None,
+                commit_sha: str | None = None) -> None:
     with get_conn() as conn:
         conn.execute(
             """UPDATE runs SET finished_at=?, status=?, stats_json=?, findings_json=?,
-               graph_path=?, html_path=?, error=? WHERE id=?""",
+               graph_path=?, html_path=?, error=?, commit_sha=? WHERE id=?""",
             (
                 now(),
                 status,
@@ -484,6 +525,7 @@ def finish_run(run_id: str, *, status: str, stats: dict | None = None,
                 graph_path,
                 html_path,
                 error,
+                commit_sha,
                 run_id,
             ),
         )
@@ -695,6 +737,7 @@ def list_test_cases(repo_id: str) -> list[dict]:
         d = dict(r)
         d["steps"] = json.loads(d["steps"]) if d["steps"] else []
         d["covers"] = json.loads(d["covers"]) if d.get("covers") else []
+        d["cited_paths"] = json.loads(d["cited_paths"]) if d.get("cited_paths") else []
         out.append(d)
     return out
 
@@ -767,6 +810,7 @@ def import_test_cases(repo_id: str, cases: list[dict]) -> list[dict]:
 
 def update_test_case_verification(
     case_id: str, status: str, rationale: str | None, covers: list[str], module: str | None,
+    assessed_model: str | None = None, cited_paths: list[str | None] | None = None,
 ) -> None:
     """Document-scoped Verify's patch for a story-driven case -- it starts
     with covers=[] and module=NULL (no code was ever shown at generation
@@ -775,11 +819,16 @@ def update_test_case_verification(
     re-running Verify is idempotent. (A code-driven case's status/rationale
     are never stored this way -- they're derived fresh at read time from
     Story Coverage's own judgments, see server/llm_story_coverage.py's
-    link_requirements_to_cases.)"""
+    link_requirements_to_cases.) `assessed_model`/`cited_paths` are this
+    verification pass's provenance -- see _TEST_CASES_COLUMN_MIGRATIONS."""
     with get_conn() as conn:
         conn.execute(
-            "UPDATE test_cases SET status = ?, rationale = ?, covers = ?, module = ? WHERE id = ?",
-            (status, rationale, json.dumps(covers or []), module, case_id),
+            """UPDATE test_cases SET status = ?, rationale = ?, covers = ?, module = ?,
+               assessed_at = ?, assessed_model = ?, cited_paths = ? WHERE id = ?""",
+            (
+                status, rationale, json.dumps(covers or []), module, now(), assessed_model,
+                json.dumps(cited_paths) if cited_paths is not None else None, case_id,
+            ),
         )
 
 
@@ -827,14 +876,18 @@ def get_module_label_details(repo_id: str) -> dict[str, dict]:
 
 # --------------------------------------------------------------------------- story coverage requirements
 
-def replace_story_requirements(repo_id: str, doc_id: str, run_id: str | None, requirements: list[dict]) -> None:
+def replace_story_requirements(
+    repo_id: str, doc_id: str, run_id: str | None, requirements: list[dict], assessed_model: str | None = None,
+) -> None:
     """Idempotent per (repo, document): drops just this document's previously
     extracted/judged requirements written by an LLM or manual pass
     (source='document') and stores the new set. Never touches a future
     human-confirmed row for this same document, and never touches any other
     document's requirements -- full wholesale replace (like gap findings)
     would be wrong here, since a human-confirmed answer must be able to
-    survive a rerun."""
+    survive a rerun. `assessed_model` is this judging pass's provenance
+    (see _STORY_REQUIREMENTS_COLUMN_MIGRATIONS); each `r` may carry its own
+    `cited_paths` (resolved by the caller, which has graph access)."""
     ts = now()
     with get_conn() as conn:
         conn.execute(
@@ -844,11 +897,13 @@ def replace_story_requirements(repo_id: str, doc_id: str, run_id: str | None, re
         for r in requirements:
             conn.execute(
                 """INSERT INTO story_requirements
-                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, created_at,
+                    assessed_at, assessed_model, cited_paths)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(uuid.uuid4()), repo_id, doc_id, run_id, r["text"], r["type"], r["status"],
                     r.get("rationale"), json.dumps(r.get("covers") or []), "document", ts,
+                    ts, assessed_model, json.dumps(r["cited_paths"]) if r.get("cited_paths") is not None else None,
                 ),
             )
 
@@ -868,6 +923,7 @@ def list_story_requirements(repo_id: str, doc_id: str | None = None) -> list[dic
     for r in rows:
         d = dict(r)
         d["covers"] = json.loads(d["covers"]) if d.get("covers") else []
+        d["cited_paths"] = json.loads(d["cited_paths"]) if d.get("cited_paths") else []
         out.append(d)
     return out
 
@@ -879,10 +935,13 @@ def get_story_requirement(requirement_id: str) -> dict | None:
         return None
     d = dict(row)
     d["covers"] = json.loads(d["covers"]) if d.get("covers") else []
+    d["cited_paths"] = json.loads(d["cited_paths"]) if d.get("cited_paths") else []
     return d
 
 
-def replace_derived_requirements(repo_id: str, journey_id: str, run_id: str | None, requirements: list[dict]) -> None:
+def replace_derived_requirements(
+    repo_id: str, journey_id: str, run_id: str | None, requirements: list[dict], assessed_model: str | None = None,
+) -> None:
     """Like replace_story_requirements, scoped to one journey's DERIVED rows
     only (`WHERE journey_id = ? AND source = 'derived'`) -- never touches a
     human-confirmed answer for this same journey (a prior derived row the
@@ -897,12 +956,14 @@ def replace_derived_requirements(repo_id: str, journey_id: str, run_id: str | No
         for r in requirements:
             conn.execute(
                 """INSERT INTO story_requirements
-                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, journey_id, question, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, journey_id, question, created_at,
+                    assessed_at, assessed_model, cited_paths)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(uuid.uuid4()), repo_id, None, run_id, r["text"], r["type"], r["status"],
                     r.get("rationale"), json.dumps(r.get("covers") or []), "derived", journey_id,
                     r.get("question"), ts,
+                    ts, assessed_model, json.dumps(r["cited_paths"]) if r.get("cited_paths") is not None else None,
                 ),
             )
 
@@ -920,6 +981,42 @@ def confirm_story_requirement(requirement_id: str, status: str, rationale: str |
             (status, rationale, requirement_id),
         )
     return get_story_requirement(requirement_id)
+
+
+# --------------------------------------------------------------------------- human reviews
+
+def record_human_review(
+    repo_id: str, target_type: str, target_id: str, decision: str, note: str | None = None,
+) -> dict:
+    """A durable, timestamped record of a human's own judgment on an AI
+    assessment -- never overwrites the AI's own status/rationale/covers (see
+    update_test_case_verification / replace_story_requirements), so a
+    reviewer disagreeing with the AI is itself preserved, not lost. Read by
+    server/evidence_rules.py (per-item evidence_level) and the review-accuracy
+    endpoint (AI vs. human agreement rate)."""
+    review_id = str(uuid.uuid4())
+    ts = now()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO human_reviews (id, repo_id, target_type, target_id, decision, note, reviewed_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (review_id, repo_id, target_type, target_id, decision, note, ts),
+        )
+    return {
+        "id": review_id, "repo_id": repo_id, "target_type": target_type, "target_id": target_id,
+        "decision": decision, "note": note, "reviewed_at": ts,
+    }
+
+
+def list_human_reviews(repo_id: str) -> list[dict]:
+    """Every review for a repo, newest first -- a target reviewed more than
+    once keeps every prior review too (a correction history), so callers that
+    want "the current verdict" should take the first match per target_id."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM human_reviews WHERE repo_id = ? ORDER BY reviewed_at DESC, rowid DESC", (repo_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # --------------------------------------------------------------------------- journeys

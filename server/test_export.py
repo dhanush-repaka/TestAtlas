@@ -96,25 +96,28 @@ def _code_traceability(case: dict, labels: dict) -> str:
 
 def _story_entries(case: dict, documents: dict, journeys: dict) -> list[dict]:
     """Every user story (or journey) this case is linked to: directly, if it was
-    generated from one (source_doc_id/source_journey_id), plus any document whose
-    requirement shares a code citation with this case (case["related_requirements"],
-    the same heuristic server/llm_story_coverage.py's link_requirements_to_cases
-    computes for the Test Cases tab) -- so a code-driven case still surfaces the
-    user story its code citations happen to back, even with no direct link."""
+    generated from one (source_doc_id/source_journey_id -- `kind` ends in
+    "_direct"), plus any document whose requirement merely shares a code
+    citation with this case (case["related_requirements"], the same heuristic
+    server/llm_story_coverage.py's link_requirements_to_cases computes for the
+    Test Cases tab -- `kind` ends in "_inferred", since a shared citation is a
+    suggested link, not a confirmed one) -- so a code-driven case still
+    surfaces the user story its code citations happen to back, clearly marked
+    as inferred rather than looking as certain as a direct link."""
     entries = []
     seen_doc_ids = set()
     if case.get("source_journey_id"):
         jid = case["source_journey_id"]
-        entries.append({"kind": "journey", "id": jid, "name": journeys.get(jid) or "an unnamed journey"})
+        entries.append({"kind": "journey_direct", "id": jid, "name": journeys.get(jid) or "an unnamed journey"})
     if case.get("source_doc_id"):
         did = case["source_doc_id"]
-        entries.append({"kind": "document", "id": did, "name": documents.get(did) or "an unknown document"})
+        entries.append({"kind": "document_direct", "id": did, "name": documents.get(did) or "an unknown document"})
         seen_doc_ids.add(did)
     for r in case.get("related_requirements") or []:
         did = r.get("doc_id")
         if did and did not in seen_doc_ids:
             seen_doc_ids.add(did)
-            entries.append({"kind": "document", "id": did, "name": documents.get(did) or "an unknown document"})
+            entries.append({"kind": "document_inferred", "id": did, "name": documents.get(did) or "an unknown document"})
     return entries
 
 
@@ -125,8 +128,11 @@ def _story_traceability(case: dict, documents: dict, journeys: dict) -> str:
     entries = _story_entries(case, documents, journeys)
     if not entries:
         return "User story traceability: not linked to any user story"
-    names = ", ".join('"{}"'.format(e["name"]) for e in entries)
-    return f"User story traceability: {names}"
+    parts = [
+        '"{}"{}'.format(e["name"], "" if e["kind"].endswith("_direct") else " (inferred from a shared code citation, not a confirmed link)")
+        for e in entries
+    ]
+    return f"User story traceability: {', '.join(parts)}"
 
 
 def _description(case: dict, labels: dict, documents: dict, journeys: dict) -> str:

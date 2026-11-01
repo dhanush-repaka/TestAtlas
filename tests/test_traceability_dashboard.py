@@ -327,6 +327,10 @@ class ComputeSummaryTestCaseStatsTests(unittest.TestCase):
             "story_link_pct": 0.0, "code_coverage_pct": 0.0,
             "story_link_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
             "code_coverage_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
+            "evidence": {
+                "insufficient_evidence": 3, "inconclusive": 0, "ai_supported": 0, "ai_conflict": 0,
+                "stale": 0, "human_reviewed": 0,
+            },
         })
 
     def test_a_case_missing_the_field_is_skipped_not_counted_as_a_bucket(self):
@@ -549,6 +553,83 @@ class DashboardApiTests(unittest.TestCase):
         r = self.client.get(f"/api/repos/{self.repo_id}/dashboard")
         self.assertEqual(len(r.json()["trend"]), 1)
         self.assertEqual(len(db.list_dashboard_snapshots(self.repo_id)), 1)
+
+
+class ComputeSummaryEvidenceAndStalenessTests(unittest.TestCase):
+    """Stage 2/3/4 of the false-confidence reduction plan: evidence_level
+    counts, staleness against the latest run, and human-reviewed counts --
+    all computed via server/evidence_rules.py, read here through
+    compute_summary's own evidence/overall sections."""
+
+    def test_evidence_levels_are_counted_for_both_cases_and_requirements(self):
+        cases = [
+            case("c1", covers=[], status=None),                       # insufficient_evidence
+            case("c2", covers=["x"], status="unknown"),                # inconclusive
+            case("c3", covers=["x"], status="supported"),              # ai_supported
+            case("c4", covers=["x"], status="contradicted"),           # ai_conflict
+        ]
+        requirements = [req("r1", "doc-a", "supported", covers=["y"])]
+        out = td.compute_summary([DOC_A], requirements, cases, [], {})
+        self.assertEqual(out["test_cases"]["evidence"], {
+            "insufficient_evidence": 1, "inconclusive": 1, "ai_supported": 1, "ai_conflict": 1,
+            "stale": 0, "human_reviewed": 0,
+        })
+        self.assertEqual(out["requirements"]["evidence"]["ai_supported"], 1)
+
+    def test_an_item_whose_run_id_predates_the_latest_run_counts_as_stale(self):
+        cases = [case("c1", covers=["x"], status="supported", run_id="run-1")]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="run-2")
+        self.assertEqual(out["test_cases"]["evidence"]["stale"], 1)
+        # Staleness never changes which evidence bucket it's in.
+        self.assertEqual(out["test_cases"]["evidence"]["ai_supported"], 1)
+
+    def test_an_item_matching_the_latest_run_is_not_stale(self):
+        cases = [case("c1", covers=["x"], status="supported", run_id="run-2")]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="run-2")
+        self.assertEqual(out["test_cases"]["evidence"]["stale"], 0)
+
+    def test_no_latest_run_id_means_nothing_is_stale(self):
+        cases = [case("c1", covers=["x"], status="supported", run_id="run-1")]
+        out = td.compute_summary([], [], cases, [], {})  # latest_run_id defaults to None
+        self.assertEqual(out["test_cases"]["evidence"]["stale"], 0)
+
+    def test_a_reviewed_item_is_counted_as_human_reviewed(self):
+        cases = [case("c1", covers=["x"], status="supported")]
+        reviews = [{"id": "rev-1", "target_type": "test_case", "target_id": "c1",
+                    "decision": "confirmed_supported", "reviewed_at": "2026-01-01"}]
+        out = td.compute_summary([], [], cases, [], {}, human_reviews=reviews)
+        self.assertEqual(out["test_cases"]["evidence"]["human_reviewed"], 1)
+
+    def test_an_unreviewed_item_is_not_counted_as_human_reviewed(self):
+        cases = [case("c1", covers=["x"], status="supported")]
+        out = td.compute_summary([], [], cases, [], {}, human_reviews=[])
+        self.assertEqual(out["test_cases"]["evidence"]["human_reviewed"], 0)
+
+    def test_headline_names_the_stale_count_when_nonzero(self):
+        cases = [case("c1", covers=["x"], status="supported", run_id="run-1")]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="run-2")
+        self.assertIn("1 assessment is stale and need", out["overall"]["headline"])
+
+    def test_headline_omits_the_stale_clause_when_nothing_is_stale(self):
+        cases = [case("c1", covers=["x"], status="supported", run_id="run-2")]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="run-2")
+        self.assertNotIn("stale", out["overall"]["headline"])
+
+    def test_requirements_evidence_is_independent_of_test_cases_evidence(self):
+        cases = [case("c1", covers=[], status=None)]
+        requirements = [req("r1", "doc-a", "supported", covers=["y"], run_id="old-run")]
+        out = td.compute_summary([DOC_A], requirements, cases, [], {}, latest_run_id="new-run")
+        self.assertEqual(out["test_cases"]["evidence"]["stale"], 0)
+        self.assertEqual(out["requirements"]["evidence"]["stale"], 1)
+
+    def test_correctness_rate_denominator_is_exposed_alongside_the_percentage(self):
+        requirements = [
+            req("r1", "doc-a", "supported", covers=["x"]),
+            req("r2", "doc-a", "contradicted", covers=["y"]),
+            req("r3", "doc-a", "unknown"),
+        ]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["requirements"]["correctness_rate_denominator"], 2)  # supported + contradicted, not unknown
 
 
 if __name__ == "__main__":

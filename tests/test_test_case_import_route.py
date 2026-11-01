@@ -148,7 +148,7 @@ class VerifyImportedTestCasesApiTests(unittest.TestCase):
         def fake_verify(cases, context, sources):
             return mock.Mock(results=[
                 {"id": c["id"], "status": "supported", "covers": ["Cart.add"], "rationale": "r"} for c in cases
-            ], dropped=[])
+            ], dropped=[], model="gpt-4o-mini")
 
         # The POST only starts a background thread and returns immediately --
         # the mocks must stay active for the whole polling loop too, not just

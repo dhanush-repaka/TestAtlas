@@ -2052,6 +2052,28 @@ async function loadDashboardPanel() {
       : "Every analyzed module has at least one test case.");
   renderDashboardTrend();
   renderDashboardCriticalModules();
+  activeReviewAccuracy = await api(`/repos/${repoId}/review-accuracy`).catch(() => null);
+  if (repoId !== activeRepoId) return;
+  renderDashboardReviewAccuracy();
+}
+
+let activeReviewAccuracy = null;
+
+function renderDashboardReviewAccuracy() {
+  const el = $("#tdReviewAccuracy");
+  const acc = activeReviewAccuracy;
+  if (!acc) { el.innerHTML = `<p class="muted small">Couldn't load this.</p>`; return; }
+  if (!acc.total_reviews) {
+    el.innerHTML = `<p class="muted small">No human reviews recorded yet — use "Record review" on a test case or story requirement to start building this.</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <p><b>${acc.agreement_rate_pct}%</b> agreement <span class="muted small">(${acc.agreed_with_ai}/${acc.total_reviews} reviews)</span></p>
+    <ul class="td-gap-list">
+      <li class="td-gap-item">${acc.false_support_count} case${acc.false_support_count === 1 ? "" : "s"} the AI called supported that a human rejected</li>
+      <li class="td-gap-item">${acc.false_conflict_count} case${acc.false_conflict_count === 1 ? "" : "s"} the AI called a conflict that a human rejected</li>
+      <li class="td-gap-item">${acc.needs_more_info_count} review${acc.needs_more_info_count === 1 ? "" : "s"} flagged as needing more info</li>
+    </ul>`;
 }
 
 function renderDashboardCriticalModules() {
@@ -2082,13 +2104,15 @@ function renderDashboardBanner() {
 function renderDashboardStatCards() {
   const el = $("#tdStatCards");
   if (!activeDashboard) { el.innerHTML = ""; return; }
-  const { documents, requirements } = activeDashboard;
+  const { documents, requirements, test_cases } = activeDashboard;
   const notStartedPct = tdPct(documents.by_health.not_started + documents.by_health.not_analyzed, documents.total);
+  const totalStale = (test_cases.evidence?.stale || 0) + (requirements.evidence?.stale || 0);
   el.innerHTML = [
     statCard(`${documents.verified_pct}%`, "AI-supported", `${documents.by_health.verified}/${documents.total} user stories`),
-    statCard(`${requirements.correctness_rate}%`, "AI-supported rate", "of what's cited as built, by AI review"),
+    statCard(`${requirements.correctness_rate}%`, "AI-supported rate", `${requirements.by_status.supported}/${requirements.correctness_rate_denominator ?? 0} coded criteria, by AI review`),
     statCard(documents.by_health.broken, "Potential conflicts", `${requirements.by_status.contradicted} contradicted criteria`),
     statCard(`${notStartedPct}%`, "No evidence found", `${documents.by_health.not_started + documents.by_health.not_analyzed}/${documents.total} user stories`),
+    statCard(totalStale, "Stale assessments", totalStale ? "judged against an older analysis run -- needs reassessment" : "every assessment matches the latest analysis run"),
   ].join("");
 }
 
@@ -2798,7 +2822,7 @@ function renderTestCaseCard(c) {
         </div>` : ""}
       ${(c.related_requirements || []).length ? `
         <div class="tc-section">
-          <span class="tc-section-label">${c.status ? "Related user story (traceability only — this case already has its own verdict above)" : "Related user story — no verdict of its own yet, shown as the best signal available"}</span>
+          <span class="tc-section-label">${c.status ? "Related user story (inferred from a shared code citation — traceability only, this case already has its own verdict above)" : "Related user story — inferred from a shared code citation, not a confirmed link, shown as the best signal available"}</span>
           ${c.related_requirements.map((r) => `
             <div class="tc-linked-req">
               ${c.status ? "" : `<span class="tc-status-note"><span class="dot status-${r.status}"></span>${r.status.replaceAll("_", " ")}</span>`}
@@ -2806,7 +2830,28 @@ function renderTestCaseCard(c) {
               <p>${escapeHtml(r.text)}</p>
             </div>`).join("")}
         </div>` : ""}
+      <div class="tc-section tc-review-actions">
+        <span class="tc-section-label">Record review</span>
+        <div class="tc-review-btns">
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="${c.status === "contradicted" ? "confirmed_contradicted" : "confirmed_supported"}" ${readOnly ? "disabled" : ""}>Agree</button>
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="rejected_ai_judgment" ${readOnly ? "disabled" : ""}>Disagree</button>
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="needs_more_info" ${readOnly ? "disabled" : ""}>Needs more info</button>
+        </div>
+      </div>
     </div>`;
+}
+
+async function recordTestCaseReview(caseId, decision, btn) {
+  const group = btn.closest(".tc-review-btns");
+  group.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    await api(`/repos/${activeRepoId}/test-cases/${caseId}/review`, { method: "POST", body: JSON.stringify({ decision }) });
+    toast("Review recorded", "ok");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    group.querySelectorAll("button").forEach((b) => (b.disabled = readOnly));
+  }
 }
 
 // Four mutually-exclusive origins a test case can have: imported from an
@@ -3223,6 +3268,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#importTestCasesBtn").addEventListener("click", () => $("#importTestCasesInput").click());
   $("#importTestCasesInput").addEventListener("change", handleImportTestCasesInput);
   $("#verifyImportedTestCasesBtn").addEventListener("click", () => runBulkJob("imported_test_verification"));
+  $("#testCaseListAll").addEventListener("click", (ev) => {
+    const reviewBtn = ev.target.closest(".tc-review-btn");
+    if (reviewBtn) recordTestCaseReview(reviewBtn.dataset.caseId, reviewBtn.dataset.decision, reviewBtn);
+  });
   $("#getStoryCoverageContextBtn").addEventListener("click", getStoryCoverageContextForSelected);
   $("#submitStoryRequirementsBtn").addEventListener("click", submitStoryRequirementsForSelected);
   $("#storyFilterStatusSelect").addEventListener("change", renderStoryRequirementsList);

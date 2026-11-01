@@ -100,9 +100,9 @@ REAL SOURCE CODE -- the modules a retrieval pass judged most likely relevant to 
 ---
 
 Answer:
-- "supported": you can point to specific code above that does what the criterion describes (or, for a negative criterion, a specific guard/check that prevents it)
+- "supported": you can point to specific code above that does what the criterion describes. For a NEGATIVE criterion (a restriction, a forbidden state, a rejection), this means pointing to the actual guard/validation/check that enforces it -- not just code that happens to be related, and never the mere ABSENCE of a contradicting path. Seeing a function exist is not evidence that it validates anything; if you cannot point to the specific line(s) doing the check, this is NOT supported.
 - "contradicted": the code above does the opposite of what the criterion describes
-- "unknown": you cannot tell from the code above alone -- the honest answer when the evidence doesn't decide it, including when nothing relevant was retrieved; do not guess
+- "unknown": you cannot tell from the code above alone -- the honest answer when the evidence doesn't decide it, including when nothing relevant was retrieved, or when a negative criterion's enforcement can't be confirmed from what's shown; do not guess
 
 "covers" must list ONLY real function/class/method names from the code above that support your judgment -- never invent one. If you can't point to a real name, the status must be "unknown". Give a one-sentence "rationale".
 
@@ -157,6 +157,7 @@ def validate_requirements(context: dict, raw: list[dict]) -> list[dict]:
 class CoverageResult:
     requirements: list[dict]
     dropped: list[str] = field(default_factory=list)  # why each discarded model item was rejected
+    model: str = DEFAULT_MODEL  # which model actually judged this batch -- assessment provenance
 
 
 def _call_json(client, model: str, prompt: str, site: str = "story_coverage") -> dict:
@@ -222,7 +223,7 @@ def generate_story_requirements(
     if not atoms and len(doc.get("content", "").strip()) > _MIN_CONTENT_FOR_RETRY:
         atoms = decompose_once()
 
-    result = CoverageResult(requirements=[])
+    result = CoverageResult(requirements=[], model=model)
     if not atoms:
         return result
 

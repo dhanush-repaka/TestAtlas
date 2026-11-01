@@ -157,6 +157,24 @@ def gather_module_sources(g, source_root: Path, modules: list[str], max_function
     return sources
 
 
+def resolve_cited_paths(g, names: list[str], module: str | None = None) -> list[str | None]:
+    """Resolves each name in `names` to its real repo-relative file path (None
+    if it can't be found) -- purely for evidence provenance (server/db.py's
+    cited_paths column on test_cases/story_requirements), never changes what
+    was cited, just records where each one lives. `module`-scoped via
+    find_citation_path when given (a test case's module is already known by
+    the time it's verified); otherwise searched across every domain via
+    find_citation_domain_and_path (a story requirement has no single module)."""
+    out: list[str | None] = []
+    for name in names:
+        if module:
+            out.append(find_citation_path(g, module, name))
+        else:
+            found = find_citation_domain_and_path(g, name)
+            out.append(found[1] if found else None)
+    return out
+
+
 def gather_cited_sources(g, module: str, source_root: Path, cases: list[dict]) -> dict[str, str]:
     """One lookup per distinct cited name across all of `cases` (each test
     case's already-validated `covers` list) -- not per case, since several
