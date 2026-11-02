@@ -17,6 +17,8 @@ single fake "mostly fine" verdict that would hide the one bad step.
 """
 from __future__ import annotations
 
+from server.test_case_setup import SETUP_RULES, SETUP_SCHEMA, add_initial_setup
+
 from kg.source_evidence import render_sources
 
 import json
@@ -49,10 +51,12 @@ ALREADY-JUDGED MEMBER REQUIREMENTS, in flow order:
 
 For each requirement above, write one step narrating it as a user would experience it: {{"action": "...", "expected": "..."}}. For a requirement marked CONTRADICTED, the step's expected result must describe the INTENDED (spec) behavior the requirement claims, not the actual buggy behavior -- the inherited status is what flags the mismatch, the step just documents the spec. For NEEDS_HUMAN_INPUT or UNKNOWN, still narrate the expected behavior as the requirement states it, phrased plainly, without resolving the ambiguity yourself.
 
+{SETUP_RULES}
+
 Give the overall case a title, category ("happy_path", "edge_case", or "error_handling" -- pick "error_handling" if any member is contradicted or negative), priority (1 = critical path .. 4 = rare), and optional preconditions.
 
-Respond with ONLY a JSON object of this exact shape, no other text, with EXACTLY {len(requirements)} steps in order:
-{{"test_case": {{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}}}"""
+Respond with ONLY a JSON object of this exact shape, no other text, with EXACTLY {len(requirements)} scenario steps in order, plus separate setup.steps:
+{{"test_case": {{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "setup": {SETUP_SCHEMA}, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}}}"""
 
 
 def generate_test_case_from_journey(
@@ -120,4 +124,7 @@ def generate_test_case_from_journey(
     checked["covers"] = sorted({name for r in requirements for name in (r.get("covers") or [])})
     checked["status"] = max((r["status"] for r in requirements), key=lambda s: _STATUS_SEVERITY.get(s, 0))
     checked["rationale"] = "; ".join(f"{r['text']}: {r.get('rationale') or r['status']}" for r in requirements)
-    return checked
+    try:
+        return add_initial_setup(checked, raw_case)
+    except ValueError as e:
+        raise RuntimeError(str(e)) from e

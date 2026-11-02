@@ -1509,7 +1509,8 @@ def api_review_test_case(repo_id: str, case_id: str, payload: HumanReviewIn):
     if not cases:
         raise HTTPException(404, "test case not found")
     ai_level = evidence_rules.evidence_level(cases[0])
-    return db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note, ai_level_at_review=ai_level)
+    review = db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note, ai_level_at_review=ai_level)
+    return {**review, "review_state":test_case_view.review_state(cases[0], review)}
 
 
 @api.get("/repos/{repo_id}/review-accuracy")
@@ -1662,6 +1663,9 @@ def api_run_test_generation(repo_id: str, module: str):
         result = llm_test_generation.generate_test_cases(context, sources=sources)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    if not result.cases:
+        detail = "; ".join(result.dropped[:5]) or "No scenarios returned"
+        raise HTTPException(502, "No valid cases generated; existing cases preserved. " + detail)
     if hasattr(sources, "manifest"):
         for case in result.cases:
             case["generation_context"] = sources.manifest()
@@ -1683,7 +1687,7 @@ def api_list_test_cases(repo_id: str):
     linked = llm_story_coverage.link_requirements_to_cases(cases, requirements)
     run = db.get_latest_successful_run(repo_id)
     reviews = evidence_rules.latest_review_by_target(db.list_human_reviews(repo_id))
-    return [{**case, "human_review": reviews.get(case["id"])}
+    return [{**case, "human_review": reviews.get(case["id"]), "review_state":test_case_view.review_state(case,reviews.get(case["id"]))}
             for case in test_case_view.enrich_cases(linked, run["id"] if run else None, db.list_documents(repo_id))]
 
 

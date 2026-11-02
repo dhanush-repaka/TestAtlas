@@ -1062,3 +1062,7 @@ textarea { width: 100%; resize: vertical; box-sizing: border-box; }
 
 .source-context { overflow-wrap: anywhere; margin: 12px 0; }
 .source-context code { white-space: normal; }
+
+.tc-review-notice { padding: 12px; margin: 12px 0; border: 1px solid var(--border); background: var(--panel-2); border-radius: 8px; }
+.tc-review-state, .tc-conflict-warning { color: var(--text); font-weight: 600; }
+.tc-conflict-comparison { border-left: 3px solid var(--border); padding-left: 10px; }

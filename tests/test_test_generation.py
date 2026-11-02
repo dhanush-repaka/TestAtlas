@@ -6,6 +6,8 @@ Run with:  python -m unittest discover -s tests -t .
 """
 from __future__ import annotations
 
+from tests.generation_fixtures import with_setup_payload
+
 import json
 import os
 import tempfile
@@ -208,7 +210,7 @@ class RunGenerationTests(unittest.TestCase):
         """Mocks OpenAI: each payload is one successive model response. Returns (result, client)."""
         def response(payload):
             r = mock.Mock()
-            r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(payload)))]
+            r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(with_setup_payload(payload))))]
             return r
         client = mock.Mock()
         client.chat.completions.create.side_effect = [response(p) for p in payloads]
@@ -237,8 +239,8 @@ class RunGenerationTests(unittest.TestCase):
         self.assertEqual(client.chat.completions.create.call_count, 2)
         self.assertIn("fewer than 3 steps", client.chat.completions.create.call_args_list[1].kwargs["messages"][0]["content"])
         by = {c["title"]: c for c in result.cases}
-        self.assertEqual(len(by["Verify that the footer displays"]["steps"]), 3)
-        self.assertEqual(len(by["Verify that a bad code is refused"]["steps"]), 1)   # never padded, never re-asked
+        self.assertEqual(len(by["Verify that the footer displays"]["steps"]), 4)
+        self.assertEqual(len(by["Verify that a bad code is refused"]["steps"]), 2)   # never padded, never re-asked
         self.assertEqual((result.deepened, result.still_thin), (1, 0))
 
     def test_a_retry_that_is_no_deeper_is_ignored_and_reported(self):

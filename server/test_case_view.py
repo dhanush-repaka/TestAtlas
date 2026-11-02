@@ -44,6 +44,23 @@ def filter_cases(cases: list[dict], *, module='', category='', source='', story=
             (not source or (not imported if source == 'generated' else method == source)) and
             (not story or case.get('source_doc_id') == story) and
             (not q or q.strip().lower() in search) and
-            (not assessment or (state in ('insufficient', 'inconclusive', 'unassessed') if assessment == 'insufficient' else state == assessment))):
+            (not assessment or ((case.get('review_state') or {}).get('state') == 'disputed' if assessment == 'disputed' else state in ('insufficient', 'inconclusive', 'unassessed') if assessment == 'insufficient' else state == assessment))):
             result.append(case)
     return result
+
+
+def review_state(case: dict, review: dict | None) -> dict:
+    """A reviewer decision is independent of, and may predate, the AI assessment."""
+    if not review:
+        return {'state':'unreviewed', 'label':'Not reviewed'}
+    from datetime import datetime
+    try:
+        earlier = bool(case.get('assessed_at') and datetime.fromisoformat(review['reviewed_at']) < datetime.fromisoformat(case['assessed_at']))
+    except (KeyError, ValueError, TypeError):
+        earlier = False
+    if earlier:
+        return {'state':'previous_assessment', 'label':'Review belongs to an earlier assessment'}
+    states = {'rejected_ai_judgment':('disputed','Disputed by reviewer'), 'needs_more_info':('needs_information','Reviewer needs more information'),
+              'confirmed_supported':('confirmed','Reviewer confirmed support'), 'confirmed_contradicted':('confirmed','Reviewer confirmed conflict')}
+    state,label = states.get(review.get('decision'),('unreviewed','Not reviewed'))
+    return {'state':state,'label':label}

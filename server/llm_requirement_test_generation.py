@@ -33,6 +33,8 @@ something read-a-document-by-hand replaces).
 """
 from __future__ import annotations
 
+from server.test_case_setup import SETUP_RULES, SETUP_SCHEMA, add_initial_setup
+
 import json
 import os
 
@@ -61,10 +63,12 @@ If this criterion involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, a
 
 Pay attention to every qualifying word in the criterion, not just its main clause -- a word like "single-use", "secure", "unique", "expires", "required", or "valid" is itself a testable property with its own natural failure mode (a single-use token implies a reuse attempt must be rejected; an expiring token implies an expired-token attempt must be rejected), and each one warrants its own scenario even if the criterion's main sentence doesn't spell that failure mode out explicitly. A criterion with genuinely no qualifying words and no internal structure still yields exactly one case -- never invent a scenario with no textual anchor at all in the criterion's wording.
 
+{SETUP_RULES}
+
 For EACH scenario, write: title, category ("happy_path", "edge_case", or "error_handling"), priority (1 = critical path .. 4 = rare), optional preconditions, and steps as an ordered list of {{"action": ..., "expected": ...}} pairs (at least one step).
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{{"test_cases": [{{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}]}}"""
+{{"test_cases": [{{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "setup": {SETUP_SCHEMA}, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}]}}"""
 
 
 def generate_test_cases_from_requirement(requirement: dict, model: str | None = None) -> list[dict]:
@@ -120,6 +124,11 @@ def generate_test_cases_from_requirement(requirement: dict, model: str | None = 
         if checked is None:
             reasons.append(f"scenario {i} rejected: {why}")
             continue
+        try:
+            checked = add_initial_setup(checked, raw_case)
+        except ValueError as e:
+            reasons.append(f"scenario {i} rejected: {e}")
+            continue
         out.append(checked)
 
     if not out:
@@ -144,10 +153,12 @@ If a criterion involves a NUMERIC RANGE, THRESHOLD, or LIMIT (a percentage, an a
 
 A simple, narrow story may only need a handful of cases; a well-scoped, meaty story (a full login flow, or a pricing rule with several numeric limits) can easily warrant well over a dozen once you account for its happy path, each distinct edge case, each guard/error condition, and each boundary value a numeric criterion implies. Let the story's own real complexity decide -- "never pad" means don't invent scenarios that test nothing new, not collapsing a whole numeric range down to one case -- and never under-cover a genuinely rich story just to keep the list short.
 
+{SETUP_RULES}
+
 For EACH scenario, write: title, category ("happy_path", "edge_case", or "error_handling"), priority (1 = critical path .. 4 = rare), optional preconditions, and steps as an ordered list of {{"action": ..., "expected": ...}} pairs (at least one step).
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{{"test_cases": [{{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}]}}
+{{"test_cases": [{{"title": "...", "category": "happy_path"|"edge_case"|"error_handling", "priority": 1, "setup": {SETUP_SCHEMA}, "preconditions": "...", "steps": [{{"action": "...", "expected": "..."}}], "description": "..."}}]}}
 If the story has nothing checkable in it, respond with {{"test_cases": []}}."""
 
 
@@ -193,6 +204,11 @@ def generate_test_cases_from_document(doc: dict, model: str | None = None) -> li
         checked, why = _check_case(raw_case, {}, ui=False)
         if checked is None:
             reasons.append(f"scenario {i} rejected: {why}")
+            continue
+        try:
+            checked = add_initial_setup(checked, raw_case)
+        except ValueError as e:
+            reasons.append(f"scenario {i} rejected: {e}")
             continue
         out.append(checked)
 

@@ -9,6 +9,8 @@ Run with:  python -m unittest discover -s tests -t .
 """
 from __future__ import annotations
 
+from tests.generation_fixtures import with_setup_payload
+
 import json
 import os
 import unittest
@@ -26,7 +28,7 @@ REQUIREMENTS = [
 
 def mock_model_response(payload):
     r = mock.Mock()
-    r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(payload)))]
+    r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(with_setup_payload(payload))))]
     client = mock.Mock()
     client.chat.completions.create.return_value = r
     return client
@@ -58,10 +60,10 @@ class GenerateTestCaseFromJourneyTests(unittest.TestCase):
             {"action": "Log in", "expected": "Logged in"},
             {"action": "Charge card", "expected": "Card is charged"},
         ])
-        self.assertEqual(case["steps"][0]["status"], "supported")
-        self.assertEqual(case["steps"][0]["requirement_text"], "User logs in")
-        self.assertEqual(case["steps"][1]["status"], "contradicted")
-        self.assertEqual(case["steps"][1]["requirement_text"], "Cart total is charged")
+        self.assertEqual(case["steps"][1]["status"], "supported")
+        self.assertEqual(case["steps"][1]["requirement_text"], "User logs in")
+        self.assertEqual(case["steps"][2]["status"], "contradicted")
+        self.assertEqual(case["steps"][2]["requirement_text"], "Cart total is charged")
 
     def test_an_extra_step_past_the_given_requirements_is_left_untagged(self):
         case, _ = self._run([
@@ -69,8 +71,8 @@ class GenerateTestCaseFromJourneyTests(unittest.TestCase):
             {"action": "c", "expected": "d"},
             {"action": "extra step the model added", "expected": "e"},
         ])
-        self.assertIsNone(case["steps"][2]["status"])
-        self.assertIsNone(case["steps"][2]["requirement_text"])
+        self.assertIsNone(case["steps"][3]["status"])
+        self.assertIsNone(case["steps"][3]["requirement_text"])
 
     def test_all_supported_members_yield_supported_overall(self):
         case, _ = self._run(

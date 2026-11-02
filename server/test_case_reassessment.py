@@ -37,6 +37,31 @@ def ambiguous_code_names(context):
     return {name for name, count in counts.items() if count > 1}
 
 
+def case_texts(case):
+    texts = [case.get(k) for k in ('title','description','preconditions','expected_result')]
+    for step in case.get('steps') or []:
+        texts.extend([step.get('action'),step.get('expected')] if isinstance(step,dict) else [step])
+    return [text for text in texts if isinstance(text,str)]
+
+
+def validate_conflict(entry, dimension, case, citations):
+    """Require an inspectable contrast; citation existence alone is not a conflict."""
+    conflict = entry.get('conflict')
+    if not isinstance(conflict,dict):
+        return None
+    left,right,difference = (conflict.get(k) for k in ('left_quote','right_quote','difference'))
+    if not all(isinstance(v,str) and v.strip() for v in (left,right,difference)):
+        return None
+    left_pool = case_texts(case) if dimension != 'implementation_alignment' else [c['quote'] for c in citations if c['kind']=='story']
+    right_pool = [c['quote'] for c in citations if c['kind']==('story' if dimension=='requirement_alignment' else 'code')]
+    if not any(left in value for value in left_pool) or not any(right in value for value in right_pool):
+        return None
+    normalise = lambda text: ''.join(ch.lower() for ch in text if ch.isalnum())
+    if normalise(left)==normalise(right):
+        return None
+    return {'left_quote':left,'right_quote':right,'difference':difference.strip()}
+
+
 def validate_report(raw, case, context, sources):
     """Quotes must occur in supplied evidence; names alone cannot establish behaviour."""
     docs = {d['id']: d for d in context.get('documents', [])}
@@ -80,8 +105,14 @@ def validate_report(raw, case, context, sources):
             status = 'unknown'
         if dimension != 'requirement_alignment':
             status = enforce_context(status, raw, sources)
+        model_status = entry.get('status')
+        conflict = validate_conflict(entry, dimension, case, citations) if model_status == 'contradicted' else None
+        validation_note = None
+        if model_status == 'contradicted' and conflict is None:
+            status = 'unknown'
+            validation_note = 'The proposed contradiction did not identify valid opposing expectations. Reassessment is required.'
         rationale = entry.get('rationale')
-        report[dimension] = {'status': status, 'rationale': ('Insufficient validated evidence. ' if missing_evidence else '') + (rationale.strip() if isinstance(rationale, str) else ''), 'citations': citations[:12]}
+        report[dimension] = {'status': status, 'rationale': ('Insufficient validated evidence. ' if missing_evidence else '') + (rationale.strip() if isinstance(rationale, str) else ''), 'citations': citations[:12], 'model_status':model_status, 'conflict':conflict, 'validation_note':validation_note}
     if isinstance(sources, SourceEvidence):
         report['source_context'] = sources.manifest()
         report['context_sufficient'] = raw.get('context_sufficient') is True
@@ -110,5 +141,6 @@ def validate_report(raw, case, context, sources):
         outcome = 'aligned'
     else:
         outcome = 'needs_clarification'
+    report['validation_version'] = 2
     report['outcome'] = outcome
     return report

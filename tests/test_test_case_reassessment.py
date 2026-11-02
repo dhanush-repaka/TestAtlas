@@ -18,9 +18,15 @@ CASE = {'id':'case', 'title':'Reject large order', 'steps':[{'action':'Order 11'
 def findings(r='supported', c='contradicted', i='contradicted'):
     story = {'kind':'story','id':'story','quote':'Reject orders above 10 items.'}
     code = {'kind':'code','id':'checkout','quote':'return len(items) <= 10'}
-    return {'requirement_alignment':{'status':r,'rationale':'Expectation vs current story','citations':[story]},
+    result = {'requirement_alignment':{'status':r,'rationale':'Expectation vs current story','citations':[story]},
             'code_evidence':{'status':c,'rationale':'Actual behaviour vs expectation','citations':[code]},
             'implementation_alignment':{'status':i,'rationale':'Implementation vs intended behaviour','citations':[story,code]}}
+    for key, entry in result.items():
+        if entry['status']=='contradicted':
+            entry['conflict']={'left_quote':story['quote'] if key=='implementation_alignment' else CASE['expected_result'],
+                               'right_quote':story['quote'] if key=='requirement_alignment' else code['quote'],
+                               'difference':'The synthetic comparison identifies opposing expected outcomes.'}
+    return result
 
 
 class DecisionTests(unittest.TestCase):
@@ -178,8 +184,8 @@ class ReassessmentApiTests(unittest.TestCase):
         code = {'kind':'code','id':'Cart.add','quote':'pass'}
         raw = {'context_sufficient':True,'missing_context':[], 'id':c['id'],'status':'contradicted','covers':['Cart.add'],'rationale':'Returns None',
                'requirement_alignment':{'status':'supported','rationale':'Expected return matches story','citations':[story]},
-               'code_evidence':{'status':'contradicted','rationale':'pass returns None','citations':[code]},
-               'implementation_alignment':{'status':'contradicted','rationale':'Story requires a returned item','citations':[story,code]}}
+               'code_evidence':{'status':'contradicted','rationale':'pass returns None','citations':[code], 'conflict':{'left_quote':'Rejected','right_quote':'pass','difference':'The test expects rejection; the implementation returns None.'}},
+               'implementation_alignment':{'status':'contradicted','rationale':'Story requires a returned item','citations':[story,code], 'conflict':{'left_quote':story['quote'],'right_quote':'pass','difference':'The story requires returning an item, but this body returns None.'}}}
         response = mock.Mock()
         response.choices = [mock.Mock(message=mock.Mock(content=json.dumps({'verifications':[raw]})))]
         sdk = mock.Mock()

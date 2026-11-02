@@ -34,6 +34,8 @@ checked: names that aren't in the module are dropped rather than trusted.
 """
 from __future__ import annotations
 
+from server.test_case_setup import SETUP_RULES, SETUP_SCHEMA, add_initial_setup
+
 from kg.source_evidence import render_sources
 
 import json
@@ -213,6 +215,8 @@ This is NOT the same thing as refusing to vary a NUMERIC input: a customer typin
 - Files that only produce machine-readable output for search engines or crawlers (robots, sitemap, manifest, social-preview images) or that are API routes are not screens: write no cases for them.
 - If the module has no user- or consumer-visible behavior of its own (pure types, config or constants, internal plumbing, or it is itself test code such as a `tests` package or `*.test`/`*.spec` files), respond with {{"test_cases": []}}. Do not force scenarios out of internals.
 
+{SETUP_RULES}
+
 TEST CASE FORMAT (an Azure DevOps test case)
 - "title": an imperative sentence naming the scenario, starting "Verify that ...".
 - "description": 1-2 sentences -- what this case verifies and why it matters.
@@ -243,7 +247,7 @@ Respond with ONLY a JSON object of this exact shape, no other text:
     "priority": 2,
     "category": "happy_path" | "edge_case" | "error_handling",
     "feature": "...",
-    "preconditions": "...",
+    "setup": {SETUP_SCHEMA}, "preconditions": "...",
     "steps": [{{"action": "...", "expected": "..."}}, {{"action": "...", "expected": "..."}}],
     "covers": ["Name", "Class.method"]
   }},
@@ -413,7 +417,7 @@ _HAPPY_MIN_STEPS = 3
 
 
 def _thin(cases: list[dict]) -> list[dict]:
-    return [c for c in cases if c["category"] == "happy_path" and len(c["steps"]) < _HAPPY_MIN_STEPS]
+    return [c for c in cases if c["category"] == "happy_path" and sum(step.get("kind") != "setup" for step in c["steps"]) < _HAPPY_MIN_STEPS]
 
 
 def _build_deepen_prompt(context: dict, thin: list[dict], must_trigger: list[str], sources: dict[str, str] | None = None) -> str:
@@ -500,6 +504,9 @@ def generate_test_cases(context: dict, model: str | None = None, sources: dict[s
         seen = {c["title"].lower() for c in result.cases}
         for raw in raw_cases[:HARD_CASE_CAP]:
             case, why = _check_case(raw, canon, ui)
+            if case is not None:
+                try: case = add_initial_setup(case, raw)
+                except ValueError as e: case, why = None, str(e)
             if case is None:
                 result.dropped.append(why or "invalid")
             elif case["title"].lower() not in seen and len(result.cases) < HARD_CASE_CAP:
@@ -522,8 +529,11 @@ def generate_test_cases(context: dict, model: str | None = None, sources: dict[s
         by_title = {c["title"].lower(): i for i, c in enumerate(result.cases)}
         for raw in _ask(prompt, min(_model_token_ceiling(model), _PROMPT_OVERHEAD_TOKENS + len(thin) * _TOKENS_PER_CASE), model):
             case, _ = _check_case(raw, canon, ui)
+            if case is not None:
+                try: case = add_initial_setup(case, raw)
+                except ValueError: case = None
             i = by_title.get(case["title"].lower()) if case else None
-            if i is not None and len(case["steps"]) > len(result.cases[i]["steps"]):
+            if i is not None and sum(s.get("kind") != "setup" for s in case["steps"]) > sum(s.get("kind") != "setup" for s in result.cases[i]["steps"]):
                 result.cases[i] = case
                 result.deepened += 1
         result.still_thin = len(_thin(result.cases))

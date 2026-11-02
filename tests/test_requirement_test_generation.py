@@ -14,6 +14,8 @@ Run with:  python -m unittest discover -s tests -t .
 """
 from __future__ import annotations
 
+from tests.generation_fixtures import with_setup_payload
+
 import json
 import os
 import tempfile
@@ -36,7 +38,7 @@ DOC = {"name": "Checkout story", "content": "Users can add items to the cart. Us
 
 def mock_model_response(payload):
     r = mock.Mock()
-    r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(payload)))]
+    r.choices = [mock.Mock(message=mock.Mock(content=json.dumps(with_setup_payload(payload))))]
     client = mock.Mock()
     client.chat.completions.create.return_value = r
     return client

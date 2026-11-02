@@ -16,3 +16,10 @@ assert.equal(context.testCaseAssessmentLabel({...imported,status:null}), 'Not as
 assert.equal(context.testCaseAssessmentLabel({...imported,status:'supported',assessment_kind:'inferred_from_requirement',judgment_source:'human_confirmation'}), 'Inferred support');
 assert.equal(context.testCaseAssessmentLabel({...imported,status:'supported'}), 'AI-supported');
 console.log('Test-case presentation rules: 9 assertions passed');
+
+const disputed = {...imported,status:'unknown',review_state:{state:'disputed',label:'Disputed by reviewer'},human_review:{decision:'rejected_ai_judgment'}};
+assert.equal(context.testCaseReviewLabel(disputed),'Disputed by reviewer');
+assert(context.matchesTestCase(disputed,{assessment:'disputed'}));
+assert(!context.matchesTestCase(imported,{assessment:'disputed'}));
+assert.equal(context.testCaseAssessment(disputed),'inconclusive');
+console.log('Human review presentation: 4 assertions passed');
