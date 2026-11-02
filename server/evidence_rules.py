@@ -50,7 +50,7 @@ AI_ASSESSMENT_UNAVAILABLE = "ai_assessment_unavailable"
 # since a reviewer is allowed to say "I can't tell either" without that being
 # read as agreement with the AI.
 HUMAN_REVIEW_DECISIONS = (
-    "confirmed_supported", "confirmed_contradicted", "rejected_ai_judgment", "needs_more_info",
+    "confirmed_supported", "confirmed_contradicted", "agreed_uncertain", "rejected_ai_judgment", "needs_more_info",
 )
 
 

@@ -130,7 +130,7 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         body = r.json()
         self.assertEqual(body, {
             "total_reviews": 0, "excluded_no_ai_judgment": 0, "comparable_reviews": 0,
-            "agreed_with_ai": 0, "false_support_count": 0,
+            "agreed_with_ai": 0, "agreed_uncertain_count": 0, "false_support_count": 0,
             "false_conflict_count": 0, "needs_more_info_count": 0, "agreement_rate_pct": None,
         })
 
@@ -147,11 +147,11 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{agreed_case['id']}/review",
                           json={"decision": "confirmed_supported"})
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{false_support_case['id']}/review",
-                          json={"decision": "rejected_ai_judgment"})
+                          json={"decision": "rejected_ai_judgment", "note": "The cited evidence does not establish this finding."})
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{false_conflict_case['id']}/review",
-                          json={"decision": "rejected_ai_judgment"})
+                          json={"decision": "rejected_ai_judgment", "note": "The cited evidence does not establish this finding."})
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{unsure_case['id']}/review",
-                          json={"decision": "needs_more_info"})
+                          json={"decision": "needs_more_info", "note": "The initial fixture state is missing."})
 
         body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
         self.assertEqual(body["total_reviews"], 4)
@@ -181,7 +181,7 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
     def test_repeated_reviews_of_the_same_target_count_once_using_the_latest(self):
         case = self._make_case(status="supported", covers=["Cart.add"])
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",
-                          json={"decision": "rejected_ai_judgment"})
+                          json={"decision": "rejected_ai_judgment", "note": "The cited evidence does not establish this finding."})
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",
                           json={"decision": "confirmed_supported"})  # re-reviewed after a fix, say
 

@@ -1508,6 +1508,17 @@ def api_review_test_case(repo_id: str, case_id: str, payload: HumanReviewIn):
     cases = [c for c in db.list_test_cases(repo_id) if c["id"] == case_id]
     if not cases:
         raise HTTPException(404, "test case not found")
+    note = (payload.note or "").strip()
+    if payload.decision in ("rejected_ai_judgment", "needs_more_info") and not note:
+        raise HTTPException(400, "Explain why you disagree or specify what information is missing.")
+    status = cases[0].get("status")
+    allowed_agreement = {"supported":"confirmed_supported", "contradicted":"confirmed_contradicted"}.get(status, "agreed_uncertain")
+    if payload.decision in ("confirmed_supported", "confirmed_contradicted", "agreed_uncertain"):
+        if not status or cases[0].get("assessment_kind") == "inferred_from_requirement":
+            raise HTTPException(400, "An independent assessment is required before recording agreement.")
+        if (payload.decision == "agreed_uncertain" or allowed_agreement == "agreed_uncertain") and payload.decision != allowed_agreement:
+            raise HTTPException(400, "Agreement must match the current assessment. Refresh and review again.")
+    payload.note = note or None
     ai_level = evidence_rules.evidence_level(cases[0])
     review = db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note, ai_level_at_review=ai_level)
     return {**review, "review_state":test_case_view.review_state(cases[0], review)}
@@ -1534,7 +1545,7 @@ def api_review_accuracy(repo_id: str):
         raise HTTPException(404, "repo not found")
     latest_reviews = evidence_rules.latest_review_by_target(db.list_human_reviews(repo_id))
 
-    false_support = false_conflict = needs_more_info = agreed = excluded_no_ai_judgment = 0
+    false_support = false_conflict = needs_more_info = agreed = agreed_uncertain = excluded_no_ai_judgment = 0
     for review in latest_reviews.values():
         ai_level = review.get("ai_level_at_review")
         decision = review["decision"]
@@ -1545,7 +1556,9 @@ def api_review_accuracy(repo_id: str):
         if ai_level == evidence_rules.AI_ASSESSMENT_UNAVAILABLE:
             excluded_no_ai_judgment += 1
             continue
-        if decision == "needs_more_info":
+        if decision == "agreed_uncertain":
+            agreed_uncertain += 1
+        elif decision == "needs_more_info":
             needs_more_info += 1
         elif decision == "rejected_ai_judgment":
             if ai_level == "ai_supported":
@@ -1570,6 +1583,7 @@ def api_review_accuracy(repo_id: str):
         "excluded_no_ai_judgment": excluded_no_ai_judgment,
         "comparable_reviews": comparable,
         "agreed_with_ai": agreed,
+        "agreed_uncertain_count": agreed_uncertain,
         "false_support_count": false_support,
         "false_conflict_count": false_conflict,
         "needs_more_info_count": needs_more_info,

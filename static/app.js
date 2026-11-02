@@ -2756,14 +2756,14 @@ function testCaseViewFilters() {
 
 function testCaseAssessment(c) {
   if (c.is_stale) return "stale";
-  if (c.reassessment) return c.reassessment.outcome === "aligned" ? "supported" : c.reassessment.outcome === "needs_clarification" ? "inconclusive" : "conflict";
+  if (c.reassessment) return c.reassessment.outcome === "aligned" ? "supported" : ["needs_clarification", "unvalidated_conflict_claims"].includes(c.reassessment.outcome) ? "inconclusive" : "conflict";
   if (!c.status) return "unassessed";
   if (!(c.covers || []).length) return "insufficient";
   return c.status === "supported" ? "supported" : c.status === "contradicted" ? "conflict" : "inconclusive";
 }
 
 function testCaseAssessmentLabel(c) {
-  if (!c.is_stale && c.reassessment) return ({aligned:"AI alignment found", potential_regression:"Potential implementation regression", test_case_needs_update:"Test case needs updating", outdated_test_case:"Outdated test case", needs_clarification:"Needs clarification"})[c.reassessment.outcome] || "Needs clarification";
+  if (!c.is_stale && c.reassessment) return c.reassessment.outcome_label || ({aligned:"AI alignment found", potential_regression:"Potential implementation regression", test_case_needs_update:"Test case needs updating", outdated_test_case:"Outdated test case", needs_clarification:"Insufficient evidence", implementation_and_test_conflict:"Code and test conflict with requirements", conflicts_found:"Conflicts found · review comparisons", unvalidated_conflict_claims:"Earlier conflict claims · reassess"})[c.reassessment.outcome] || "Needs clarification";
   const labels = { stale: "Needs reassessment", unassessed: "Not assessed", insufficient: "Insufficient evidence",
     supported: "AI-supported", conflict: "Potential conflict", inconclusive: "Inconclusive" };
   const state = testCaseAssessment(c);
@@ -2888,7 +2888,7 @@ function renderTestCaseDetails(c) {
         <div class="tc-badges">
           ${c.priority ? `<span class="tc-priority tc-p${c.priority}" title="Priority ${c.priority} (1 = critical path, 4 = rare)">P${c.priority}</span>` : ""}
           <span class="finding-cat cat-${c.category}">${c.category.replaceAll("_", " ")}</span>
-          ${c.status ? `<span class="finding-cat cat-${c.status}" title="${c.assessment_kind === "inferred_from_requirement" ? "Inferred from shared code citations; not an independent test assessment" : "Source assessment; no test execution implied"}">${c.assessment_kind === "inferred_from_requirement" ? "Inferred: " : c.reassessment ? "Overall: " : "Code: "}${c.status}</span>` : ""}
+          ${c.status ? `<span class="finding-cat cat-${c.status}" title="${c.assessment_kind === "inferred_from_requirement" ? "Inferred from shared code citations; not an independent test assessment" : "Source assessment; no test execution implied"}">${c.assessment_kind === "inferred_from_requirement" ? "Inferred: " : c.reassessment ? "Overall: " : "Code: "}${c.reassessment ? escapeHtml(testCaseAssessmentLabel(c)) : c.status}</span>` : ""}
         </div>
       </div>
       <div class="test-case-target">
@@ -2932,10 +2932,14 @@ function renderTestCaseDetails(c) {
       ${c.human_review ? `<p class="tc-saved-review">Human review: ${escapeHtml(c.human_review.decision.replaceAll("_", " "))} · ${escapeHtml(c.human_review.reviewed_at)}${c.human_review.note ? ` · ${escapeHtml(c.human_review.note)}` : ""}</p>` : ""}
       <div class="tc-section tc-review-actions">
         <span class="tc-section-label">Record review</span>
+        <label class="small">Reviewer comment (required for Disagree or Request more information)
+          <textarea class="tc-review-note" rows="3" maxlength="10000" style="display:block;width:100%;box-sizing:border-box" placeholder="Explain the disputed finding or the information needed" ${readOnly ? "disabled" : ""}></textarea>
+        </label>
+        ${!c.status || c.assessment_kind === "inferred_from_requirement" ? '<p class="small muted">Run an independent assessment before recording agreement.</p>' : ''}
         <div class="tc-review-btns">
-          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="${c.status === "contradicted" ? "confirmed_contradicted" : "confirmed_supported"}" ${readOnly || !["supported", "contradicted"].includes(c.status) || c.assessment_kind === "inferred_from_requirement" ? "disabled" : ""}>${c.reassessment ? "Confirm overall finding" : "Confirm assessment"}</button>
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="${c.status === "contradicted" ? "confirmed_contradicted" : c.status === "supported" ? "confirmed_supported" : "agreed_uncertain"}" ${readOnly || !c.status || c.assessment_kind === "inferred_from_requirement" ? "disabled" : ""}>Agree with assessment</button>
           <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="rejected_ai_judgment" ${readOnly ? "disabled" : ""}>Disagree</button>
-          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="needs_more_info" ${readOnly ? "disabled" : ""}>Needs more info</button>
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="needs_more_info" ${readOnly ? "disabled" : ""}>Request more information</button>
         </div>
       </div>
     </div>`;
@@ -2948,8 +2952,8 @@ function renderSourceContext(context) {
 
 function renderCaseReassessment(report) {
   const names = {requirement_alignment:"Test ↔ requirements", code_evidence:"Test ↔ code", implementation_alignment:"Code ↔ requirements"};
-  const guidance = {potential_regression:"Keep the expected behaviour and investigate the implementation before changing this case.", test_case_needs_update:"Review a test-case update against the cited requirement. The existing expectation has been preserved.", outdated_test_case:"The cited requirement changed since the previous aligned assessment. Review an update to this case.", needs_clarification:"Resolve missing or conflicting requirements and evidence before deciding whether the case or code needs changing.", aligned:"Evidence supports alignment with the supplied requirements and code. Test execution is still required."};
-  return `${renderSourceContext(report.source_context)}${(report.missing_context || []).length ? `<p class="small">Additional evidence needed: ${report.missing_context.map(escapeHtml).join("; ")}</p>` : ""}<p class="tc-reassessment-guidance">${escapeHtml(guidance[report.outcome] || guidance.needs_clarification)}</p><div class="tc-three-way">${Object.entries(names).map(([key,label]) => {
+  const guidance = {potential_regression:"Keep the expected behaviour and investigate the implementation before changing this case.", test_case_needs_update:"Review a test-case update against the cited requirement. The existing expectation has been preserved.", outdated_test_case:"The cited requirement changed since the previous aligned assessment. Review an update to this case.", implementation_and_test_conflict:"The test matches the current implementation, but both conflict with the cited requirement. Review the implementation and test expectation together.", conflicts_found:"Conflicts were identified in the comparisons below. Review each independently; missing evidence in another comparison does not remove these conflicts.", unvalidated_conflict_claims:"This earlier assessment claimed conflicts without recording opposing expectations. Reassess to validate those claims; this is an assessment-quality issue, not a request for more business information.", needs_clarification:"Evidence is insufficient for an overall conclusion. See the specific unresolved comparisons below.", aligned:"Evidence supports alignment with the supplied requirements and code. Test execution is still required."};
+  return `${renderSourceContext(report.source_context)}${(report.missing_context || []).length ? `<p class="small">Additional evidence needed: ${report.missing_context.map(escapeHtml).join("; ")}</p>` : ""}<p class="tc-reassessment-guidance">${escapeHtml(report.recommended_action || guidance[report.outcome] || guidance.needs_clarification)}</p>${(report.clarification_reasons || []).length ? `<details><summary>Unresolved evidence or comparison scope</summary>${report.clarification_reasons.map((reason) => `<p>${escapeHtml(reason)}</p>`).join("")}</details>` : ""}<div class="tc-three-way">${Object.entries(names).map(([key,label]) => {
     const finding = report[key] || {status:"unknown",citations:[]};
     const unexplained = finding.status === "contradicted" && !finding.conflict;
     const conflict = finding.conflict;
@@ -2990,12 +2994,19 @@ async function showCaseAssessmentHistory(btn) {
 const caseReviewsInFlight = new Set();
 async function recordTestCaseReview(caseId, decision, btn) {
   if (caseReviewsInFlight.has(caseId)) return;
+  const noteField = btn.closest(".tc-review-actions").querySelector(".tc-review-note");
+  const note = noteField.value.trim();
+  if (["rejected_ai_judgment", "needs_more_info"].includes(decision) && !note) {
+    toast("Add a comment explaining the disagreement or missing information.", "error");
+    noteField.focus();
+    return;
+  }
   caseReviewsInFlight.add(caseId);
   const repoId = activeRepoId;
   const group = btn.closest(".tc-review-btns");
   group.querySelectorAll("button").forEach((b) => (b.disabled = true));
   try {
-    const review = await api(`/repos/${repoId}/test-cases/${caseId}/review`, { method: "POST", body: JSON.stringify({ decision }) });
+    const review = await api(`/repos/${repoId}/test-cases/${caseId}/review`, { method: "POST", body: JSON.stringify({ decision, note }) });
     if (repoId !== activeRepoId) return;
     const updated = activeTestCases.find((c) => c.id === caseId);
     if (updated) { updated.human_review = review; updated.review_state = review.review_state; }
@@ -3006,7 +3017,7 @@ async function recordTestCaseReview(caseId, decision, btn) {
   } finally {
     caseReviewsInFlight.delete(caseId);
     const c = activeTestCases.find((item) => item.id === caseId);
-    group.querySelectorAll("button").forEach((b) => (b.disabled = readOnly || (b.dataset.decision?.startsWith("confirmed_") && (!c || !["supported", "contradicted"].includes(c.status) || c.assessment_kind === "inferred_from_requirement"))));
+    group.querySelectorAll("button").forEach((b) => (b.disabled = readOnly || (["confirmed_supported", "confirmed_contradicted", "agreed_uncertain"].includes(b.dataset.decision) && (!c || !c.status || c.assessment_kind === "inferred_from_requirement"))));
   }
 }
 

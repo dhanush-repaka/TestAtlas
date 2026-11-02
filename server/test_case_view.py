@@ -13,7 +13,7 @@ def enrich_cases(cases: list[dict], latest_run_id: str | None, documents=None) -
             stale = stale or report.get('case_fingerprint') != test_case_reassessment.case_fingerprint(case)
             if documents is not None:
                 stale = stale or report.get('documents_fingerprint') != test_case_reassessment.documents_fingerprint(documents)
-        result.append({**case, 'is_stale': stale})
+        result.append({**case, 'is_stale': stale, **({'reassessment':test_case_reassessment.display_report(report)} if report else {})})
     return result
 
 
@@ -22,7 +22,7 @@ def assessment_state(case: dict) -> str:
         return 'stale'
     if case.get('reassessment'):
         outcome = case['reassessment']['outcome']
-        return 'supported' if outcome == 'aligned' else 'inconclusive' if outcome == 'needs_clarification' else 'conflict'
+        return 'supported' if outcome == 'aligned' else 'inconclusive' if outcome in ('needs_clarification', 'unvalidated_conflict_claims') else 'conflict'
     if not case.get('status'):
         return 'unassessed'
     if not case.get('covers'):
@@ -61,6 +61,7 @@ def review_state(case: dict, review: dict | None) -> dict:
     if earlier:
         return {'state':'previous_assessment', 'label':'Review belongs to an earlier assessment'}
     states = {'rejected_ai_judgment':('disputed','Disputed by reviewer'), 'needs_more_info':('needs_information','Reviewer needs more information'),
+              'agreed_uncertain':('confirmed','Reviewer agrees evidence is insufficient'),
               'confirmed_supported':('confirmed','Reviewer confirmed support'), 'confirmed_contradicted':('confirmed','Reviewer confirmed conflict')}
     state,label = states.get(review.get('decision'),('unreviewed','Not reviewed'))
     return {'state':state,'label':label}

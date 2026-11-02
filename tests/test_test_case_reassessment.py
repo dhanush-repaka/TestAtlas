@@ -70,8 +70,97 @@ class DecisionTests(unittest.TestCase):
         report = self.check(findings(), {**CASE,'source_doc_id':'different-story'})
         self.assertEqual(report['requirement_alignment']['status'], 'unknown')
 
-    def test_inconsistent_findings_require_clarification(self):
-        self.assertEqual(self.check(findings('supported','contradicted','supported'))['outcome'], 'needs_clarification')
+    def test_mixed_findings_preserve_the_established_conflict(self):
+        self.assertEqual(self.check(findings('supported','contradicted','supported'))['outcome'], 'conflicts_found')
+
+    def test_code_derived_bug_case_flags_both_requirement_conflicts(self):
+        report=self.check(findings('contradicted','supported','contradicted'))
+        self.assertEqual(report['outcome'],'implementation_and_test_conflict')
+        self.assertEqual(report['conflict_dimensions'],['requirement_alignment','implementation_alignment'])
+        self.assertEqual(report['clarification_reasons'],[])
+
+    def test_all_contradicted_does_not_request_business_clarification(self):
+        report=self.check(findings('contradicted','contradicted','contradicted'))
+        self.assertEqual(report['outcome'],'conflicts_found')
+        self.assertEqual(report['unresolved_dimensions'],[])
+        self.assertEqual(report['clarification_reasons'],[])
+
+    def test_all_27_status_combinations_keep_any_validated_conflict_visible(self):
+        import itertools
+        for statuses in itertools.product(('supported','contradicted','unknown'),repeat=3):
+            with self.subTest(statuses=statuses):
+                report=self.check(findings(*statuses))
+                if 'contradicted' in statuses:
+                    self.assertNotIn(report['outcome'],('needs_clarification','aligned','unvalidated_conflict_claims'))
+                    self.assertEqual(len(report['conflict_dimensions']),statuses.count('contradicted'))
+                elif statuses==('supported',)*3:
+                    self.assertEqual(report['outcome'],'aligned')
+                else:
+                    self.assertEqual(report['outcome'],'needs_clarification')
+                    self.assertTrue(report['clarification_reasons'])
+
+    def test_conflict_survives_missing_other_comparison_and_different_criterion(self):
+        raw=findings('contradicted','unknown','supported')
+        raw['implementation_alignment']['citations']=[]
+        report=self.check(raw)
+        self.assertEqual(report['outcome'],'conflicts_found')
+        self.assertEqual(report['conflict_dimensions'],['requirement_alignment'])
+        self.assertTrue(report['clarification_reasons'])
+
+    def test_saved_results_get_new_display_without_rewriting_history(self):
+        report=self.check(findings('contradicted','supported','contradicted'))
+        report['outcome']='needs_clarification'
+        case={**CASE,'reassessment':report}
+        before=copy.deepcopy(case)
+        displayed=test_case_view.enrich_cases([case],None)[0]
+        self.assertEqual(displayed['reassessment']['outcome'],'implementation_and_test_conflict')
+        self.assertEqual(displayed['reassessment']['recorded_outcome'],'needs_clarification')
+        self.assertEqual(case,before)
+
+    def test_old_unexplained_conflicts_are_not_promoted_to_validated_conflicts(self):
+        report=self.check(findings('contradicted','contradicted','contradicted'))
+        for key in reassess.DIMENSIONS:
+            report[key].pop('conflict',None)
+        displayed=reassess.display_report(report)
+        self.assertEqual(displayed['outcome'],'unvalidated_conflict_claims')
+        self.assertEqual(displayed['conflict_dimensions'],[])
+        self.assertEqual(test_case_view.assessment_state({'reassessment':displayed}),'inconclusive')
+
+    def test_explicit_outcome_for_every_combination(self):
+        expected = {
+            'SSS':'aligned', 'SSC':'conflicts_found', 'SSU':'needs_clarification',
+            'SCS':'conflicts_found', 'SCC':'potential_regression', 'SCU':'conflicts_found',
+            'SUS':'needs_clarification', 'SUC':'conflicts_found', 'SUU':'needs_clarification',
+            'CSS':'conflicts_found', 'CSC':'implementation_and_test_conflict', 'CSU':'conflicts_found',
+            'CCS':'test_case_needs_update', 'CCC':'conflicts_found', 'CCU':'conflicts_found',
+            'CUS':'conflicts_found', 'CUC':'conflicts_found', 'CUU':'conflicts_found',
+            'USS':'needs_clarification', 'USC':'conflicts_found', 'USU':'needs_clarification',
+            'UCS':'conflicts_found', 'UCC':'conflicts_found', 'UCU':'conflicts_found',
+            'UUS':'needs_clarification', 'UUC':'conflicts_found', 'UUU':'needs_clarification',
+        }
+        self.assertEqual(set(expected),set(reassess.COMBINATION_RULES))
+        statuses={'S':'supported','C':'contradicted','U':'unknown'}
+        labels=set()
+        for combination,outcome in expected.items():
+            with self.subTest(combination=combination):
+                report=self.check(findings(*(statuses[c] for c in combination)))
+                self.assertEqual(report['status_combination'],combination)
+                self.assertEqual(report['outcome'],outcome)
+                self.assertTrue(report['recommended_action'])
+                self.assertTrue(report['outcome_label'])
+                labels.add(report['outcome_label'])
+                saved=reassess.display_report(report)
+                self.assertEqual(saved['outcome_label'],report['outcome_label'])
+                self.assertEqual(saved['recommended_action'],report['recommended_action'])
+        self.assertEqual(len(labels),27)
+
+    def test_combined_diagnosis_requires_shared_acceptance_criterion(self):
+        report=self.check(findings('contradicted','supported','contradicted'))
+        report['implementation_alignment']['citations']=[c for c in report['implementation_alignment']['citations'] if c['kind']=='code']
+        displayed=reassess.display_report(report)
+        self.assertEqual(displayed['outcome'],'conflicts_found')
+        self.assertIn('different comparison scope',displayed['outcome_label'])
+        self.assertEqual(len(displayed['conflict_dimensions']),2)
 
     def test_every_origin_gets_all_three_checks(self):
         for extra in ({'created_via':'imported'}, {'created_via':'generated'}, {'source_doc_id':'story'}, {'source_journey_id':'journey'}):

@@ -135,7 +135,7 @@ class ReviewStateApiTests(unittest.TestCase):
 
     def test_disagree_is_visible_while_unknown_ai_status_is_preserved(self):
         case=self._make_case(status='unknown',covers=['Cart.add'])
-        response=self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",json={'decision':'rejected_ai_judgment'})
+        response=self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",json={'decision':'rejected_ai_judgment','note':'The stated release expectations agree.'})
         self.assertEqual(response.status_code,200)
         self.assertEqual(response.json()['review_state']['state'],'disputed')
         cases=self.client.get(f'/api/repos/{self.repo_id}/test-cases').json()
@@ -143,6 +143,33 @@ class ReviewStateApiTests(unittest.TestCase):
         self.assertEqual(saved['status'],'unknown')
         self.assertEqual(saved['review_state']['label'],'Disputed by reviewer')
         self.assertEqual(test_case_view.filter_cases(cases,assessment='disputed'),[saved])
+
+    def test_comments_required_for_disagree_and_information_requests(self):
+        case=self._make_case(status='unknown',covers=['Cart.add'])
+        url=f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review"
+        for decision in ('rejected_ai_judgment','needs_more_info'):
+            self.assertEqual(self.client.post(url,json={'decision':decision,'note':'  '}).status_code,400)
+            response=self.client.post(url,json={'decision':decision,'note':'  Missing starting stock quantity.  '})
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.json()['note'],'Missing starting stock quantity.')
+
+    def test_agree_with_uncertainty_preserves_ai_status_and_metrics(self):
+        case=self._make_case(status='unknown',covers=['Cart.add'])
+        url=f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review"
+        self.assertEqual(self.client.post(url,json={'decision':'confirmed_supported'}).status_code,400)
+        response=self.client.post(url,json={'decision':'agreed_uncertain'})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json()['review_state']['label'],'Reviewer agrees evidence is insufficient')
+        saved=next(c for c in self.client.get(f'/api/repos/{self.repo_id}/test-cases').json() if c['id']==case['id'])
+        self.assertEqual(saved['status'],'unknown')
+        metrics=self.client.get(f'/api/repos/{self.repo_id}/review-accuracy').json()
+        self.assertEqual(metrics['agreed_uncertain_count'],1)
+        self.assertEqual(metrics['agreed_with_ai'],0)
+
+    def test_unassessed_cases_cannot_be_agreed(self):
+        case=self._make_case(status=None,covers=[])
+        url=f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review"
+        self.assertEqual(self.client.post(url,json={'decision':'agreed_uncertain'}).status_code,400)
 
     def test_review_from_an_older_assessment_is_not_a_current_dispute(self):
         state=test_case_view.review_state({'assessed_at':'2026-11-02T01:00:00+00:00'},
