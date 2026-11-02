@@ -224,9 +224,10 @@ Enabled only when `OPENAI_API_KEY` is set. Each call happens because you
 clicked a button; the app never calls the API on its own.
 
 **What is sent:** module, file and function names, the on-screen text found in
-UI code (button labels, headings, error messages), file paths, and any
-documents you added to the repo. **Not sent:** source-code bodies, your tokens,
-or the `.env` file.
+UI code (button labels, headings, error messages), file paths, documents and
+test cases you added, and selected source-file bodies with dependency context
+for assessment/generation. Tokens and `.env` files are excluded from that
+context. Review the configured provider and source handling before a pilot.
 
 **Cost:** every "Generate" is one metered call (occasionally two or three when
 the app asks the model to fix depth or missing error-message coverage). The

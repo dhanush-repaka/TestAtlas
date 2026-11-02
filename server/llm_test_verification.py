@@ -102,7 +102,10 @@ def _check_verification(item, valid_ids: set[str], canon: dict[str, str]) -> tup
         return None, f"unknown status {status!r}"
 
     covers: list[str] = []
-    for entry in (item.get("covers") or []):
+    raw_covers=item.get('covers')
+    if raw_covers is not None and not isinstance(raw_covers,list):
+        return None,'covers must be a list'
+    for entry in (raw_covers or []):
         real = canonical_cover(entry, canon) if isinstance(entry, str) else None
         if real and real not in covers:
             covers.append(real)

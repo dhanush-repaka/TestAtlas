@@ -1,5 +1,7 @@
 # TestAtlas readiness gap audit
 
+Historical audit. See `AUDIT_REMEDIATION.md` for subsequent fixes, verification and remaining semantic/freshness limits.
+
 Audit date: 2 November 2026. Scope: current local checkout, including the recent review and 27-combination classification changes. This is a targeted correctness audit, not a complete product or security certification.
 
 ## Readiness decision

@@ -13,7 +13,7 @@ import networkx as nx
 import llm_logging
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -58,6 +58,7 @@ app.add_middleware(auth.AuthMiddleware, base_path=BASE_PATH)
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    db.recover_interrupted_jobs()
     if not auth.password_configured():
         print(
             "\n *** TESTATLAS_PASSWORD is not set -- running with NO LOGIN GATE. ***\n"
@@ -205,6 +206,29 @@ def _expand_github_url(payload: dict) -> dict:
 api = APIRouter(prefix=f"{BASE_PATH}/api")
 
 
+@app.exception_handler(db.ActiveJobError)
+async def active_job_conflict(request, exc):
+    return JSONResponse(status_code=409,content={'detail':str(exc)})
+
+
+def _bulk_worker(worker):
+    from functools import wraps
+    @wraps(worker)
+    def guarded(job_id,*args,**kwargs):
+        try:
+            return worker(job_id,*args,**kwargs)
+        except Exception as exc:
+            db.finish_bulk_job(job_id,'failed',str(exc))
+    return guarded
+
+
+@api.get('/repos/{repo_id}/jobs/active')
+def api_active_jobs(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404,'repo not found')
+    return db.active_bulk_jobs(repo_id)
+
+
 @api.get("/llm-calls")
 def api_llm_calls(limit: int = 200):
     """Recent OpenAI calls across every feature -- latency, token usage, and
@@ -237,6 +261,15 @@ def api_create_repo(payload: RepoIn):
 @api.put("/repos/{repo_id}")
 def api_update_repo(repo_id: str, payload: RepoUpdate):
     data = _expand_github_url(_expand_ado_url({k: v for k, v in payload.model_dump().items() if v is not None}))
+    existing=db.get_repo(repo_id)
+    if not existing:
+        raise HTTPException(404,'repo not found')
+    merged={**existing,**data}
+    if merged.get('source_type') not in ('local','ado_git','github_git','upload'):
+        raise HTTPException(400,'Invalid source_type')
+    required={'local':('local_path',),'ado_git':('ado_org','ado_project','ado_repo'),'github_git':('github_owner','github_repo'),'upload':()}
+    if any(not merged.get(field) for field in required[merged['source_type']]):
+        raise HTTPException(400,'Required source configuration is missing')
     updated = db.update_repo(repo_id, data)
     if not updated:
         raise HTTPException(404, "repo not found")
@@ -541,11 +574,14 @@ class StoryRequirementsIn(BaseModel):
 class ConfirmRequirementIn(BaseModel):
     status: str  # "supported" | "contradicted" -- a human resolves the ambiguity one way or the other, never back to unknown
     rationale: Optional[str] = None
+    assessment_version: Optional[str] = None
 
 
 class HumanReviewIn(BaseModel):
     decision: str  # one of evidence_rules.HUMAN_REVIEW_DECISIONS
     note: Optional[str] = None
+    assessment_version: Optional[str] = None
+    intent: str = "agreement"
 
 
 @api.get("/repos/{repo_id}/documents")
@@ -570,6 +606,19 @@ def api_update_document(doc_id: str, payload: DocumentUpdate):
     return updated
 
 
+async def _read_upload(file):
+    chunks=[]
+    size=0
+    while True:
+        chunk=await file.read(1024*1024)
+        if not chunk:
+            return b''.join(chunks)
+        size+=len(chunk)
+        if size>20*1024*1024:
+            raise HTTPException(413,'File too large (max 20MB)')
+        chunks.append(chunk)
+
+
 @api.post("/repos/{repo_id}/documents/upload")
 async def api_upload_document(repo_id: str, file: UploadFile = File(...), name: Optional[str] = Form(None)):
     """Accepts an actual document file -- .docx, .pptx, .xlsx, .pdf, .md, or
@@ -578,7 +627,7 @@ async def api_upload_document(repo_id: str, file: UploadFile = File(...), name: 
     external service involved."""
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    data = await file.read()
+    data = await _read_upload(file)
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "file too large (max 20MB)")
     try:
@@ -595,7 +644,7 @@ async def api_upload_document_replace(doc_id: str, file: UploadFile = File(...),
     content -- used when editing a document by re-uploading a new file."""
     if not db.get_document(doc_id):
         raise HTTPException(404, "document not found")
-    data = await file.read()
+    data = await _read_upload(file)
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "file too large (max 20MB)")
     try:
@@ -619,14 +668,13 @@ async def api_import_work_items(repo_id: str, file: UploadFile = File(...)):
     no recognizable header row is found, same as split_work_items documents."""
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    data = await file.read()
+    data = await _read_upload(file)
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "file too large (max 20MB)")
     try:
-        text = doc_extract.extract_text(file.filename or "", data)
-    except doc_extract.UnsupportedDocumentError as e:
+        items = work_item_import.parse_file(file.filename or '', data)
+    except (doc_extract.UnsupportedDocumentError,ValueError) as e:
         raise HTTPException(400, str(e))
-    items = work_item_import.split_work_items(text)
     if not items:
         raise HTTPException(400, "no content found in that file")
     fallback_name = file.filename.rsplit(".", 1)[0] if file.filename else "Untitled document"
@@ -730,6 +778,13 @@ def api_get_gap_findings(repo_id: str):
     return db.list_repo_gap_findings(repo_id)
 
 
+@api.get("/repos/{repo_id}/gap-assessment")
+def api_get_gap_assessment(repo_id: str):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    return db.get_repo_gap_assessment(repo_id)
+
+
 @api.get("/gap-analysis/config")
 def api_gap_analysis_config():
     """Lets the UI know whether the automatic (paid) analysis button should
@@ -764,7 +819,19 @@ def _story_coverage_context(repo_id: str, doc: dict) -> tuple[dict, dict, object
 
 
 def _with_tested_status(repo_id: str, requirements: list[dict]) -> list[dict]:
-    return llm_story_coverage.compute_tested_status(requirements, db.list_test_cases(repo_id))
+    from .source_freshness import check_source_context
+    from .assessment_projection import requirement_version,requirement_is_stale
+    documents=db.list_documents(repo_id)
+    run=db.get_latest_successful_run(repo_id)
+    root=_source_root_for_view(db.get_repo(repo_id))
+    cache={}
+    enriched=[]
+    for requirement in requirements:
+        freshness=check_source_context(requirement.get('source_context'),root,cache)
+        enriched.append({**requirement,'source_freshness':freshness,'assessment_version':requirement_version(requirement,documents),
+            'ai_evidence_level':evidence_rules.ai_evidence_level(requirement),
+            'is_stale':requirement_is_stale(requirement,documents) or evidence_rules.is_stale(requirement,run['id'] if run else None) or freshness['state']=='changed'})
+    return llm_story_coverage.compute_tested_status(enriched, db.list_test_cases(repo_id))
 
 
 @api.get("/repos/{repo_id}/documents/{doc_id}/story-coverage-context")
@@ -809,13 +876,14 @@ def api_run_story_coverage(repo_id: str, doc_id: str):
         raise HTTPException(502, str(e))
     for r in result.requirements:
         r["cited_paths"] = resolve_cited_paths(g, r.get("covers") or [])
-    db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model)
+    db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model, expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
     return {
         "applied": len(result.requirements), "dropped": result.dropped,
         "requirements": _with_tested_status(repo_id, result.requirements),
     }
 
 
+@_bulk_worker
 def _story_coverage_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], run: dict, g, source_root: Path) -> None:
     """Runs in a background daemon thread, looping this repo's documents ONE
     AT A TIME -- concurrency already happens inside generate_story_requirements's
@@ -839,12 +907,12 @@ def _story_coverage_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], r
             result = llm_story_coverage.generate_story_requirements(doc, context, g, source_root, index_path)
             for r in result.requirements:
                 r["cited_paths"] = resolve_cited_paths(g, r.get("covers") or [])
-            db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model)
+            db.replace_story_requirements(repo_id, doc_id, run["id"], result.requirements, assessed_model=result.model, expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
             detail = f"{len(result.requirements)} requirement(s)"
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
             db.update_bulk_job_progress(job_id, doc["name"], {
-                "document_id": doc_id, "document_name": doc["name"], "ok": True, "detail": detail,
+                "document_id": doc_id, "document_name": doc["name"], "ok": not result.dropped, "detail": detail,
             })
         except RuntimeError as e:
             db.update_bulk_job_progress(job_id, doc["name"], {
@@ -923,8 +991,24 @@ def api_story_coverage_config():
     return {"automatic_available": llm_story_coverage.is_configured()}
 
 
+def _generation_diagnostics(cases):
+    return getattr(cases,'diagnostics',{'accepted':len(cases),'rejected':0,'truncated':0,'reasons':[]})
+
+
+def _generation_headers(response,cases):
+    if response is not None:
+        import json
+        response.headers['X-TestAtlas-Generation']=json.dumps(_generation_diagnostics(cases))
+
+
+def _replacement_must_be_complete(cases):
+    diagnostics=_generation_diagnostics(cases)
+    if diagnostics['rejected'] or diagnostics['truncated']:
+        raise RuntimeError('Generation was partial; existing suite preserved. Generate additively or resolve the reported rejected/truncated scenarios first.')
+
+
 @api.post("/repos/{repo_id}/documents/{doc_id}/story-requirements/{requirement_id}/generate-test-case")
-def api_generate_test_case_from_requirement(repo_id: str, doc_id: str, requirement_id: str):
+def api_generate_test_case_from_requirement(repo_id: str, doc_id: str, requirement_id: str, response: Response = None):
     """Generates 1-or-more test cases directly from ONE acceptance criterion's
     own wording -- ungrounded: no code is shown, and no resolved citation is
     required up front. Stored with status=NULL, covers=[], module=NULL until
@@ -936,22 +1020,28 @@ def api_generate_test_case_from_requirement(repo_id: str, doc_id: str, requireme
     if not repo:
         raise HTTPException(404, "repo not found")
     requirement = db.get_story_requirement(requirement_id)
-    if not requirement or requirement["doc_id"] != doc_id:
+    if not requirement or requirement['repo_id']!=repo_id or requirement["doc_id"] != doc_id:
         raise HTTPException(404, "requirement not found")
+    from .assessment_projection import requirement_is_stale
+    if requirement.get('retired') or requirement_is_stale(requirement,db.list_documents(repo_id)):
+        raise HTTPException(409,'Requirement document changed; rerun Story Coverage before generating from this criterion')
+    doc=_get_doc_in_repo(repo_id,doc_id)
     try:
         cases = llm_requirement_test_generation.generate_test_cases_from_requirement(requirement)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    _generation_headers(response,cases)
     run = db.get_latest_successful_run(repo_id)  # optional provenance only -- not required to generate
     run_id = run["id"] if run else None
-    return [
-        db.create_test_case(repo_id, None, run_id, case, source_requirement_id=requirement_id, source_doc_id=doc_id)
-        for case in cases
-    ]
+    try:
+        return db.replace_document_cases(repo_id,doc_id,run_id,cases,replace=False,source_requirement_id=requirement_id,
+            expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
+    except RuntimeError as exc:
+        raise HTTPException(409,str(exc)) from exc
 
 
 @api.post("/repos/{repo_id}/documents/{doc_id}/story-requirements/generate-test-cases")
-def api_generate_test_cases_from_document(repo_id: str, doc_id: str, replace: bool = False):
+def api_generate_test_cases_from_document(repo_id: str, doc_id: str, replace: bool = False, response: Response = None):
     """Generates the full realistic set of test cases directly from this
     document's own raw story text (name + content) -- ungrounded, no code
     shown, no requirement that Story Coverage has ever run on this document.
@@ -972,13 +1062,24 @@ def api_generate_test_cases_from_document(repo_id: str, doc_id: str, replace: bo
         cases = llm_requirement_test_generation.generate_test_cases_from_document(doc)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    if replace:
-        db.delete_test_cases_by_source_doc(repo_id, doc_id)
+    _generation_headers(response,cases)
     run = db.get_latest_successful_run(repo_id)  # optional provenance only -- not required to generate
     run_id = run["id"] if run else None
-    return [db.create_test_case(repo_id, None, run_id, case, source_doc_id=doc_id) for case in cases]
+    if replace:
+        try:
+            _replacement_must_be_complete(cases)
+            return db.replace_document_cases(repo_id,doc_id,run_id,cases,expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
+        except db.GenerationInputChangedError as exc:
+            raise HTTPException(409,str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502,str(exc)) from exc
+    try:
+        return db.replace_document_cases(repo_id,doc_id,run_id,cases,replace=False,expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
+    except RuntimeError as exc:
+        raise HTTPException(409,str(exc)) from exc
 
 
+@_bulk_worker
 def _test_generation_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], run_id: str | None, replace: bool) -> None:
     """Background counterpart to api_generate_test_cases_from_document --
     ungrounded, so unlike the pre-fix version this needs no graph/source_root
@@ -995,11 +1096,12 @@ def _test_generation_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str], 
         try:
             cases = llm_requirement_test_generation.generate_test_cases_from_document(doc)
             if replace:
-                db.delete_test_cases_by_source_doc(repo_id, doc_id)
-            created = [db.create_test_case(repo_id, None, run_id, case, source_doc_id=doc_id) for case in cases]
+                _replacement_must_be_complete(cases)
+            diagnostics=_generation_diagnostics(cases)
+            created = db.replace_document_cases(repo_id,doc_id,run_id,cases,replace=replace,expected_document_fingerprint=test_case_reassessment.documents_fingerprint([doc]))
             db.update_bulk_job_progress(job_id, doc["name"], {
-                "document_id": doc_id, "document_name": doc["name"], "ok": True,
-                "detail": f"{len(created)} test case(s)",
+                "document_id": doc_id, "document_name": doc["name"], "ok": not (diagnostics['rejected'] or diagnostics['truncated']),
+                "detail": f"{len(created)} test case(s); {diagnostics['rejected']} rejected; {diagnostics['truncated']} truncated", "generation":diagnostics,
             })
         except RuntimeError as e:
             db.update_bulk_job_progress(job_id, doc["name"], {
@@ -1131,6 +1233,8 @@ def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: P
     if not context["ok"]:
         raise RuntimeError(context["message"])
     result = llm_test_verification.generate_test_case_verifications(cases, context, sources)
+    missing={case['id'] for case in cases}-{finding['id'] for finding in result.results}
+    result.dropped.extend('No assessment returned for '+case_id for case_id in sorted(missing))
     for v in result.results:
         module = None
         for name in v.get("covers") or []:
@@ -1174,6 +1278,7 @@ def api_verify_test_cases_for_document(repo_id: str, doc_id: str):
     return {"applied": len(result.results), "dropped": result.dropped, "test_cases": db.list_test_cases(repo_id)}
 
 
+@_bulk_worker
 def _document_verification_bulk_worker(job_id: str, repo_id: str, doc_ids: list[str]) -> None:
     """Bulk counterpart to api_verify_test_cases_for_document -- loads the
     run/graph/index ONCE, then loops documents sequentially (same reasoning
@@ -1201,7 +1306,7 @@ def _document_verification_bulk_worker(job_id: str, repo_id: str, doc_ids: list[
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
             db.update_bulk_job_progress(job_id, doc["name"], {
-                "document_id": doc_id, "document_name": doc["name"], "ok": True, "detail": detail,
+                "document_id": doc_id, "document_name": doc["name"], "ok": not result.dropped, "detail": detail,
             })
         except RuntimeError as e:
             db.update_bulk_job_progress(job_id, doc["name"], {
@@ -1235,6 +1340,7 @@ def api_verify_test_cases_all_documents(repo_id: str):
     return job
 
 
+@_bulk_worker
 def _imported_verification_bulk_worker(job_id: str, repo_id: str, batches: list[list[dict]]) -> None:
     """Bulk counterpart to _document_verification_bulk_worker, but chunked by
     a fixed batch size instead of one document at a time -- an imported
@@ -1254,7 +1360,7 @@ def _imported_verification_bulk_worker(job_id: str, repo_id: str, batches: list[
             detail = f"{len(result.results)} case(s) verified"
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
-            db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": True, "detail": detail})
+            db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": not result.dropped, "detail": detail})
         except RuntimeError as e:
             db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": False, "detail": str(e)})
     db.finish_bulk_job(job_id, "success")
@@ -1295,6 +1401,7 @@ class ReassessCasesRequest(BaseModel):
     stale_only: bool = False
 
 
+@_bulk_worker
 def _reassessment_worker(job_id: str, repo_id: str, case_ids: list[str]):
     try:
         g, docs, root, context, index, run_id = _load_verification_run_state(repo_id)
@@ -1431,7 +1538,7 @@ def api_list_journeys(repo_id: str):
         statuses = [m["status"] for m in members]
         out.append({
             **j,
-            "members": members,
+            "members": _with_tested_status(repo_id,members),
             "member_count": len(members),
             "supported_count": statuses.count("supported"),
             "contradicted_count": statuses.count("contradicted"),
@@ -1481,17 +1588,19 @@ def api_confirm_story_requirement(repo_id: str, requirement_id: str, payload: Co
     requirement = db.get_story_requirement(requirement_id)
     if not requirement or requirement["repo_id"] != repo_id:
         raise HTTPException(404, "requirement not found")
-    decision = "confirmed_supported" if payload.status == "supported" else "confirmed_contradicted"
-    # ai_evidence_level reads ai_status/ai_covers -- the AI's judgment FROZEN at its
-    # last write, never confirm_story_requirement's live status/covers below. Those
-    # get overwritten by every confirmation, so on a SECOND confirmation of the same
-    # row they'd hold the FIRST human's answer, not the AI's -- which would get
-    # mistaken for a fresh AI judgment and silently inflate review-accuracy's
-    # agreement rate. A legacy row with no ai_status snapshot at all correctly comes
-    # back AI_ASSESSMENT_UNAVAILABLE, never guessed at.
-    ai_level = evidence_rules.ai_evidence_level(requirement)
-    db.record_human_review(repo_id, "story_requirement", requirement_id, decision, payload.rationale, ai_level_at_review=ai_level)
-    return db.confirm_story_requirement(requirement_id, payload.status, payload.rationale)
+    requirement=db.get_story_requirement(requirement_id)
+    if not requirement or requirement['repo_id']!=repo_id:
+        raise HTTPException(404,'requirement not found')
+    if not payload.assessment_version:
+        raise HTTPException(428,'Refresh before confirming: assessment version required')
+    from .source_freshness import check_source_context
+    if check_source_context(requirement.get('source_context'),_source_root_for_view(db.get_repo(repo_id)))['state']=='changed':
+        raise HTTPException(409,'Source changed; reassess before confirming')
+    try:
+        return db.confirm_requirement_review(repo_id,requirement_id,payload.status,payload.rationale,payload.assessment_version)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+
 
 
 @api.post("/repos/{repo_id}/test-cases/{case_id}/review")
@@ -1505,23 +1614,42 @@ def api_review_test_case(repo_id: str, case_id: str, payload: HumanReviewIn):
     review action at all -- only story requirements had one."""
     if payload.decision not in evidence_rules.HUMAN_REVIEW_DECISIONS:
         raise HTTPException(400, f"decision must be one of {sorted(evidence_rules.HUMAN_REVIEW_DECISIONS)}")
-    cases = [c for c in db.list_test_cases(repo_id) if c["id"] == case_id]
+    cases = [c for c in api_list_test_cases(repo_id) if c['id'] == case_id]
     if not cases:
-        raise HTTPException(404, "test case not found")
-    note = (payload.note or "").strip()
-    if payload.decision in ("rejected_ai_judgment", "needs_more_info") and not note:
-        raise HTTPException(400, "Explain why you disagree or specify what information is missing.")
-    status = cases[0].get("status")
-    allowed_agreement = {"supported":"confirmed_supported", "contradicted":"confirmed_contradicted"}.get(status, "agreed_uncertain")
-    if payload.decision in ("confirmed_supported", "confirmed_contradicted", "agreed_uncertain"):
-        if not status or cases[0].get("assessment_kind") == "inferred_from_requirement":
-            raise HTTPException(400, "An independent assessment is required before recording agreement.")
-        if (payload.decision == "agreed_uncertain" or allowed_agreement == "agreed_uncertain") and payload.decision != allowed_agreement:
-            raise HTTPException(400, "Agreement must match the current assessment. Refresh and review again.")
-    payload.note = note or None
-    ai_level = evidence_rules.evidence_level(cases[0])
-    review = db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note, ai_level_at_review=ai_level)
-    return {**review, "review_state":test_case_view.review_state(cases[0], review)}
+        raise HTTPException(404, 'test case not found')
+    case=cases[0]
+    assessment=case['assessment']
+    if not payload.assessment_version:
+        raise HTTPException(428, 'Refresh the case before reviewing: an assessment version is required.')
+    if payload.assessment_version != assessment['version']:
+        raise HTTPException(409, 'Assessment changed; refresh before reviewing.')
+    if payload.decision=='rejected_ai_judgment' and assessment['state']=='unassessed':
+        raise HTTPException(400,'No assessment exists to disagree with. Request information or assess the case first.')
+    note=(payload.note or '').strip()
+    if len(note)>10000:
+        raise HTTPException(400, 'Reviewer comments must be at most 10000 characters.')
+    if payload.decision in ('rejected_ai_judgment','needs_more_info') and not note:
+        raise HTTPException(400, 'Explain why you disagree or specify what information is missing.')
+    agreements=('confirmed_supported','confirmed_contradicted','agreed_uncertain')
+    if payload.intent not in ('agreement','correction'):
+        raise HTTPException(400, 'intent must be agreement or correction')
+    if payload.decision in agreements:
+        if not assessment['reviewable']:
+            raise HTTPException(400, 'An independent assessment is required before recording agreement.')
+        if case.get('is_stale'):
+            raise HTTPException(409, 'This assessment is stale. Run analysis and reassess before agreeing.')
+        if payload.decision != assessment['agreement_decision']:
+            if payload.intent != 'correction' or not note or payload.decision == 'agreed_uncertain':
+                raise HTTPException(400, 'Agreement must match the displayed assessment. Use Disagree and explain a correction.')
+    snapshot={**assessment,'source_freshness':case['source_freshness'],'is_stale':case.get('is_stale',False)}
+    try:
+        review=db.record_human_review(repo_id,'test_case',case_id,payload.decision,note or None,
+            ai_level_at_review=assessment['ai_level'],assessment_version=payload.assessment_version,
+            assessment_snapshot=snapshot)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+    return {**review,'review_state':test_case_view.review_state(case,review)}
+
 
 
 @api.get("/repos/{repo_id}/review-accuracy")
@@ -1553,7 +1681,7 @@ def api_review_accuracy(repo_id: str):
         # original AI judgment at all -- there is nothing to measure this
         # decision against, so it's excluded rather than silently dropped or
         # (worse) compared against the row's current, possibly human-written state.
-        if ai_level == evidence_rules.AI_ASSESSMENT_UNAVAILABLE:
+        if not ai_level or ai_level == evidence_rules.AI_ASSESSMENT_UNAVAILABLE:
             excluded_no_ai_judgment += 1
             continue
         if decision == "agreed_uncertain":
@@ -1577,11 +1705,18 @@ def api_review_accuracy(repo_id: str):
                 false_support += 1  # AI called it supported; the human says it's actually contradicted
 
     total = len(latest_reviews)
-    comparable = total - excluded_no_ai_judgment
+    definitive = agreed + false_support + false_conflict
+    excluded_uncertain = sum(1 for review in latest_reviews.values()
+        if review.get('ai_level_at_review') in ('inconclusive','insufficient_evidence'))
+    comparable = definitive
     return {
         "total_reviews": total,
         "excluded_no_ai_judgment": excluded_no_ai_judgment,
         "comparable_reviews": comparable,
+        "definitive_review_count": definitive,
+        "excluded_uncertain_judgment": excluded_uncertain,
+        "excluded_information_requests": needs_more_info,
+        "metric_description": "Reviewer agreement on definitive AI judgments with a definitive reviewer decision; not an independently measured accuracy rate.",
         "agreed_with_ai": agreed,
         "agreed_uncertain_count": agreed_uncertain,
         "false_support_count": false_support,
@@ -1692,17 +1827,30 @@ def api_run_test_generation(repo_id: str, module: str):
     }
 
 
+def _source_root_for_view(repo):
+    # A read must never fetch or update a remote checkout. Only inspect the
+    # working copy already present from the latest explicit analysis.
+    if repo.get('source_type') == 'local':
+        return Path(repo['local_path']).expanduser() if repo.get('local_path') else None
+    from .runner import WORKSPACE_DIR
+    return WORKSPACE_DIR / repo['id']
+
+
 @api.get("/repos/{repo_id}/test-cases")
 def api_list_test_cases(repo_id: str):
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
     cases = db.list_test_cases(repo_id)
     requirements = db.list_story_requirements(repo_id)  # every document's requirements, not just one
-    linked = llm_story_coverage.link_requirements_to_cases(cases, requirements)
+    from .assessment_projection import assessment_version
+    documents=db.list_documents(repo_id)
+    versions={case['id']:assessment_version(case,documents,requirements) for case in cases}
+    linked = llm_story_coverage.link_requirements_to_cases(cases, _with_tested_status(repo_id,requirements))
+    linked=[{**case,'_recorded_assessment_version':versions[case['id']]} for case in linked]
     run = db.get_latest_successful_run(repo_id)
     reviews = evidence_rules.latest_review_by_target(db.list_human_reviews(repo_id))
     return [{**case, "human_review": reviews.get(case["id"]), "review_state":test_case_view.review_state(case,reviews.get(case["id"]))}
-            for case in test_case_view.enrich_cases(linked, run["id"] if run else None, db.list_documents(repo_id))]
+            for case in test_case_view.enrich_cases(linked, run["id"] if run else None, documents, _source_root_for_view(db.get_repo(repo_id)))]
 
 
 @api.delete("/repos/{repo_id}/test-cases")
@@ -1765,14 +1913,10 @@ async def api_import_test_cases(repo_id: str, file: UploadFile = File(...)):
     resolve those. See server/test_case_import.py."""
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    data = await file.read()
+    data = await _read_upload(file)
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "file too large (max 20MB)")
-    try:
-        text = doc_extract.extract_text(file.filename or "", data)
-    except doc_extract.UnsupportedDocumentError as e:
-        raise HTTPException(400, str(e))
-    cases, error = test_case_import.parse_test_cases(text)
+    cases,error=test_case_import.parse_file(file.filename or '',data)
     if not cases:
         raise HTTPException(400, error or "no test cases found in that file")
     return db.import_test_cases(repo_id, cases)
@@ -1802,6 +1946,7 @@ def api_traceability_dashboard(repo_id: str):
     summary = traceability_dashboard.compute_summary(
         documents, requirements, cases, module_scores, labels,
         latest_run_id=run["id"] if run else None, human_reviews=human_reviews,
+        source_root=_source_root_for_view(db.get_repo(repo_id)),
     )
     today = datetime.now(timezone.utc).date().isoformat()
     db.upsert_dashboard_snapshot(repo_id, today, summary)

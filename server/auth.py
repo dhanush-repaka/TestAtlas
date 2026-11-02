@@ -82,11 +82,9 @@ def safe_next_path(raw: str | None, base_path: str) -> str:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Gates every write (anything but GET) and a couple of GETs that act like
-    one -- everything else is open to read without a session, so an anonymous
-    visitor can browse repos/graphs/findings/test cases but never change
-    anything. Password holders still sign in at /login for full access.
-    A no-op entirely when TESTATLAS_PASSWORD isn't set."""
+    """Require login for project reads and writes when a password is configured.
+    TESTATLAS_PUBLIC_READ_ONLY explicitly permits anonymous browsing.
+    A no-op when TESTATLAS_PASSWORD is unset."""
 
     # GET endpoints that export/trigger something rather than just reading --
     # kept to a suffix match since every one of these lives under /api/repos/{id}/...
@@ -95,6 +93,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, base_path: str = ""):
         super().__init__(app)
         self.login_path = f"{base_path}/login"
+        self.static_prefix=f"{base_path}/static/"
+        self.config_path=f"{base_path}/api/system/config"
 
     async def dispatch(self, request: Request, call_next):
         if not password_configured():
@@ -106,8 +106,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if verify_session_token(request.cookies.get(COOKIE_NAME)):
             return await call_next(request)
 
-        if request.method == "GET" and not request.url.path.endswith(self.WRITE_LIKE_GET_SUFFIXES):
-            return await call_next(request)
+        if request.method == 'GET':
+            if request.url.path.startswith(self.static_prefix) or request.url.path==self.config_path:
+                return await call_next(request)
+            if os.environ.get('TESTATLAS_PUBLIC_READ_ONLY','').lower() in ('1','true','yes') and not request.url.path.endswith(self.WRITE_LIKE_GET_SUFFIXES):
+                return await call_next(request)
 
         accepts_html = "text/html" in request.headers.get("accept", "")
         if accepts_html and request.method == "GET":

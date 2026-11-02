@@ -68,14 +68,16 @@ def _check_derived_requirement(r, canon: dict[str, str]) -> tuple[dict | None, s
     if not text:
         return None, "no text"
     rtype = r.get("type")
-    if rtype not in ALLOWED_REQUIREMENT_TYPES:
+    if not isinstance(rtype,str) or rtype not in ALLOWED_REQUIREMENT_TYPES:
         return None, f"unknown type {rtype!r}"
     status = r.get("status")
     if status not in ("supported", "contradicted", "unknown", "needs_human_input"):
         return None, f"unknown status {status!r}"
 
+    if not isinstance(r.get('covers',[]),list):
+        return None, 'covers must be a list'
     covers: list[str] = []
-    for entry in (r.get("covers") or []):
+    for entry in r.get('covers',[]):
         real = canonical_cover(entry, canon) if isinstance(entry, str) else None
         if real and real not in covers:
             covers.append(real)
@@ -125,14 +127,19 @@ def generate_journey_requirements(journey_name: str, sources: dict[str, str], mo
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
 
+    if not isinstance(parsed,dict):
+        raise RuntimeError("Model's response had an unexpected shape (expected an object).")
     requirements = parsed.get("requirements", [])
     if not isinstance(requirements, list):
         raise RuntimeError("Model's response had an unexpected shape (requirements wasn't a list).")
 
     canon = {name: name for name in sources}
     out = []
+    rejected=[]
     for r in requirements:
         checked, _why = _check_derived_requirement(r, canon)
+        if checked is None:
+            rejected.append(_why)
         if checked is not None:
             if isinstance(sources, SourceEvidence):
                 citations = validate_code_citations(r, sources)
@@ -140,4 +147,6 @@ def generate_journey_requirements(journey_name: str, sources: dict[str, str], mo
                 checked['status'] = enforce_context(checked['status'] if checked['covers'] else 'unknown', r, sources)
                 checked['source_context'] = {**sources.manifest(), 'citations':citations}
             out.append(checked)
+    if rejected:
+        raise RuntimeError('Invalid derived requirements; existing results preserved: '+ '; '.join(rejected[:5]))
     return out

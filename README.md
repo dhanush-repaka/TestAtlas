@@ -108,9 +108,9 @@ For a quick solo trial on your own laptop, one line is enough:
   UI and stored encrypted under `DATA_ROOT`.
 
 **What leaves the machine:** analysis, the graph, findings and everything you
-browse stay local (apart from fetching repos from your Git host). Only the three AI features call out, and only with module,
-file and function names, the on-screen text found in the code (button labels,
-messages) and any documents you added — not source-code bodies. With no
+browse stay local (apart from fetching repos from your Git host). AI features can send module, file and function names, extracted UI text, uploaded
+documents, test cases, and selected source-file bodies with dependency context
+to the configured provider. Review provider approval before enabling AI. With no
 `OPENAI_API_KEY` (or `OPENAI_BASE_URL` pointing inside your network) nothing
 leaves at all.
 
@@ -443,7 +443,9 @@ No login by default (fine for `localhost`). Set `TESTATLAS_PASSWORD` before
 exposing this anywhere reachable — every request then requires a session
 cookie, issued at `{BASE_PATH}/login`, until it expires (30 days). Single
 shared password, not per-user accounts — enough to keep it off the open
-internet, nothing more.
+internet, nothing more. Project reads also require login by default. Set
+`TESTATLAS_PUBLIC_READ_ONLY=1` only when anonymous access to project data is
+intentional; editing and export still require login.
 
 ### 2. Reverse-proxied under a sub-path (e.g. `yoursite.com/testatlas`)
 

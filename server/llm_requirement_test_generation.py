@@ -51,6 +51,19 @@ DEFAULT_MODEL = "gpt-6-luna"
 SCENARIO_SAFETY_CAP = 100
 
 
+class GeneratedCases(list):
+    """Backward-compatible case list plus explicit partial-result diagnostics."""
+    def __init__(self,cases,dropped=(),truncated=0):
+        super().__init__(cases)
+        self.dropped=list(dropped)
+        self.truncated=truncated
+
+    @property
+    def diagnostics(self):
+        return {'accepted':len(self),'rejected':len(self.dropped),'truncated':self.truncated,
+                'reasons':[reason[:200] for reason in self.dropped[:5]]}
+
+
 def _build_prompt(requirement: dict) -> str:
     return f"""You write Azure DevOps-style functional test case(s) directly from ONE acceptance criterion's own wording -- you are NOT shown the codebase, and you must not guess at or assume implementation details. The test case documents what the criterion's own text claims should happen; whether the code actually does that is checked in a separate step later, not your job here.
 
@@ -108,6 +121,8 @@ def generate_test_cases_from_requirement(requirement: dict, model: str | None = 
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
 
+    if not isinstance(parsed,dict):
+        raise RuntimeError("Model response must be a JSON object")
     raw_cases = parsed.get("test_cases")
     if not isinstance(raw_cases, list):
         raise RuntimeError("Model's response had an unexpected shape (test_cases wasn't a list).")
@@ -134,7 +149,7 @@ def generate_test_cases_from_requirement(requirement: dict, model: str | None = 
     if not out:
         detail = "; ".join(reasons) if reasons else "no scenarios were returned"
         raise RuntimeError(f"Model's test case(s) were rejected: {detail}")
-    return out
+    return GeneratedCases(out,reasons,max(0,len(raw_cases)-SCENARIO_SAFETY_CAP))
 
 
 def _build_document_prompt(doc: dict) -> str:
@@ -194,6 +209,8 @@ def generate_test_cases_from_document(doc: dict, model: str | None = None) -> li
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Model didn't return valid JSON: {e}") from e
 
+    if not isinstance(parsed,dict):
+        raise RuntimeError("Model response must be a JSON object")
     raw_cases = parsed.get("test_cases")
     if not isinstance(raw_cases, list):
         raise RuntimeError("Model's response had an unexpected shape (test_cases wasn't a list).")
@@ -215,4 +232,4 @@ def generate_test_cases_from_document(doc: dict, model: str | None = None) -> li
     if not out:
         detail = "; ".join(reasons) if reasons else "no scenarios were returned"
         raise RuntimeError(f"Model's test case(s) were rejected: {detail}")
-    return out
+    return GeneratedCases(out,reasons,max(0,len(raw_cases)-SCENARIO_SAFETY_CAP))

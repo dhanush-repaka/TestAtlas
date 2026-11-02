@@ -41,6 +41,7 @@ see _overall_status's own docstring for how the headline adapts to that case.
 from __future__ import annotations
 
 from server import evidence_rules
+from server.assessment_projection import requirement_is_stale
 from server.llm_story_coverage import compute_tested_status, link_requirements_to_cases
 
 _REQUIREMENT_STATUSES = ("supported", "contradicted", "unknown", "needs_human_input")
@@ -223,7 +224,7 @@ def _critical_modules(module_scores: list[dict]) -> set[str]:
     here means most of the codebase imports from it, not "important to the
     business" (this tool has no way to know that), but it's the same honest
     proxy the rest of this app already uses for "critical"."""
-    ranked = sorted((m for m in module_scores if m.get("module")), key=lambda m: m.get("pagerank", 0), reverse=True)
+    ranked = sorted((m for m in module_scores if m.get("module") and (m.get("pagerank") or 0) > 0), key=lambda m: m.get("pagerank", 0), reverse=True)
     return {m["module"] for m in ranked[:_CRITICAL_MODULE_COUNT]}
 
 
@@ -340,6 +341,7 @@ def compute_summary(
     module_labels: dict[str, dict],
     latest_run_id: str | None = None,
     human_reviews: list[dict] | None = None,
+    source_root=None,
 ) -> dict:
     """`documents`/`requirements`/`test_cases` -- server/db.py's list_documents/
     list_story_requirements/list_test_cases, unfiltered (every document in the
@@ -354,11 +356,19 @@ def compute_summary(
     successful run yet or no reviews recorded is a normal, common state."""
     # A document edit invalidates a three-way assessment even without a new code run.
     from .test_case_view import enrich_cases
-    test_cases = enrich_cases(test_cases, latest_run_id, documents)
+    test_cases = enrich_cases(test_cases, latest_run_id, documents, source_root)
+    from .source_freshness import check_source_context
+    source_cache={}
+    checked_requirements=[]
+    for requirement in requirements:
+        freshness=check_source_context(requirement.get('source_context'),source_root,source_cache)
+        checked_requirements.append({**requirement,'source_freshness':freshness,
+            'is_stale':requirement_is_stale(requirement,documents) or evidence_rules.is_stale(requirement,latest_run_id) or freshness['state']=='changed'})
+    requirements=checked_requirements
     reviews_by_target = evidence_rules.latest_review_by_target(human_reviews or [])
     tested_requirements = compute_tested_status(requirements, test_cases)
     tested_by_id = {r["id"]: r for r in tested_requirements}
-    linked_cases = link_requirements_to_cases(test_cases, requirements)
+    linked_cases = enrich_cases(link_requirements_to_cases(test_cases, requirements),latest_run_id,documents,source_root)
     critical_modules = _critical_modules(module_scores)
 
     # A document "has test coverage" if either direction confirms it: one of its
@@ -402,7 +412,11 @@ def compute_summary(
         has_code = any(r.get("covers") for r in doc_reqs)
         by_status = _status_counts(doc_reqs)
         has_stale = any(evidence_rules.is_stale(r, latest_run_id) for r in doc_reqs)
-        health = _story_health(by_status, len(doc_reqs), has_stale)
+        fresh_reqs = [r for r in doc_reqs if not evidence_rules.is_stale(r, latest_run_id)]
+        # Historical negative findings remain inspectable, but are not current judgments.
+        health = _story_health(_status_counts(fresh_reqs), len(fresh_reqs)) if fresh_reqs else ("needs_reassessment" if has_stale else "not_analyzed")
+        if has_stale and health == "verified":
+            health = "needs_reassessment"
         # Strictly-AI view of the SAME document -- never moves from a human
         # confirmation, only from a fresh AI judgment (server/app.py's
         # api_confirm_story_requirement overwrites status/covers but never
@@ -412,8 +426,10 @@ def compute_summary(
         # confirmation combined), which is what the overall red/amber/green
         # status and gap lists use, since a human-confirmed fix really is a
         # fix and should stop showing as broken there.
-        ai_by_status, ai_unavailable = _ai_status_counts(doc_reqs)
-        ai_health = _story_health(ai_by_status, len(doc_reqs), has_stale, ai_unavailable)
+        ai_by_status, ai_unavailable = _ai_status_counts(fresh_reqs)
+        ai_health = _story_health(ai_by_status, len(fresh_reqs), False, ai_unavailable) if fresh_reqs else ("needs_reassessment" if has_stale else "not_analyzed")
+        if has_stale and ai_health == "verified":
+            ai_health = "needs_reassessment"
         has_human_confirmed = any(r.get("source") == "human_confirmed" for r in doc_reqs)
         touches_critical_code = bool(modules & critical_modules)
         document_rollup.append({
@@ -429,6 +445,7 @@ def compute_summary(
             "has_test_coverage": has_test_coverage,
             "has_code": has_code,
             "has_stale": has_stale,
+            "stale_count": len(doc_reqs) - len(fresh_reqs),
             "modules": sorted(modules),
             "touches_critical_code": touches_critical_code,
         })
@@ -460,6 +477,7 @@ def compute_summary(
         rollup = rollup_by_doc_id.get(r.get("doc_id"))
         return {
             "id": r["id"], "doc_id": r.get("doc_id"), "doc_name": doc["name"] if doc else None,
+            "is_stale": evidence_rules.is_stale(r, latest_run_id),
             "text": r["text"], "rationale": r.get("rationale"), "question": r.get("question"),
             "touches_critical_code": bool(rollup and rollup["touches_critical_code"]),
         }
@@ -537,6 +555,12 @@ def compute_summary(
             "ai_verified_pct": ai_verified_pct,
             "critical_at_risk": critical_at_risk,
             "by_origin": _count_by(documents, "created_via"),
+        },
+        "source_freshness": {
+            "scope":"recorded_evidence_files",
+            **{state:sum(item.get('source_freshness',{}).get('state')==state for item in [*test_cases,*requirements])
+               for state in ('unchanged','changed','unrecorded','not_checked')},
+            "message":"Checked recorded evidence files only. Unexamined code, remote changes and runtime settings are not verified.",
         },
         "requirements": {
             "total": total_reqs,

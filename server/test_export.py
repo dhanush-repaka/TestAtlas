@@ -137,6 +137,24 @@ def _story_traceability(case: dict, documents: dict, journeys: dict) -> str:
     return f"User story traceability: {', '.join(parts)}"
 
 
+def _assessment_description(case):
+    from .assessment_projection import project
+    assessment=case.get('assessment') or project(case)
+    review=case.get('human_review') or {}
+    lines=['Source assessment (not test execution): '+assessment['label'],
+        'Semantic interpretation: AI finding; not independently verified.',
+        'Freshness: '+('STALE — reassessment required' if case.get('is_stale') else (case.get('source_freshness') or {}).get('message','Source snapshot not checked')),
+        'Assessment version: '+assessment['version'],
+        'Assessed at: '+str(case.get('assessed_at') or 'unrecorded'),
+        'Model: '+str(case.get('assessed_model') or 'unrecorded'),
+        'Analysis run: '+str(case.get('run_id') or 'unrecorded')]
+    if review:
+        lines.append('Human review: '+(case.get('review_state') or {}).get('label',review.get('decision','unrecorded')))
+        lines.append('Reviewer comment: '+str(review.get('note') or '(none)'))
+        lines.append('Reviewed at: '+str(review.get('reviewed_at') or 'unrecorded'))
+    return '\n'.join(lines)
+
+
 def _description(case: dict, labels: dict, documents: dict, journeys: dict) -> str:
     """Description for the CSV. Traceability rides here rather than in a new column:
     Description is a field every ADO test case has, so the import can't reject it the way
@@ -147,6 +165,8 @@ def _description(case: dict, labels: dict, documents: dict, journeys: dict) -> s
     parts.append("Origin: " + ("Imported" if case.get("created_via") == "imported" else "Generated"))
     parts.append(_code_traceability(case, labels))
     parts.append(_story_traceability(case, documents, journeys))
+    parts.append(_assessment_description(case))
+    parts.append("Overall expected result: " + str(case.get("expected_result") or ""))
     return "\n".join(p for p in parts if p)
 
 
@@ -195,6 +215,7 @@ def to_markdown(cases: list[dict], labels: dict, repo_name: str, documents: dict
             lines += ["Origin: " + ("Imported" if c.get("created_via") == "imported" else "Generated"), ""]
             lines += [f"_{_code_traceability(c, labels)}_", ""]
             lines += [f"_{_story_traceability(c, documents, journeys)}_", ""]
+            lines += [_assessment_description(c), "", "**Overall expected result:** " + str(c.get("expected_result") or ""), ""]
             lines += ["| # | Action | Expected result |", "|---|--------|-----------------|"]
             lines += [f"| {n} | {_md_cell(s['action'])} | {_md_cell(s['expected'])} |" for n, s in enumerate(_steps(c), 1)]
             lines.append("")
@@ -210,13 +231,22 @@ def to_json(cases: list[dict], labels: dict, documents: dict | None = None, jour
         module = c.get("module") or None
         module_name = _module_name(c, labels)
         story_entries = _story_entries(c, documents, journeys)
+        from .assessment_projection import project
         out.append({
+            "status":c.get('status'), "expected_result":c.get('expected_result'),
+            "human_review":c.get('human_review'), "review_state":c.get('review_state'),
+            "assessed_at":c.get('assessed_at'), "assessed_model":c.get('assessed_model'),
+            "run_id":c.get('run_id'), "rationale":c.get('rationale'),
+            "assessment":c.get('assessment') or project(c), "source_freshness":c.get('source_freshness'),
             "generation_context": c.get("generation_context"), "reassessment": c.get("reassessment"), "is_stale": bool(c.get("is_stale")),
             "id": c.get("id"), "created_via": c.get("created_via") or "generated",
             "title": c.get("title"), "description": c.get("description"), "priority": c.get("priority"),
             "category": c.get("category"), "feature": c.get("feature"), "preconditions": c.get("preconditions"),
             "module": module, "module_name": module_name,
-            "steps": _steps(c), "covers": covers,
+            "steps": c.get('steps') or [], "covers": covers,
+            "source_requirement_id":c.get('source_requirement_id'),"source_doc_id":c.get('source_doc_id'),
+            "source_journey_id":c.get('source_journey_id'),"target":c.get('target'),
+            "schema_version":2,
             "assessment_kind": c.get("assessment_kind"), "judgment_source": c.get("judgment_source"),
             "inferred_requirement_id": c.get("inferred_requirement_id"), "inferred_run_id": c.get("inferred_run_id"),
             "code_traceability": {"linked": bool(module or covers), "module": module, "module_name": module_name, "covers": covers},

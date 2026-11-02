@@ -21,6 +21,10 @@ DB_PATH = DATA_DIR / "kg.db"
 RUNS_DIR = DATA_DIR / "runs"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS requirement_assessments (
+    id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, requirement_id TEXT NOT NULL,
+    assessed_at TEXT NOT NULL, snapshot TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS test_case_assessments (
     id TEXT PRIMARY KEY,
     repo_id TEXT NOT NULL,
@@ -86,6 +90,11 @@ CREATE TABLE IF NOT EXISTS documents (
 -- computed here, this table just stores the result of that comparison.
 -- (Superseded the earlier per-document doc_gap_findings table below, which
 -- an existing production DB may still carry rows in but nothing reads anymore.)
+CREATE TABLE IF NOT EXISTS repo_gap_assessments (
+    repo_id TEXT PRIMARY KEY REFERENCES repos(id),
+    run_id TEXT,
+    assessed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS repo_gap_findings (
     id TEXT PRIMARY KEY,
     repo_id TEXT NOT NULL,
@@ -303,6 +312,8 @@ _HUMAN_REVIEWS_COLUMN_MIGRATIONS = {
     # turning every correction into apparent agreement. NULL on a row written
     # before this column existed.
     "ai_level_at_review": "TEXT",
+    "assessment_version": "TEXT",
+    "assessment_snapshot": "TEXT",
 }
 
 _RUNS_COLUMN_MIGRATIONS = {
@@ -378,6 +389,8 @@ _DOCUMENTS_COLUMN_MIGRATIONS = {
 
 _STORY_REQUIREMENTS_COLUMN_MIGRATIONS = {
     "source_context": "TEXT",
+    "document_fingerprint": "TEXT",
+    "retired": "INTEGER NOT NULL DEFAULT 0",
     # Which journey a DERIVED requirement (source='derived') was found inside
     # -- NULL for a document-sourced or not-yet-journey-linked row. A
     # document-sourced requirement's journey membership is computed at read
@@ -427,6 +440,7 @@ def init_db() -> None:
         _migrate_columns(conn, "module_labels", _MODULE_LABELS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "story_requirements", _STORY_REQUIREMENTS_COLUMN_MIGRATIONS)
         _migrate_columns(conn, "human_reviews", _HUMAN_REVIEWS_COLUMN_MIGRATIONS)
+        _migrate_columns(conn,"bulk_jobs",{"owner_pid":"INTEGER"})
         # The Playwright+BDD parser was retired -- any repo still configured
         # for it has no parser left to run; move it to the one supported
         # framework rather than leave it permanently broken.
@@ -526,6 +540,9 @@ def delete_repo(repo_id: str) -> None:
             (repo_id,),
         )
         conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM repo_gap_assessments WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM dashboard_snapshots WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM requirement_assessments WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM test_case_assessments WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM test_cases WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM module_labels WHERE repo_id = ?", (repo_id,))
@@ -683,6 +700,7 @@ def replace_repo_gap_findings(
     joined_docs = ", ".join(source_docs)
     with get_conn() as conn:
         conn.execute("DELETE FROM repo_gap_findings WHERE repo_id = ?", (repo_id,))
+        conn.execute("INSERT OR REPLACE INTO repo_gap_assessments (repo_id, run_id, assessed_at) VALUES (?,?,?)", (repo_id, run_id, ts))
         for f in findings:
             conn.execute(
                 "INSERT INTO repo_gap_findings (id, repo_id, run_id, category, description, source_docs, created_at, source_context) VALUES (?,?,?,?,?,?,?,?)",
@@ -938,50 +956,63 @@ def get_module_label_details(repo_id: str) -> dict[str, dict]:
 
 # --------------------------------------------------------------------------- story coverage requirements
 
-def replace_story_requirements(
-    repo_id: str, doc_id: str, run_id: str | None, requirements: list[dict], assessed_model: str | None = None,
-) -> None:
-    """Idempotent per (repo, document): drops just this document's previously
-    extracted/judged requirements written by an LLM or manual pass
-    (source='document') and stores the new set. Never touches a future
-    human-confirmed row for this same document, and never touches any other
-    document's requirements -- full wholesale replace (like gap findings)
-    would be wrong here, since a human-confirmed answer must be able to
-    survive a rerun. `assessed_model` is this judging pass's provenance
-    (see _STORY_REQUIREMENTS_COLUMN_MIGRATIONS); each `r` may carry its own
-    `cited_paths` (resolved by the caller, which has graph access)."""
-    ts = now()
+def replace_story_requirements(repo_id, doc_id, run_id, requirements, assessed_model=None, expected_document_fingerprint=None):
+    """Reconcile active criteria transactionally; retain IDs, old rows and reviews."""
+    from .test_case_reassessment import documents_fingerprint
+    ts=now()
     with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM story_requirements WHERE repo_id = ? AND doc_id = ? AND source = 'document'",
-            (repo_id, doc_id),
-        )
-        for r in requirements:
-            covers_json = json.dumps(r.get("covers") or [])
-            conn.execute(
-                """INSERT INTO story_requirements
-                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, created_at,
-                    assessed_at, assessed_model, cited_paths, ai_status, ai_covers, ai_rationale, source_context)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    str(uuid.uuid4()), repo_id, doc_id, run_id, r["text"], r["type"], r["status"],
-                    r.get("rationale"), covers_json, "document", ts,
-                    ts, assessed_model, json.dumps(r["cited_paths"]) if r.get("cited_paths") is not None else None,
-                    r["status"], covers_json, r.get("rationale"), json.dumps(r.get("source_context")) if r.get("source_context") else None,
-                ),
-            )
+        conn.execute('BEGIN IMMEDIATE')
+        document=conn.execute('SELECT * FROM documents WHERE id=? AND repo_id=?',(doc_id,repo_id)).fetchone()
+        if document is None:
+            raise RuntimeError('Document was deleted during assessment')
+        doc_hash=documents_fingerprint([dict(document)])
+        if expected_document_fingerprint and expected_document_fingerprint != doc_hash:
+            raise RuntimeError('Document changed during assessment; assess the latest version')
+        old=[dict(row) for row in conn.execute('SELECT * FROM story_requirements WHERE repo_id=? AND doc_id=?',(repo_id,doc_id))]
+        key=lambda item:(' '.join(item['text'].split()),item['type'])
+        used=set()
+        for req in requirements:
+            candidates=[row for row in old if key(row)==key(req) and row['id'] not in used]
+            candidates.sort(key=lambda row:(row.get('retired',0),row['source']!='human_confirmed',row['created_at']))
+            previous=candidates[0] if candidates else None
+            req_id=previous['id'] if previous else str(uuid.uuid4())
+            used.add(req_id)
+            keep_human=bool(previous and previous['source']=='human_confirmed' and
+                previous.get('document_fingerprint') in (None,doc_hash) and previous.get('run_id')==run_id and
+                previous.get('source_context')==(json.dumps(req['source_context']) if req.get('source_context') else None))
+            values=(repo_id,doc_id,run_id,req['text'],req['type'],
+                previous['status'] if keep_human else req['status'],
+                previous['rationale'] if keep_human else req.get('rationale'),
+                previous['covers'] if keep_human else json.dumps(req.get('covers') or []),
+                'human_confirmed' if keep_human else 'document',
+                previous['created_at'] if previous else ts,ts,assessed_model,
+                json.dumps(req['cited_paths']) if req.get('cited_paths') is not None else None,
+                req['status'],json.dumps(req.get('covers') or []),req.get('rationale'),
+                json.dumps(req['source_context']) if req.get('source_context') else None,doc_hash,req_id)
+            if previous:
+                conn.execute('INSERT INTO requirement_assessments VALUES (?,?,?,?,?)',
+                    (str(uuid.uuid4()),repo_id,req_id,ts,json.dumps(previous)))
+                conn.execute('''UPDATE story_requirements SET repo_id=?,doc_id=?,run_id=?,text=?,type=?,status=?,rationale=?,covers=?,source=?,
+                    created_at=?,assessed_at=?,assessed_model=?,cited_paths=?,ai_status=?,ai_covers=?,ai_rationale=?,source_context=?,document_fingerprint=?,retired=0 WHERE id=?''',values)
+            else:
+                conn.execute('''INSERT INTO story_requirements
+                    (repo_id,doc_id,run_id,text,type,status,rationale,covers,source,created_at,assessed_at,assessed_model,cited_paths,
+                     ai_status,ai_covers,ai_rationale,source_context,document_fingerprint,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',values)
+        for row in old:
+            if row['id'] not in used and (row['source']=='document' or any(key(row)==key(req) for req in requirements)):
+                conn.execute('UPDATE story_requirements SET retired=1 WHERE id=?',(row['id'],))
 
 
 def list_story_requirements(repo_id: str, doc_id: str | None = None) -> list[dict]:
     with get_conn() as conn:
         if doc_id:
             rows = conn.execute(
-                "SELECT * FROM story_requirements WHERE repo_id = ? AND doc_id = ? ORDER BY created_at DESC, rowid",
+                "SELECT * FROM story_requirements WHERE repo_id = ? AND doc_id = ? AND COALESCE(retired,0)=0 ORDER BY created_at DESC, rowid",
                 (repo_id, doc_id),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM story_requirements WHERE repo_id = ? ORDER BY created_at DESC, rowid", (repo_id,),
+                "SELECT * FROM story_requirements WHERE repo_id = ? AND COALESCE(retired,0)=0 ORDER BY created_at DESC, rowid", (repo_id,),
             ).fetchall()
     out = []
     for r in rows:
@@ -1015,27 +1046,34 @@ def replace_derived_requirements(
     human-confirmed answer for this same journey (a prior derived row the
     human already resolved), another journey's rows, or any document-sourced
     requirement."""
-    ts = now()
+    ts=now()
     with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM story_requirements WHERE repo_id = ? AND journey_id = ? AND source = 'derived'",
-            (repo_id, journey_id),
-        )
-        for r in requirements:
-            covers_json = json.dumps(r.get("covers") or [])
-            conn.execute(
-                """INSERT INTO story_requirements
-                   (id, repo_id, doc_id, run_id, text, type, status, rationale, covers, source, journey_id, question, created_at,
-                    assessed_at, assessed_model, cited_paths, ai_status, ai_covers, ai_rationale, source_context)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    str(uuid.uuid4()), repo_id, None, run_id, r["text"], r["type"], r["status"],
-                    r.get("rationale"), covers_json, "derived", journey_id,
-                    r.get("question"), ts,
-                    ts, assessed_model, json.dumps(r["cited_paths"]) if r.get("cited_paths") is not None else None,
-                    r["status"], covers_json, r.get("rationale"), json.dumps(r.get("source_context")) if r.get("source_context") else None,
-                ),
-            )
+        conn.execute('BEGIN IMMEDIATE')
+        old=[dict(row) for row in conn.execute('SELECT * FROM story_requirements WHERE repo_id=? AND journey_id=?',(repo_id,journey_id))]
+        key=lambda row:(' '.join(row['text'].split()),row['type'])
+        used=set()
+        for req in requirements:
+            candidates=[row for row in old if row['id'] not in used and key(row)==key(req)]
+            candidates.sort(key=lambda row:(row.get('retired',0),row['source']!='human_confirmed',row['created_at']))
+            previous=candidates[0] if candidates else None
+            req_id=previous['id'] if previous else str(uuid.uuid4())
+            used.add(req_id)
+            context=json.dumps(req['source_context']) if req.get('source_context') else None
+            keep_human=bool(previous and previous['source']=='human_confirmed' and previous['run_id']==run_id and previous.get('source_context')==context)
+            covers=json.dumps(req.get('covers') or [])
+            values=(repo_id,journey_id,run_id,req['text'],req['type'],previous['status'] if keep_human else req['status'],
+                previous['rationale'] if keep_human else req.get('rationale'),previous['covers'] if keep_human else covers,
+                'human_confirmed' if keep_human else 'derived',req.get('question'),previous['created_at'] if previous else ts,
+                ts,assessed_model,json.dumps(req['cited_paths']) if req.get('cited_paths') is not None else None,
+                req['status'],covers,req.get('rationale'),context,req_id)
+            if previous:
+                conn.execute('INSERT INTO requirement_assessments VALUES (?,?,?,?,?)',(str(uuid.uuid4()),repo_id,req_id,ts,json.dumps(previous)))
+                conn.execute('UPDATE story_requirements SET repo_id=?,journey_id=?,run_id=?,text=?,type=?,status=?,rationale=?,covers=?,source=?,question=?,created_at=?,assessed_at=?,assessed_model=?,cited_paths=?,ai_status=?,ai_covers=?,ai_rationale=?,source_context=?,retired=0 WHERE id=?',values)
+            else:
+                conn.execute('INSERT INTO story_requirements (repo_id,journey_id,run_id,text,type,status,rationale,covers,source,question,created_at,assessed_at,assessed_model,cited_paths,ai_status,ai_covers,ai_rationale,source_context,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',values)
+        for row in old:
+            if row['id'] not in used and (row['source']=='derived' or any(key(row)==key(req) for req in requirements)):
+                conn.execute('UPDATE story_requirements SET retired=1 WHERE id=?',(row['id'],))
 
 
 def confirm_story_requirement(requirement_id: str, status: str, rationale: str | None = None) -> dict | None:
@@ -1063,6 +1101,7 @@ def confirm_story_requirement(requirement_id: str, status: str, rationale: str |
 def record_human_review(
     repo_id: str, target_type: str, target_id: str, decision: str, note: str | None = None,
     ai_level_at_review: str | None = None,
+    assessment_version: str | None = None, assessment_snapshot: dict | None = None,
 ) -> dict:
     """A durable, timestamped record of a human's own judgment on an AI
     assessment -- never overwrites the AI's own status/rationale/covers (see
@@ -1077,14 +1116,31 @@ def record_human_review(
     review_id = str(uuid.uuid4())
     ts = now()
     with get_conn() as conn:
+        if target_type == 'test_case' and assessment_version:
+            conn.execute('BEGIN IMMEDIATE')
+            row=conn.execute('SELECT * FROM test_cases WHERE id=? AND repo_id=?',(target_id,repo_id)).fetchone()
+            if row is None:
+                raise ValueError('Assessment changed; refresh before reviewing.')
+            current=dict(row)
+            for key in ('steps','covers','reassessment'):
+                current[key]=json.loads(current[key]) if current.get(key) else None
+            from .assessment_projection import assessment_version as version_for
+            documents=[dict(row) for row in conn.execute('SELECT * FROM documents WHERE repo_id=?',(repo_id,))]
+            requirements=[dict(row) for row in conn.execute('SELECT * FROM story_requirements WHERE repo_id=? AND COALESCE(retired,0)=0',(repo_id,))]
+            for req in requirements:
+                req['covers']=json.loads(req['covers']) if req.get('covers') else []
+            if version_for(current,documents,requirements) != assessment_version:
+                raise ValueError('Assessment changed; refresh before reviewing.')
         conn.execute(
-            """INSERT INTO human_reviews (id, repo_id, target_type, target_id, decision, note, reviewed_at, ai_level_at_review)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (review_id, repo_id, target_type, target_id, decision, note, ts, ai_level_at_review),
+            """INSERT INTO human_reviews (id, repo_id, target_type, target_id, decision, note, reviewed_at, ai_level_at_review, assessment_version, assessment_snapshot)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (review_id, repo_id, target_type, target_id, decision, note, ts, ai_level_at_review,
+             assessment_version,json.dumps(assessment_snapshot) if assessment_snapshot else None),
         )
     return {
         "id": review_id, "repo_id": repo_id, "target_type": target_type, "target_id": target_id,
         "decision": decision, "note": note, "reviewed_at": ts, "ai_level_at_review": ai_level_at_review,
+        "assessment_version":assessment_version, "assessment_snapshot":assessment_snapshot,
     }
 
 
@@ -1096,7 +1152,7 @@ def list_human_reviews(repo_id: str) -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM human_reviews WHERE repo_id = ? ORDER BY reviewed_at DESC, rowid DESC", (repo_id,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "assessment_snapshot":json.loads(r["assessment_snapshot"]) if r["assessment_snapshot"] else None} for r in rows]
 
 
 # --------------------------------------------------------------------------- journeys
@@ -1149,15 +1205,20 @@ def get_journey(journey_id: str) -> dict | None:
 
 # --------------------------------------------------------------------------- bulk jobs
 
+class ActiveJobError(RuntimeError):
+    pass
+
+
 def create_bulk_job(repo_id: str, kind: str, total: int) -> dict:
     job_id = str(uuid.uuid4())
     ts = now()
     with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO bulk_jobs (id, repo_id, kind, status, total, processed, results_json, started_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (job_id, repo_id, kind, "running", total, 0, json.dumps([]), ts),
-        )
+        conn.execute('BEGIN IMMEDIATE')
+        active=conn.execute("SELECT id FROM bulk_jobs WHERE repo_id=? AND status='running'",(repo_id,)).fetchone()
+        if active:
+            raise ActiveJobError('A bulk job is already running for this repository: '+active['id'])
+        conn.execute("INSERT INTO bulk_jobs (id,repo_id,kind,status,total,processed,results_json,started_at,owner_pid) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (job_id,repo_id,kind,'running',total,0,json.dumps([]),ts,os.getpid()))
     return get_bulk_job(job_id)
 
 
@@ -1182,10 +1243,38 @@ def update_bulk_job_progress(job_id: str, current_document_name: str, result_ent
 
 def finish_bulk_job(job_id: str, status: str, error: str | None = None) -> None:
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE bulk_jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?",
-            (status, error, now(), job_id),
-        )
+        row=conn.execute('SELECT * FROM bulk_jobs WHERE id=?',(job_id,)).fetchone()
+        if not row:
+            return
+        results=json.loads(row['results_json'] or '[]')
+        if status=='success' and (row['processed']<row['total'] or any(not result.get('ok') for result in results)):
+            status='failed'
+            error=error or 'Work was incomplete or some entries failed; review the results before retrying.'
+        conn.execute('UPDATE bulk_jobs SET status=?,error=?,finished_at=? WHERE id=?',(status,error,now(),job_id))
+
+
+def recover_interrupted_jobs():
+    """Recover dead-owner jobs without interrupting another live local worker."""
+    with get_conn() as conn:
+        for row in conn.execute("SELECT id,owner_pid FROM bulk_jobs WHERE status='running'").fetchall():
+            alive=False
+            if row['owner_pid']:
+                try:
+                    os.kill(row['owner_pid'],0)
+                    alive=True
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    alive=True  # Ownership cannot be established; do not kill live work.
+            if not alive:
+                conn.execute("UPDATE bulk_jobs SET status='failed',error=?,finished_at=? WHERE id=?",
+                    ('Interrupted before completion. Review partial results and retry explicitly.',now(),row['id']))
+
+
+def active_bulk_jobs(repo_id):
+    with get_conn() as conn:
+        ids=[row['id'] for row in conn.execute("SELECT id FROM bulk_jobs WHERE repo_id=? AND status='running'",(repo_id,))]
+    return [get_bulk_job(job_id) for job_id in ids]
 
 
 def get_bulk_job(job_id: str) -> dict | None:
@@ -1228,3 +1317,68 @@ def list_dashboard_snapshots(repo_id: str, limit: int = 90) -> list[dict]:
         d["summary"] = json.loads(d.pop("summary_json"))
         out.append(d)
     return out
+
+
+class GenerationInputChangedError(RuntimeError):
+    """Generation input changed before its drafts could be saved."""
+
+
+def replace_document_cases(repo_id, doc_id, run_id, cases, *, expected_document_fingerprint=None, replace=True, source_requirement_id=None):
+    """A failed insert rolls back the deletion and every prior insert."""
+    if not cases:
+        raise RuntimeError('No valid replacement cases; existing suite preserved')
+    with get_conn() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        from .test_case_reassessment import documents_fingerprint
+        doc=conn.execute('SELECT * FROM documents WHERE id=? AND repo_id=?',(doc_id,repo_id)).fetchone()
+        if doc is None or (expected_document_fingerprint and documents_fingerprint([dict(doc)])!=expected_document_fingerprint):
+            raise GenerationInputChangedError('Document changed or was deleted during generation; existing cases preserved. Refresh and retry.')
+        generation_context={'scope':'document_generation','document_id':doc_id,'document_fingerprint':documents_fingerprint([dict(doc)])}
+        if source_requirement_id:
+            req=conn.execute('SELECT retired FROM story_requirements WHERE id=? AND repo_id=? AND doc_id=?',(source_requirement_id,repo_id,doc_id)).fetchone()
+            if req is None or req['retired']:
+                raise GenerationInputChangedError('Source criterion changed during generation; existing cases preserved. Refresh and retry.')
+        if replace:
+            conn.execute('DELETE FROM test_cases WHERE repo_id=? AND source_doc_id=?',(repo_id,doc_id))
+        created=[]
+        for case in cases:
+            case_id=str(uuid.uuid4())
+            conn.execute('''INSERT INTO test_cases
+                (id,repo_id,module,run_id,title,category,steps,expected_result,preconditions,description,priority,covers,created_at,source_doc_id,created_via,target,status,rationale,generation_context,source_requirement_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (case_id,repo_id,None,run_id,case['title'],case['category'],json.dumps(case['steps']),case['expected_result'],
+                 case.get('preconditions'),case.get('description'),case.get('priority'),json.dumps(case.get('covers') or []),now(),doc_id,'generated',case.get('target'),case.get('status'),case.get('rationale'),json.dumps(generation_context),source_requirement_id))
+            created.append({**case,'id':case_id,'repo_id':repo_id,'module':None,'source_doc_id':doc_id,'run_id':run_id, 'created_via':'generated','generation_context':generation_context,'source_requirement_id':source_requirement_id})
+        return created
+
+
+def confirm_requirement_review(repo_id, requirement_id, status, rationale, expected_version):
+    """Bind the human decision and its status update in the same transaction."""
+    from .assessment_projection import requirement_version,requirement_is_stale
+    from . import evidence_rules
+    with get_conn() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row=conn.execute('SELECT * FROM story_requirements WHERE id=? AND repo_id=?',(requirement_id,repo_id)).fetchone()
+        if row is None:
+            raise ValueError('Requirement no longer exists')
+        req=dict(row)
+        for field in ('covers','ai_covers','cited_paths','source_context'):
+            req[field]=json.loads(req[field]) if req.get(field) else (None if field=='source_context' else [])
+        documents=[dict(doc) for doc in conn.execute('SELECT * FROM documents WHERE repo_id=?',(repo_id,))]
+        latest=conn.execute("SELECT id FROM runs WHERE repo_id=? AND status='success' ORDER BY started_at DESC LIMIT 1",(repo_id,)).fetchone()
+        if requirement_version(req,documents)!=expected_version or requirement_is_stale(req,documents) or evidence_rules.is_stale(req,latest['id'] if latest else None):
+            raise ValueError('Requirement, document or analysis changed; refresh and reassess before confirming')
+        decision='confirmed_supported' if status=='supported' else 'confirmed_contradicted'
+        conn.execute('''INSERT INTO human_reviews
+            (id,repo_id,target_type,target_id,decision,note,reviewed_at,ai_level_at_review,assessment_version,assessment_snapshot)
+            VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (str(uuid.uuid4()),repo_id,'story_requirement',requirement_id,decision,rationale,now(),
+             evidence_rules.ai_evidence_level(req),expected_version,json.dumps(req)))
+        conn.execute("UPDATE story_requirements SET status=?,rationale=COALESCE(?,rationale),source='human_confirmed' WHERE id=?",(status,rationale,requirement_id))
+    return get_story_requirement(requirement_id)
+
+
+def get_repo_gap_assessment(repo_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM repo_gap_assessments WHERE repo_id = ?", (repo_id,)).fetchone()
+    return dict(row) if row else None

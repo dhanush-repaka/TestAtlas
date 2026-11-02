@@ -61,6 +61,9 @@ def evidence_level(item: dict) -> str:
     Never trusts a bare status string over the citations backing it -- an
     item with zero real citations is "insufficient_evidence" even if some
     upstream bug ever left a stray status on it."""
+    if item.get('reassessment'):
+        from .assessment_projection import project
+        return (item.get('assessment') or project(item))['ai_level']
     covers = item.get("covers") or []
     status = item.get("status")
     if not covers:

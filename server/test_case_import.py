@@ -70,61 +70,89 @@ def _category_from_tags(tags: str) -> str:
     return _UNCLASSIFIED_CATEGORY
 
 
-def parse_test_cases(text: str) -> tuple[list[dict], str | None]:
-    """Returns (cases, None) on success, or ([], "a clear reason") when the
-    file doesn't match the expected shape or contains no usable rows -- never
-    raises. Each case dict: {title, category, priority, description, steps:
-    [{action, expected}, ...], expected_result}, ready for db.import_test_cases."""
-    # server/doc_extract.py's XLSX extraction inserts a "--- Sheet: X ---"
-    # marker line ahead of each sheet's own rows -- real structure, not a row
-    # of data. Left in, it gets mistaken for the header line itself (breaking
-    # header recognition on EVERY .xlsx upload, not just a multi-sheet one).
-    # Drop every such marker before header detection or row grouping sees it.
-    lines = [line for line in text.splitlines() if line.strip() and not line.startswith("---")]
-    if not lines:
-        return [], "That file doesn't have any content to import."
+def parse_rows(sheets):
+    """Parse structured sheets without flattening or losing cell boundaries."""
+    cases=[]
+    for sheet_name,rows in sheets:
+        columns=None
+        pending=None
+        def flush():
+            if pending is None:
+                return
+            if not pending['steps']:
+                raise ValueError(f"{sheet_name}: case {pending['title']!r} has no usable steps")
+            pending['expected_result']=pending['steps'][-1]['expected']
+            cases.append(pending.copy())
+        for number,row in enumerate(rows,1):
+            cells=[str(value).strip() if value is not None else '' for value in row]
+            if not any(cells):
+                continue
+            header=_match_header(cells)
+            if header and columns is not None and not all(cells[index].lower() in _COLUMN_PATTERNS[field] for field,index in header.items()):
+                header=None
+            if header:
+                flush()
+                pending=None
+                columns=header
+                continue
+            if columns is None:
+                raise ValueError(f'{sheet_name}: recognizable Title, action and expected-result headers are required')
+            def cell(field):
+                index=columns.get(field)
+                return cells[index] if index is not None and index<len(cells) else ''
+            if cell('title'):
+                flush()
+                priority=cell('priority')
+                pending={'title':cell('title'),'category':_category_from_tags(cell('tags')),
+                         'priority':int(priority) if priority.isdigit() and len(priority)<8 else None,
+                         'description':cell('description'),'steps':[]}
+            if pending is None:
+                raise ValueError(f'{sheet_name} row {number}: step has no test-case title')
+            action,expected=cell('action'),cell('expected')
+            if not action and not expected:
+                continue  # ADO may put metadata on a separate first row.
+            if not action or not expected:
+                raise ValueError(f'{sheet_name} row {number}: both step action and expected result are required')
+            pending['steps'].append({'action':action,'expected':expected})
+        flush()
+    return cases
 
-    header_cells = [c.strip() for c in lines[0].split(" | ")]
-    columns = _match_header(header_cells)
-    if not columns:
-        return [], (
-            "Couldn't find a recognizable Title column and step action/expected-result "
-            "columns in this file's header row -- expected the same shape TestAtlas's own "
-            "CSV export uses (or a similar Azure DevOps Test Plans export)."
-        )
 
-    def cell(cells: list[str], field: str) -> str:
-        idx = columns.get(field)
-        return cells[idx] if idx is not None and idx < len(cells) else ""
-
-    groups: list[list[list[str]]] = []
-    for line in lines[1:]:
-        cells = [c.strip() for c in line.split(" | ")]
-        if not any(cells):
+def parse_test_cases(text):
+    """Legacy text-table path. Ambiguous/truncated text is rejected, not guessed."""
+    if '[...truncated' in text:
+        return [],'This import was truncated. Import the original CSV/XLSX or split it into smaller complete files.'
+    sheets=[]
+    rows=[]
+    width=None
+    for line in text.splitlines():
+        if not line.strip():
             continue
-        if cell(cells, "title") or not groups:
-            groups.append([cells])
-        else:
-            groups[-1].append(cells)
+        if line.startswith('--- Sheet:'):
+            if rows:sheets.append(('Sheet',rows))
+            rows=[];width=None
+            continue
+        cells=[cell.strip() for cell in line.split(' | ')]
+        if _match_header(cells):
+            width=len(cells)
+        elif width and len(cells)>width:
+            return [],'Ambiguous pipe-delimited row. Import the original CSV/XLSX to preserve cell contents.'
+        rows.append(cells)
+    if rows:sheets.append(('Table',rows))
+    try:
+        cases=parse_rows(sheets)
+        return (cases,None) if cases else ([],"No usable test cases found; check the Title and step action/expected headers.")
+    except ValueError as exc:
+        return [],str(exc)
 
-    cases: list[dict] = []
-    for group in groups:
-        first = group[0]
-        title = cell(first, "title")
-        if not title:
-            continue  # malformed: a case's first row with no title -- nothing to build from
-        steps = [{"action": cell(c, "action"), "expected": cell(c, "expected")} for c in group]
-        priority_raw = cell(first, "priority").strip()
-        priority = int(priority_raw) if priority_raw.isdigit() else None
-        cases.append({
-            "title": title,
-            "category": _category_from_tags(cell(first, "tags")),
-            "priority": priority,
-            "description": cell(first, "description"),
-            "steps": steps,
-            "expected_result": steps[-1]["expected"] if steps else "",
-        })
 
-    if not cases:
-        return [], "No test cases were found in this file -- every row was blank or missing a title."
-    return cases, None
+def parse_file(filename,data):
+    from . import doc_extract
+    extension=doc_extract._extension_of(filename)
+    try:
+        if extension in ('.csv','.xlsx'):
+            cases=parse_rows(doc_extract.extract_table(filename,data))
+            return (cases,None) if cases else ([], 'No usable test cases found.')
+        return parse_test_cases(doc_extract.extract_text(filename,data))
+    except (ValueError,doc_extract.UnsupportedDocumentError) as exc:
+        return [],str(exc)

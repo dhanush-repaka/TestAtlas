@@ -60,7 +60,7 @@ class ComputeSummaryRequirementsTests(unittest.TestCase):
         out = td.compute_summary([DOC_A, DOC_B], requirements, [], [], {})
         self.assertEqual(out["gaps"]["contradicted_requirements"],
                          [{"id": "r1", "doc_id": "doc-a", "doc_name": "5111-inventory-reservation",
-                           "text": "requirement r1", "rationale": "stock goes negative", "question": None,
+                           "text": "requirement r1", "rationale": "stock goes negative", "question": None, "is_stale": False,
                            "touches_critical_code": False}])
         self.assertEqual(out["gaps"]["needs_human_input_requirements"][0]["question"], "what's the limit?")
 
@@ -294,9 +294,8 @@ class ComputeSummaryModuleCoverageTests(unittest.TestCase):
         out = td.compute_summary([], [], cases, module_scores, labels)
         self.assertEqual(out["modules"], {
             "total": 2, "with_coverage": 1, "without_coverage": 1, "coverage_pct": 50.0,
-            # Only 2 modules total, so both fall inside the top-3-by-PageRank "critical" set.
-            "critical": [{"module": "inventory", "display_name": "inventory"},
-                         {"module": "notifications", "display_name": "Notifications"}],
+            # Missing scores cannot establish structural centrality.
+            "critical": [],
         })
         self.assertEqual(out["gaps"]["modules_without_tests"], [{"module": "notifications", "display_name": "Notifications"}])
 
@@ -532,8 +531,8 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(body["gaps"]["contradicted_requirements"][0]["doc_name"], "5111-inventory-reservation")
         self.assertEqual(body["modules"], {
             "total": 1, "with_coverage": 1, "without_coverage": 0, "coverage_pct": 100.0,
-            # The repo's only module is trivially its top-3-by-PageRank "critical" module.
-            "critical": [{"module": "inventory", "display_name": "inventory"}],
+            # A disconnected module with zero PageRank is not structurally central.
+            "critical": [],
         })
         self.assertTrue(body["document_rollup"][0]["has_test_coverage"])
         self.assertTrue(body["document_rollup"][0]["has_code"])
@@ -546,12 +545,11 @@ class DashboardApiTests(unittest.TestCase):
         # generation-mechanism origin, see module docstring) -- this fixture's one
         # seeded case is AI-generated, never imported.
         self.assertEqual(body["test_cases"]["by_origin"], {"generated": 1})
-        # The broken story's only module IS the repo's one critical module -- the
-        # headline must say so, not stay generic.
-        self.assertTrue(body["document_rollup"][0]["touches_critical_code"])
-        self.assertEqual(body["documents"]["critical_at_risk"], 1)
-        self.assertIn("your most structurally central code", body["overall"]["headline"])
-        self.assertTrue(body["gaps"]["contradicted_requirements"][0]["touches_critical_code"])
+        # Zero graph scores do not justify centrality claims.
+        self.assertFalse(body["document_rollup"][0]["touches_critical_code"])
+        self.assertEqual(body["documents"]["critical_at_risk"], 0)
+        self.assertNotIn("your most structurally central code", body["overall"]["headline"])
+        self.assertFalse(body["gaps"]["contradicted_requirements"][0]["touches_critical_code"])
         self.assertEqual(len(body["trend"]), 1)  # today's snapshot
 
     def test_calling_it_twice_the_same_day_writes_only_one_snapshot(self):
@@ -662,13 +660,12 @@ class ComputeSummaryEvidenceAndStalenessTests(unittest.TestCase):
         out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
         self.assertNotEqual(out["overall"]["status"], "green")
 
-    def test_a_broken_story_with_a_stale_requirement_stays_broken_not_reassessment(self):
-        # Staleness only ever demotes "verified" -- a story that's already
-        # broken/needs-clarification/etc. is already flagged as not-done, so
-        # there's no false-confidence risk to guard against there.
+    def test_a_historical_conflict_requires_reassessment_and_remains_inspectable(self):
+        # An old negative judgment remains in history but cannot establish a current conflict.
         requirements = [req("r1", "doc-a", "contradicted", covers=["x"], run_id="old-run")]
         out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
-        self.assertEqual(out["document_rollup"][0]["health"], "broken")
+        self.assertEqual(out["document_rollup"][0]["health"], "needs_reassessment")
+        self.assertTrue(out["gaps"]["contradicted_requirements"][0]["is_stale"])
 
     def test_a_stale_supported_requirement_is_excluded_from_the_correctness_rate(self):
         # A stale "supported" criterion must not keep propping up the

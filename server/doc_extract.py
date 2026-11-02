@@ -22,7 +22,7 @@ def _extension_of(filename: str) -> str:
     return ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
 
 
-def extract_text(filename: str, data: bytes) -> str:
+def _extract_text(filename: str, data: bytes) -> str:
     """Returns the document's text content. Raises UnsupportedDocumentError
     (safe to show directly to the user) for an unrecognized extension, or if
     extraction produced nothing usable."""
@@ -146,3 +146,46 @@ def _extract_pdf(data: bytes) -> str:
     reader = PdfReader(io.BytesIO(data))
     pages_text = [(page.extract_text() or "").strip() for page in reader.pages]
     return "\n\n".join(t for t in pages_text if t)
+
+
+# The 20MB file contract also bounds valid CSV fields; no platform-default 128KB surprise.
+csv.field_size_limit(20*1024*1024)
+
+
+def _check_container(filename,data):
+    if len(data)>20*1024*1024:
+        raise UnsupportedDocumentError('File too large (max 20MB)')
+    if _extension_of(filename) in ('.docx','.pptx','.xlsx'):
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries=archive.infolist()
+            if len(entries)>20000 or sum(entry.file_size for entry in entries)>64*1024*1024:
+                raise UnsupportedDocumentError('Expanded document too large (max 64MB / 20000 entries)')
+
+
+def extract_text(filename,data):
+    try:
+        _check_container(filename,data)
+        return _extract_text(filename,data)
+    except UnsupportedDocumentError:
+        raise
+    except Exception as exc:
+        raise UnsupportedDocumentError('Could not read this file. Check its format and whether it is damaged.') from exc
+
+
+def extract_table(filename,data):
+    """Structured import path: no character truncation, unescaped pipes or sheet loss."""
+    try:
+        _check_container(filename,data)
+        if _extension_of(filename)=='.csv':
+            return [('CSV',list(csv.reader(io.StringIO(data.decode('utf-8-sig')))))]
+        import openpyxl
+        workbook=openpyxl.load_workbook(io.BytesIO(data),data_only=True,read_only=True)
+        try:
+            return [(sheet.title,[list(row) for row in sheet.iter_rows(values_only=True)]) for sheet in workbook.worksheets]
+        finally:
+            workbook.close()
+    except UnsupportedDocumentError:
+        raise
+    except Exception as exc:
+        raise UnsupportedDocumentError('Could not read this table. Check the CSV/XLSX format and file contents.') from exc

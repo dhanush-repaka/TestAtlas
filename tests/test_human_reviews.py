@@ -27,7 +27,8 @@ class HumanReviewsApiTestCase(unittest.TestCase):
         for p in self._patches:
             p.start()
         db.init_db()
-        self.client = TestClient(app)
+        from tests.review_fixtures import bind_review_versions
+        self.client = bind_review_versions(TestClient(app))
         self.fixture_dir = tempfile.mkdtemp()
         (Path(self.fixture_dir) / "cart.py").write_text(
             "class Cart:\n    def add(self, item):\n        pass\n"
@@ -128,7 +129,7 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         r = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy")
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(body, {
+        self.assertEqual({key:body[key] for key in ("total_reviews","excluded_no_ai_judgment","comparable_reviews","agreed_with_ai","agreed_uncertain_count","false_support_count","false_conflict_count","needs_more_info_count","agreement_rate_pct")}, {
             "total_reviews": 0, "excluded_no_ai_judgment": 0, "comparable_reviews": 0,
             "agreed_with_ai": 0, "agreed_uncertain_count": 0, "false_support_count": 0,
             "false_conflict_count": 0, "needs_more_info_count": 0, "agreement_rate_pct": None,
@@ -159,7 +160,7 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         self.assertEqual(body["false_support_count"], 1)
         self.assertEqual(body["false_conflict_count"], 1)
         self.assertEqual(body["needs_more_info_count"], 1)
-        self.assertEqual(body["agreement_rate_pct"], 25.0)
+        self.assertEqual(body["agreement_rate_pct"], 33.3)
 
     def test_an_explicit_opposite_verdict_counts_as_false_support_or_false_conflict(self):
         # A human can actively say "no, it's the OTHER verdict" rather than just
@@ -168,9 +169,9 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         ai_said_conflict = self._make_case(status="contradicted", covers=["Cart.add"])
 
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{ai_said_supported['id']}/review",
-                          json={"decision": "confirmed_contradicted"})  # human: actually contradicted
+                          json={"decision": "confirmed_contradicted", "intent":"correction", "note":"Actually contradicted"})  # human: actually contradicted
         self.client.post(f"/api/repos/{self.repo_id}/test-cases/{ai_said_conflict['id']}/review",
-                          json={"decision": "confirmed_supported"})  # human: actually supported
+                          json={"decision": "confirmed_supported", "intent":"correction", "note":"Actually supported"})  # human: actually supported
 
         body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
         self.assertEqual(body["total_reviews"], 2)

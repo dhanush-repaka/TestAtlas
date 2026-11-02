@@ -159,7 +159,7 @@ class ReviewStateApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(url,json={'decision':'confirmed_supported'}).status_code,400)
         response=self.client.post(url,json={'decision':'agreed_uncertain'})
         self.assertEqual(response.status_code,200)
-        self.assertEqual(response.json()['review_state']['label'],'Reviewer agrees evidence is insufficient')
+        self.assertEqual(response.json()['review_state']['label'],'Reviewer agrees with the uncertain assessment')
         saved=next(c for c in self.client.get(f'/api/repos/{self.repo_id}/test-cases').json() if c['id']==case['id'])
         self.assertEqual(saved['status'],'unknown')
         metrics=self.client.get(f'/api/repos/{self.repo_id}/review-accuracy').json()

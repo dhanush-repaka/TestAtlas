@@ -364,5 +364,7 @@ def link_requirements_to_cases(cases: list[dict], requirements: list[dict]) -> l
             case_out["judgment_source"] = "human_confirmation" if worst.get("source") == "human_confirmed" else "ai_assessment"
             case_out["inferred_requirement_id"] = worst["id"]
             case_out["inferred_run_id"] = worst.get("run_id")
+            case_out["inferred_is_stale"] = any(r.get('is_stale') for r in matched_requirements)
+            case_out["inferred_source_context"] = worst.get("source_context")
         out.append(case_out)
     return out

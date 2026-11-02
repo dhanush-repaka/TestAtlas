@@ -96,3 +96,38 @@ def split_work_items(text: str) -> list[dict]:
         ) if p]
         items.append({"name": name[:_MAX_NAME_LENGTH], "content": "\n\n".join(content_parts)})
     return items
+
+
+def parse_file(filename, data):
+    """Keep CSV/XLSX cell boundaries and worksheet schemas intact."""
+    from . import doc_extract
+    if doc_extract._extension_of(filename) not in ('.csv','.xlsx'):
+        text=doc_extract.extract_text(filename,data)
+        if '[...truncated' in text:
+            raise ValueError('Work-item import was truncated; split the original file into complete smaller files.')
+        return split_work_items(text)
+    items=[]
+    for sheet,rows in doc_extract.extract_table(filename,data):
+        rows=[[str(value).strip() if value is not None else '' for value in row] for row in rows]
+        rows=[row for row in rows if any(row)]
+        if not rows:
+            continue
+        columns=_match_header(rows[0])
+        if not columns:
+            items.append({'name':None,'content':'\n'.join(' | '.join(row) for row in rows)})
+            continue
+        header=[cell.lower() for cell in rows[0]]
+        for number,row in enumerate(rows[1:],2):
+            if [cell.lower() for cell in row]==header:
+                continue
+            if len(row)<max(columns.values())+1:
+                raise ValueError(f'{sheet} row {number}: incomplete work-item row; no documents imported.')
+            def cell(field):
+                return row[columns[field]] if field in columns else ''
+            item_id,title,description,criteria=(cell(field) for field in ('id','title','description','acceptance_criteria'))
+            if not (title or description or criteria):
+                raise ValueError(f'{sheet} row {number}: work item has no content; no documents imported.')
+            name=f'{item_id}: {title}' if item_id and title else (title or item_id or 'Untitled work item')
+            content='\n\n'.join(part for part in (title,description,'Acceptance Criteria:\n'+criteria if criteria else '') if part)
+            items.append({'name':name[:_MAX_NAME_LENGTH],'content':content})
+    return items

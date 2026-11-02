@@ -46,7 +46,7 @@ class PilotWorkflowTests(unittest.TestCase):
                     self.assertEqual(checked.status_code, 200, checked.text)
                     before = client.get(base + '/dashboard').json()
                     self.assertEqual(before['test_cases']['code_coverage']['fresh_linked'], 1)
-                    reviewed = client.post(base + f'/test-cases/{case_id}/review', json={'decision': 'confirmed_contradicted', 'note': 'Independent disagreement'})
+                    reviewed = client.post(base + f'/test-cases/{case_id}/review', json={'decision': 'confirmed_contradicted', 'intent':'correction', 'note': 'Independent disagreement', 'assessment_version':client.get(base+'/test-cases').json()[0]['assessment']['version']})
                     self.assertEqual(reviewed.status_code, 200, reviewed.text)
                     self.assertEqual(client.get(base + '/review-accuracy').json()['false_support_count'], 1)
                     code.write_text('class Cart:\n    def add(self, item):\n        return None\n')

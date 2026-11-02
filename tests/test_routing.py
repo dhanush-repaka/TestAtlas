@@ -98,7 +98,8 @@ class LoginNextRoundTripTests(unittest.TestCase):
     def test_viewing_a_repo_deep_link_without_a_session_is_read_only_not_redirected(self):
         # AuthMiddleware only gates writes now -- browsing (including a shared
         # repo/tab deep link) renders for anyone, same shell as the root.
-        page = self.client.get("/repo/abc/graph", headers=HTML)
+        with mock.patch.dict(os.environ,{"TESTATLAS_PUBLIC_READ_ONLY":"1"}):
+            page = self.client.get("/repo/abc/graph", headers=HTML)
         self.assertEqual(page.status_code, 200)
         self.assertIn("app.js", page.text)
 

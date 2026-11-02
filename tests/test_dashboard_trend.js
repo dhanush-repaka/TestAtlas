@@ -28,3 +28,10 @@ const points = [...html.matchAll(/<polyline points="([^"]*)"/g)].map((m) => m[1]
 assert.equal(points.filter((p) => p.split(' ').length === 3).length, 1); // code-evidence series only
 assert.equal(points.filter((p) => p.split(' ').length === 1).length, 4); // two separate AI series
 console.log('Dashboard trend renderer: 3 scenarios passed');
+
+const unavailable = {date:'2026-11-02', summary:{evidence_schema_version:2,documents:{total:3,by_ai_health:{verified:0,needs_reassessment:3},ai_verified_pct:0,coded_pct:100},requirements:{correctness_rate:0,correctness_rate_denominator:0}}};
+html = render([current, unavailable]);
+assert.equal((html.match(/Unavailable/g)||[]).length,2);
+assert(html.includes('Supported criteria / assessed criteria'));
+assert(html.includes('Stories with saved code links / all stories'));
+console.log('Trend unavailable-denominator semantics: 3 assertions passed');

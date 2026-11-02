@@ -101,10 +101,19 @@ async function api(path, opts = {}) {
   if (!resp.ok) {
     let msg = resp.statusText;
     try { msg = (await resp.json()).detail || msg; } catch {}
-    throw new Error(msg);
+    const error=new Error(msg); error.status=resp.status; throw error;
   }
   const ct = resp.headers.get("content-type") || "";
-  return ct.includes("application/json") ? resp.json() : resp.text();
+  const value=ct.includes('application/json') ? await resp.json() : await resp.text();
+  const warnings=resp.headers.get('X-TestAtlas-Generation');
+  if (warnings && value && typeof value==='object') {
+    value.generation_diagnostics=JSON.parse(warnings);
+    const warning=generationWarnings(value);
+    if (warning) toast(warning,'error');
+    const panel=$('#testGenerationWarnings');
+    if (panel) { panel.textContent=warning; panel.classList.toggle('is-hidden',!warning); }
+  }
+  return value;
 }
 
 function escapeHtml(s) {
@@ -152,7 +161,7 @@ function kgRingSvg(score) {
   const r = 18, c = 2 * Math.PI * r;
   const frac = score === null ? 0 : score / 100;
   return `
-    <div class="kg-ring score-${bucket}" title="${score === null ? "No successful run yet" : `Knowledge Graph Index: ${score}/100 -- higher is better, tapers as open findings grow`}">
+    <div class="kg-ring score-${bucket}" title="${score === null ? "No successful run yet" : `Knowledge Graph Index: ${score}/100 — structural heuristic based on detected findings, not release readiness or test coverage`}">
       <svg viewBox="0 0 44 44">
         <circle class="track" cx="22" cy="22" r="${r}"></circle>
         <circle class="progress" cx="22" cy="22" r="${r}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - frac)}"></circle>
@@ -265,9 +274,9 @@ function repoTileHtml(repo, latestRun) {
     : `${repo.ado_org}/${repo.ado_project}/${repo.ado_repo}`;
   const stats = latestRun && latestRun.status === "success" ? latestRun.stats || {} : null;
   const moduleCount = stats?.module_scores?.length ?? "—";
-  const topModule = stats?.module_scores?.length ? stats.module_scores[0] : null;
+  const topModule = stats?.module_scores?.find(m => (m.pagerank || 0) > 0) || null;
   return `
-    <div class="repo-tile" data-id="${repo.id}">
+    <button type="button" class="repo-tile" data-id="${repo.id}" aria-label="Open ${escapeHtml(repo.name)}">
       <div class="tile-top">
         <span class="tile-icon">${sourceIcon(repo.source_type)}</span>
         ${kgRingSvg(score)}
@@ -282,7 +291,7 @@ function repoTileHtml(repo, latestRun) {
         ${latestRun ? `<span class="status-pill status-${latestRun.status}">${latestRun.status}</span>` : `<span class="muted">—</span>`}
         <span class="muted">${fmtTimeAgo(latestRun && latestRun.started_at)}</span>
       </div>
-    </div>`;
+    </button>`;
 }
 
 // --------------------------------------------------------------------------- router
@@ -808,12 +817,12 @@ function renderFindingsTable(findings) {
       .map(
         (f) => `
       <tr>
-        <td><span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span></td>
-        <td class="small muted">${escapeHtml(f.node_id)}</td>
+        <td><span class="finding-cat cat-${f.category}">${escapeHtml(({unused_function:"No detected callers", isolated_file:"No detected file connections"})[f.category] || f.category.replaceAll("_", " "))}</span></td>
+        <td class="small muted"><details><summary>Source identifier</summary>${escapeHtml(f.node_id)}</details></td>
         <td>${escapeHtml(f.label)}</td>
       </tr>`
       )
-      .join("") || `<tr><td colspan="3" class="muted">No findings in this category 🎉</td></tr>`;
+      .join("") || `<tr><td colspan="3" class="muted">No structural findings in this category. This is not proof of defect-free code.</td></tr>`;
 }
 
 // --------------------------------------------------------------------------- graph
@@ -827,11 +836,20 @@ function setGraphSource(value) {
   loadGraphPanel();
 }
 
-function loadGraphPanel() {
+async function loadGraphPanel() {
   const runId = $("#graphRunSelect").value;
   const frame = $("#graphFrame");
   const endpoint = graphSource === "neo4j" ? "neo4j-graph.html" : "graph.html";
   frame.src = runId ? `${API}/runs/${runId}/${endpoint}` : "about:blank";
+  const table = $("#graphTextView");
+  table.textContent = runId ? "Loading analyzed graph details…" : "Run analysis to inspect graph details.";
+  if (runId) {
+    try {
+      const graph = await api(`/runs/${runId}/graph.json`);
+      if ($("#graphRunSelect").value !== runId) return;
+      table.innerHTML = `<h4>Analyzed graph snapshot · nodes</h4><ul>${(graph.nodes || []).map(n => `<li>${escapeHtml(n.type || "node")}: ${escapeHtml(n.label || n.id)} · ${escapeHtml(n.id)}</li>`).join("")}</ul><h4>Detected relationships</h4><ul>${(graph.edges || graph.links || []).map(e => `<li>${escapeHtml(e.source)} → ${escapeHtml(e.target)} (${escapeHtml(e.relation || e.type || "relationship")})</li>`).join("")}</ul>`;
+    } catch (e) { if ($("#graphRunSelect").value === runId) table.textContent = "Graph details unavailable. Select a successful analysis run and try again."; }
+  }
   // Edge color is a fixed, small set (kg/visualize.py's EDGE_STYLE) -- a real swatch legend.
   // Node color isn't: it's one color per business module, hashed, so the same module reads
   // as one cluster across files -- there's no fixed list of "node colors" to show, so that
@@ -901,8 +919,8 @@ function renderModuleScores(scores, skippedFiles) {
 function renderInsights(data) {
   if (!data.configured) {
     return `<div class="result-block">
-      <p class="muted">Neo4j isn't configured for this deployment, so there's nothing to show here yet.</p>
-      <p class="muted small">Set <code>NEO4J_URI</code> (+ <code>NEO4J_USER</code> / <code>NEO4J_PASSWORD</code>) and re-run this repo's analysis — every run syncs its graph to Neo4j automatically once configured.</p>
+      <p class="muted">Advanced graph insights are unavailable. Local module scores above remain available.</p>
+      <details><summary>Administrator setup</summary><p class="muted small">Ask your administrator to configure the approved graph service. Set <code>NEO4J_URI</code> (+ <code>NEO4J_USER</code> / <code>NEO4J_PASSWORD</code>) and re-run this repo's analysis — every run syncs its graph to Neo4j automatically once configured.</p></details>
     </div>`;
   }
 
@@ -998,8 +1016,10 @@ function renderDiff(d) {
 function activateTab(tabName) {
   const tab = $all(".tab").find((t) => t.dataset.tab === tabName);
   if (!tab) return;
-  $all(".tab").forEach((t) => t.classList.remove("active"));
+  $all(".tab").forEach((t) => { t.classList.remove("active"); t.removeAttribute("aria-current"); });
   tab.classList.add("active");
+  tab.setAttribute("aria-current", "page");
+  if ($("#sectionSelect")) $("#sectionSelect").value = tabName;
   $all(".tab-panel").forEach((p) => (p.hidden = true));
   $(`#panel-${tabName}`).hidden = false;
   if (tabName !== "insights") clearTimeout(_insightsPollTimer);
@@ -1113,7 +1133,9 @@ async function deleteRepo() {
 
 let editingRepoId = null;
 
+let repoModalReturnFocus = null;
 function openRepoModal(repo = null) {
+  repoModalReturnFocus = document.activeElement;
   $("#repoForm").reset();
   $("#adoTestResult").textContent = "";
   $("#githubTestResult").textContent = "";
@@ -1144,9 +1166,13 @@ function openRepoModal(repo = null) {
     $("#githubPatInput").placeholder = "only needed for private repos";
   }
   $("#repoModalBackdrop").hidden = false;
+  $(".app-shell").inert = true;
+  $("#repoNameInput").focus();
 }
 function closeRepoModal() {
   $("#repoModalBackdrop").hidden = true;
+  $(".app-shell").inert = false;
+  repoModalReturnFocus?.focus();
 }
 function setSourceType(value) {
   $("#sourceTypeInput").value = value;
@@ -1429,10 +1455,7 @@ function applyTheme(theme) {
   $all(".theme-sun").forEach((el) => el.classList.toggle("is-hidden", theme === "light"));
   $all(".theme-moon").forEach((el) => el.classList.toggle("is-hidden", theme !== "light"));
   try { localStorage.setItem("ta-theme", theme); } catch (e) {}
-  // Everything else on this tab re-themes live through the CSS cascade, but
-  // Chart.js bakes its colors in at canvas-draw time -- repaint the
-  // dashboard's charts too, or they'd stay stuck on the old theme's palette
-  // if that tab happens to be open when you toggle.
+  // SVG charts use the shared theme tokens and remain independent of canvas sizing.
   if (activeDashboard && !$("#panel-traceability").hidden) {
     renderDashboardHealthChart();
     renderDashboardRequirementStatusChart();
@@ -1464,6 +1487,7 @@ async function loadDocsPanel() {
 // --------------------------------------------------------------------------- gap analysis (separate tab)
 
 let activeGapFindings = [];
+let activeGapAssessment = null;
 
 let autoGapAnalysisAvailable = null; // null = not checked yet
 
@@ -1478,12 +1502,17 @@ async function loadGapsPanel() {
       .then((c) => c.automatic_available)
       .catch(() => false);
     if (repoId !== activeRepoId) return;
-    $("#runAutoGapBtn").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
+    $("#runAutoGapBtn").classList.remove("is-hidden");
+    $("#runAutoGapBtn").disabled = readOnly || !autoGapAnalysisAvailable;
+    $("#gapProviderNotice").hidden = autoGapAnalysisAvailable;
     $("#autoGapHint").classList.toggle("is-hidden", !autoGapAnalysisAvailable);
   }
 
   const findings = await api(`/repos/${repoId}/gap-findings`).catch(() => []);
   if (repoId !== activeRepoId) return; // don't clobber a repo we've since navigated to with this one's results
+  const assessment = await api(`/repos/${repoId}/gap-assessment`).catch(() => null);
+  if (repoId !== activeRepoId) return;
+  activeGapAssessment = assessment;
   activeGapFindings = findings;
   renderGapSummary();
   renderGapFindingsList();
@@ -1519,13 +1548,15 @@ function renderGapDocsIncluded() {
 
 function renderGapSummary() {
   const total = activeGapFindings.length;
+  const assessed = Boolean(activeGapAssessment) || total > 0;
+  const display = n => assessed ? n : "—";
   const byCat = {};
   for (const f of activeGapFindings) byCat[f.category] = (byCat[f.category] || 0) + 1;
   $("#gapSummaryCards").innerHTML = [
-    statCard(total, "Total gaps found"),
-    statCard(byCat.missing_implementation || 0, "Missing implementation"),
-    statCard(byCat.undocumented_capability || 0, "Undocumented capability"),
-    statCard(byCat.mismatch || 0, "Mismatch"),
+    statCard(display(total), "Saved gaps", assessed ? `Historical comparison results; review scope and date before relying on them${activeGapAssessment?.assessed_at ? ` · saved ${escapeHtml(activeGapAssessment.assessed_at)}` : " · date unavailable for this legacy result"}` : "Not assessed — run or import a comparison"),
+    statCard(display(byCat.missing_implementation || 0), "Missing implementation"),
+    statCard(display(byCat.undocumented_capability || 0), "Undocumented capability"),
+    statCard(display(byCat.mismatch || 0), "Mismatch"),
   ].join("");
 
   const breakdown = $("#gapBreakdown");
@@ -1552,14 +1583,14 @@ function renderGapFindingsList() {
   const rows = activeGapFindings.filter((f) => !catFilter || f.category === catFilter);
   const el = $("#gapFindingsListAll");
   if (!rows.length) {
-    el.innerHTML = `<p class="muted small">${activeGapFindings.length ? "No findings match this filter." : "No findings yet — run a comparison above."}</p>`;
+    el.innerHTML = `<p class="muted small">${activeGapFindings.length ? "No findings match this filter." : (activeGapAssessment ? "The saved comparison reported no gaps. This does not prove implementation completeness; rerun after source or document changes." : "Not assessed — run or import a comparison above.")}</p>`;
     return;
   }
   el.innerHTML = rows
     .map(
       (f) => `
       <div class="doc-gap-finding">
-        <span class="finding-cat cat-${f.category}">${f.category.replaceAll("_", " ")}</span>
+        <span class="finding-cat cat-${f.category}">${escapeHtml(({unused_function:"No detected callers", isolated_file:"No detected file connections"})[f.category] || f.category.replaceAll("_", " "))}</span>
         <p>${escapeHtml(f.description)}</p><p class="small muted">Advisory candidate; this does not prove missing implementation or runtime correctness.</p>${renderSourceContext(f.source_context)}
       </div>`
     )
@@ -1616,10 +1647,13 @@ async function loadStoryCoveragePanel() {
       .then((c) => c.automatic_available)
       .catch(() => false);
     if (repoId !== activeRepoId) return;
-    $("#runStoryCoverageBtn").classList.toggle("is-hidden", !storyCoverageAvailable);
+    $("#runStoryCoverageBtn").classList.remove("is-hidden");
+    $("#runStoryCoverageBtn").disabled = readOnly || !storyCoverageAvailable;
+    $("#storyProviderNotice").hidden = storyCoverageAvailable;
     $("#storyCoverageHint").classList.toggle("is-hidden", !storyCoverageAvailable);
   }
-  $("#runStoryCoverageAllBtn").classList.toggle("is-hidden", !storyCoverageAvailable);
+  $("#runStoryCoverageAllBtn").classList.remove("is-hidden");
+  $("#runStoryCoverageAllBtn").disabled = readOnly || !storyCoverageAvailable;
 
   await loadStoryRequirementsForSelectedDoc();
 }
@@ -1665,6 +1699,11 @@ function updateVerifyDocButtonState() {
   const hasCases = !!docId && activeTestCases.some((c) => c.source_doc_id === docId);
   $("#verifyDocTestCasesBtn").disabled = readOnly || !testGenAvailable || !hasCases;
   $("#generateDocTestCasesBtn").disabled = readOnly || !testGenAvailable || !docId;
+}
+
+function generationWarnings(cases) {
+  const report=cases?.generation_diagnostics;
+  return report && (report.rejected || report.truncated) ? ` Warning: ${report.rejected} candidates rejected; ${report.truncated} beyond the safety cap. ${(report.reasons || []).join('; ')}` : '';
 }
 
 async function generateTestCasesForDocument() {
@@ -1753,16 +1792,25 @@ const _BULK_JOB_KINDS = {
     label: "Imported test verification", progress: "Verifying imported test cases", btn: "verifyImportedTestCasesBtn" },
 };
 
+async function resumeActiveBulkJob(repoId) {
+  const jobs=await api(`/repos/${repoId}/jobs/active`).catch(() => []);
+  if (repoId!==activeRepoId) return;
+  const job=jobs.find((item) => _BULK_JOB_KINDS[item.kind]);
+  if (job) pollBulkJob(job.kind,job);
+}
+
 async function runBulkJob(kind) {
+  const repoId=activeRepoId;
   const cfg = _BULK_JOB_KINDS[kind];
   const btns = Object.values(_BULK_JOB_KINDS).map((c) => $(`#${c.btn}`));
   btns.forEach((b) => { b.disabled = true; });
   try {
-    const job = await api(cfg.path(activeRepoId), { method: "POST" });
-    pollBulkJob(kind, job);
+    const job = await api(cfg.path(repoId), { method: "POST" });
+    if (repoId===activeRepoId) pollBulkJob(kind, job);
   } catch (e) {
     toast(e.message, "error");
-    btns.forEach((b) => { b.disabled = readOnly; });
+    btns.forEach((b) => { b.disabled = readOnly || testGenAvailable === false; });
+    if (e.status===409 && repoId===activeRepoId) await resumeActiveBulkJob(repoId);
   }
 }
 
@@ -1773,14 +1821,21 @@ function pollBulkJob(kind, job) {
   if (job.status !== "running") { finishBulkJob(kind, job); return; }
   _bulkJobPollTimer = setTimeout(async () => {
     if (repoId !== activeRepoId) return; // navigated to a different repo -- stop polling this one
-    const updated = await api(_BULK_JOB_KINDS[kind].jobPath(repoId, job.id)).catch(() => null);
-    if (!updated || repoId !== activeRepoId) return;
-    pollBulkJob(kind, updated);
-  }, 1500);
+    let updated;
+    try { updated=await api(_BULK_JOB_KINDS[kind].jobPath(repoId,job.id)); }
+    catch (e) {
+      if (repoId!==activeRepoId) return;
+      if (e.status===404) { finishBulkJob(kind,{...job,status:'failed',error:'Job no longer exists. Refresh the repository.'}); return; }
+      if (!job.connection_lost) toast('Job connection lost; retrying automatically. Work may still be running.','error');
+      updated={...job,connection_lost:true,poll_failures:(job.poll_failures || 0)+1};
+    }
+    if (repoId!==activeRepoId) return;
+    pollBulkJob(kind,updated);
+  }, Math.min(30000,1500*2**Math.min(job.poll_failures || 0,5)));
 }
 
 async function finishBulkJob(kind, job) {
-  Object.values(_BULK_JOB_KINDS).forEach((c) => { $(`#${c.btn}`).disabled = readOnly; });
+  Object.values(_BULK_JOB_KINDS).forEach((c) => { $(`#${c.btn}`).disabled = readOnly || testGenAvailable === false; });
   const results = job.results || [];
   const succeeded = results.filter((r) => r.ok).length;
   const failed = results.length - succeeded;
@@ -1801,7 +1856,7 @@ function renderBulkJobProgress(kind, job) {
   el.classList.remove("is-hidden");
   const pct = job.total ? Math.round((job.processed / job.total) * 100) : 100;
   const label = _BULK_JOB_KINDS[kind].progress;
-  const statusText = job.status === "running"
+  const statusText = job.connection_lost ? "Connection lost — retrying job status" : job.status === "running"
     ? `${label} — ${job.processed} of ${job.total}${job.current_document_name ? ` (currently: ${escapeHtml(job.current_document_name)})` : ""}`
     : `${label} finished — ${job.processed} of ${job.total}`;
   const rows = (job.results || []).slice().reverse().map((r) => `
@@ -1865,17 +1920,19 @@ async function handleImportTestCasesInput(ev) {
 
 function renderStoryCoverageSummary() {
   const total = activeStoryRequirements.length;
-  const supported = activeStoryRequirements.filter((r) => r.status === "supported");
-  const contradicted = activeStoryRequirements.filter((r) => r.status === "contradicted").length;
-  const unknown = activeStoryRequirements.filter((r) => r.status === "unknown").length;
+  const supported = activeStoryRequirements.filter((r) => !r.is_stale && r.ai_evidence_level === 'ai_supported');
+  const contradicted = activeStoryRequirements.filter((r) => !r.is_stale && r.ai_evidence_level === 'ai_conflict').length;
+  const unknown = activeStoryRequirements.filter((r) => !r.is_stale && !['ai_supported','ai_conflict'].includes(r.ai_evidence_level)).length;
+  const stale = activeStoryRequirements.filter((r) => r.is_stale).length;
   const tested = supported.filter((r) => r.tested).length;
   const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
   $("#storyCoverageSummaryCards").innerHTML = [
     statCard(total, "Acceptance criteria found"),
-    statCard(`${pct(supported.length, total)}%`, "AI-supported", `${supported.length} of ${total} source assessments`),
-    statCard(`${pct(tested, supported.length)}%`, "Case linkage", `${tested} of ${supported.length} supported criteria linked`),
+    statCard(activeStoryRequirements.some(r => !r.is_stale && r.ai_evidence_level !== "ai_assessment_unavailable") ? `${pct(supported.length, total)}%` : "—", "AI-supported", `${supported.length} of ${total} criteria; ${stale} stale excluded from support`),
+    statCard(supported.length ? `${pct(tested, supported.length)}%` : "—", "Case linkage", supported.length ? `${tested} of ${supported.length} supported criteria linked` : "No current supported criteria eligible for linkage"),
     statCard(contradicted, "Contradicted"),
-    statCard(unknown, "Unknown"),
+    statCard(unknown, "Unknown / unavailable"),
+    statCard(stale, "Needs reassessment"),
   ].join("");
 }
 
@@ -1883,7 +1940,7 @@ function renderStoryRequirementsList() {
   const statusFilter = $("#storyFilterStatusSelect").value;
   const typeFilter = $("#storyFilterTypeSelect").value;
   const rows = activeStoryRequirements.filter(
-    (r) => (!statusFilter || r.status === statusFilter) && (!typeFilter || r.type === typeFilter)
+    (r) => (!statusFilter || (statusFilter === "stale" ? r.is_stale : !r.is_stale && r.status === statusFilter)) && (!typeFilter || r.type === typeFilter)
   );
   const el = $("#storyRequirementsListAll");
   if (!rows.length) {
@@ -1897,14 +1954,17 @@ function renderStoryRequirementCard(r) {
   const covers = (r.covers || []).map((c) => `<code class="story-cover-chip">${escapeHtml(c)}</code>`).join(" ");
   return `
     <div class="doc-gap-finding">
-      <span class="finding-cat cat-${r.status}">${r.status}</span>
+      <span class="finding-cat cat-${r.is_stale ? "unknown" : r.status}">${r.is_stale ? "Needs reassessment" : escapeHtml(r.status)}</span>
+      ${r.is_stale ? `<span class="muted small">Historical judgment: ${escapeHtml(r.status)}</span>` : ""}
       <span class="finding-cat cat-${r.type}">${r.type}</span>
       ${r.status === "supported" ? `<span class="finding-cat ${r.tested ? "cat-tested" : "cat-untested"}">${r.tested ? "case linked" : "no case linked"}</span>` : ""}
       <p>${escapeHtml(r.text)}</p>
       ${r.rationale ? `<p class="small muted">${escapeHtml(r.rationale)}</p>` : ""}
+      ${r.source_freshness ? `<p class="small muted">${r.is_stale ? "Needs reassessment. " : ""}${escapeHtml(r.source_freshness.message)}</p>` : ""}
       ${r.source_context ? renderSourceContext(r.source_context) : `<p class="small muted">Source scope not recorded. Rerun Story Coverage for expanded evidence.</p>`}
       ${covers ? `<p class="small">Covers: ${covers}</p>` : ""}
-      <button type="button" class="btn btn-sm generate-tc-from-req-btn" data-doc-id="${escapeHtml(r.doc_id)}" data-req-id="${escapeHtml(r.id)}" ${readOnly ? "disabled" : ""}>Generate test case</button>
+      <button type="button" class="btn btn-sm generate-tc-from-req-btn" data-doc-id="${escapeHtml(r.doc_id)}" data-req-id="${escapeHtml(r.id)}" ${readOnly || storyCoverageAvailable !== true || r.is_stale ? "disabled" : ""}>Generate test case</button>
+      ${r.is_stale ? `<p class="small muted">Reassess this requirement before generating from it.</p>` : storyCoverageAvailable !== true ? `<p class="small muted">Generation unavailable. Ask your administrator to configure an approved AI provider.</p>` : ""}
     </div>`;
 }
 
@@ -2022,7 +2082,7 @@ const TD_HEALTH_COLOR = {
   not_analyzed: "color-mix(in srgb, var(--muted-2) 40%, transparent)",
 };
 const TD_HEALTH_LABEL = {
-  verified: "Supported by AI review", broken: "Potential implementation conflict", needs_clarification: "Needs clarification",
+  verified: "Supported (current view)", broken: "Potential implementation conflict", needs_clarification: "Needs clarification",
   partially_built: "Partially supported", not_started: "No implementation evidence found",
   needs_reassessment: "Needs reassessment (stale)", not_analyzed: "Not analyzed yet",
 };
@@ -2039,7 +2099,6 @@ function tdPct(n, d) {
   return d ? Math.round((n / d) * 100) : 0;
 }
 
-const TD_STATUS_ICON = { red: "ti-alert-triangle", amber: "ti-clock", green: "ti-check" };
 
 async function loadDashboardPanel() {
   const repoId = activeRepoId;
@@ -2056,7 +2115,7 @@ async function loadDashboardPanel() {
   renderDashboardStoryLinkChart();
   renderDashboardCodeLinkChart();
   renderDashboardGapList("#tdTopRisks", activeDashboard?.gaps.contradicted_requirements, tdReqGapItemHtml,
-    "Nothing contradicted — every tested criterion matches the code.");
+    "No potential conflicts in this view. Stale or unavailable assessments may still need review.");
   renderDashboardStoryList();
   renderDashboardGapList("#tdNeedsHuman", activeDashboard?.gaps.needs_human_input_requirements, tdQuestionGapItemHtml,
     "No open questions.");
@@ -2082,7 +2141,8 @@ function renderDashboardReviewAccuracy() {
     return;
   }
   el.innerHTML = `
-    <p><b>${acc.agreement_rate_pct}%</b> agreement <span class="muted small">(${acc.agreed_with_ai}/${acc.total_reviews} reviews)</span></p>
+    <p><b>${acc.agreement_rate_pct == null ? "—" : `${acc.agreement_rate_pct}%`}</b> reviewer agreement on definitive AI judgments <span class="muted small">(${acc.agreed_with_ai}/${acc.definitive_review_count} definitive reviews)</span></p>
+    <p class="small muted">Review feedback, not independently measured model accuracy. ${acc.agreed_uncertain_count || 0} agreements with uncertainty and ${acc.needs_more_info_count || 0} information requests are reported separately.</p>
     <ul class="td-gap-list">
       <li class="td-gap-item">${acc.false_support_count} case${acc.false_support_count === 1 ? "" : "s"} the AI called supported that a human rejected</li>
       <li class="td-gap-item">${acc.false_conflict_count} case${acc.false_conflict_count === 1 ? "" : "s"} the AI called a conflict that a human rejected</li>
@@ -2095,7 +2155,7 @@ function renderDashboardCriticalModules() {
   const modules = activeDashboard?.modules.critical || [];
   if (!modules.length) { el.innerHTML = `<p class="muted small">Run analysis first to see this.</p>`; return; }
   el.innerHTML = `<ul class="td-gap-list">${modules.map((m) =>
-    `<li class="td-gap-item" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`
+    `<li class="td-gap-item" role="button" tabindex="0" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`
   ).join("")}</ul>`;
 }
 
@@ -2103,293 +2163,182 @@ function renderDashboardCriticalModules() {
 // why (server/traceability_dashboard.py's _overall_status).
 function renderDashboardBanner() {
   const el = $("#tdBanner");
-  if (!activeDashboard) { el.innerHTML = `<p class="muted small">Couldn't load the dashboard.</p>`; return; }
-  const { status, headline } = activeDashboard.overall;
-  const label = status === "red" ? "Project status: at risk" : status === "green" ? "Project status: on track" : "Project status: in progress";
-  el.className = `td-banner td-banner-${status}`;
-  el.innerHTML = `
-    <div>
-      <p class="td-banner-label">${label}</p>
-      <p class="td-banner-headline">${escapeHtml(headline)}</p>
-    </div>
-    <div class="td-banner-icon"><i class="ti ${TD_STATUS_ICON[status]}" aria-hidden="true"></i></div>`;
+  if (!activeDashboard) { el.innerHTML = '<p class="muted">Dashboard unavailable. Reload to retry.</p>'; return; }
+  const {status,headline}=activeDashboard.overall;
+  const label=status==='red'?'Review needed':status==='green'?'Evidence aligned':'Evidence in progress';
+  const freshness=activeDashboard.source_freshness;
+  el.className=`td-banner td-banner-${status}`;
+  el.innerHTML=`<span class="td-project-state"><span class="td-state-dot" aria-hidden="true"></span>${label}</span><details class="td-status-explanation"><summary>What this status means</summary><p>${escapeHtml(headline)}</p>${freshness?`<p class="td-chart-caption">${tdCount(freshness.changed)} assessments have changed source files; ${tdCount(freshness.unrecorded)} have no recorded hashes. ${escapeHtml(freshness.message)}</p>`:''}<p class="td-chart-caption">This status includes automated findings and human decisions. It is not release approval.</p></details>`;
 }
 
 function renderDashboardStatCards() {
-  const el = $("#tdStatCards");
-  if (!activeDashboard) { el.innerHTML = ""; return; }
-  const { documents, requirements, test_cases } = activeDashboard;
-  const notStartedPct = tdPct(documents.by_health.not_started + documents.by_health.not_analyzed, documents.total);
-  const totalStale = (test_cases.evidence?.stale || 0) + (requirements.evidence?.stale || 0);
-  el.innerHTML = [
-    // Strictly the AI's own frozen judgment -- a human confirmation can never move this
-    // number (server/traceability_dashboard.py's ai_verified_pct), unlike documents.verified_pct
-    // (current/combined, shown in the headline above, which a confirmation CAN move).
-    statCard(`${documents.ai_verified_pct}%`, "AI-supported", `${documents.by_ai_health.verified}/${documents.total} user stories`),
-    statCard(`${requirements.correctness_rate}%`, "AI-supported rate", `${requirements.by_status.supported}/${requirements.correctness_rate_denominator ?? 0} coded criteria, by AI review`),
-    statCard(documents.by_health.broken, "Potential conflicts", `${requirements.by_status.contradicted} contradicted criteria`),
-    statCard(`${notStartedPct}%`, "No evidence found", `${documents.by_health.not_started + documents.by_health.not_analyzed}/${documents.total} user stories`),
-    statCard(totalStale, "Stale assessments", totalStale ? "judged against an older analysis run -- needs reassessment" : "every assessment matches the latest analysis run"),
-  ].join("");
+  const el=$("#tdStatCards");
+  const signals=$("#tdAssessmentSignals");
+  if (!activeDashboard) {el.innerHTML='';if(signals) signals.innerHTML='';return;}
+  const {documents,requirements,test_cases}=activeDashboard;
+  const stale=tdCount(requirements.evidence?.stale)+tdCount(test_cases.evidence?.stale);
+  const inventory=[[documents.total,'User stories'],[requirements.total,'Acceptance criteria'],[test_cases.total,'Test cases'],[stale,'Assessments needing reassessment']];
+  el.innerHTML=inventory.map(([value,label])=>`<div class="td-scope-item"><strong>${tdCount(value)}</strong><span>${label}</span>${label==='Assessments needing reassessment'?`<small>${tdCount(requirements.evidence?.stale)} criteria + ${tdCount(test_cases.evidence?.stale)} test cases</small>`:''}</div>`).join('');
+  if (!signals) return;
+  const knownStories=Object.entries(documents.by_ai_health || {}).filter(([key])=>!['ai_assessment_unavailable','not_analyzed'].includes(key)).reduce((sum,[,value])=>sum+tdCount(value),0);
+  const denominator=tdCount(requirements.correctness_rate_denominator);
+  const rows=[
+    [knownStories?`${documents.ai_verified_pct}%`:'—','Source-supported stories',`${tdCount(documents.by_ai_health?.verified)} of ${tdCount(documents.total)} stories; automated assessment only`],
+    [denominator?`${requirements.correctness_rate}%`:'—','Supported among assessed criteria',denominator?`${tdCount(requirements.by_status?.supported)} of ${denominator} supported or contradicted criteria`:'No current supported/contradicted judgments'],
+    [tdCount(documents.by_health?.broken),'Stories with potential conflicts','Current view, including human decisions'],
+    [`${tdPct(tdCount(documents.by_health?.not_started)+tdCount(documents.by_health?.not_analyzed),documents.total)}%`,'Stories without implementation evidence','No matching evidence is not proof of missing implementation'],
+    [stale,'Stale assessments','Includes changed source, documents or analysis context'],
+  ];
+  signals.innerHTML=rows.map(([value,label,note])=>`<div class="td-signal"><span>${label}</span><strong>${value}</strong><small>${escapeHtml(note)}</small></div>`).join('');
 }
 
-// Resolves a CSS custom property to its actual color so Chart.js (which
-// paints on a <canvas>, not through the CSS cascade) picks up this app's
-// real theme colors instead of a hardcoded palette -- re-read on every
-// chart render so switching light/dark mid-session stays correct. Read off
-// #panel-traceability itself, NOT document.documentElement -- the dashboard
-// pins its own dark-theme values on that element (see styles.css) regardless
-// of the app's light/dark toggle, and those only take effect at or below
-// that element in the cascade.
-function tdCssVar(name) {
-  return getComputedStyle($("#panel-traceability")).getPropertyValue(name).trim();
+// Local SVG charts: no CDN, canvas lifecycle or hidden-panel sizing dependency.
+// These renderers replace only their own contents, so empty -> populated works.
+function tdCount(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 }
 
-// Resolves ANY CSS color expression (var(), color-mix(), etc.) to a concrete
-// color canvas can paint -- a canvas fillStyle can't resolve custom
-// properties on its own, since it isn't part of the CSS cascade. The probe is
-// appended INSIDE #panel-traceability, not document.body, for the same
-// scoping reason as tdCssVar above.
-function tdResolveColor(cssValue) {
-  const probe = document.createElement("span");
-  probe.style.color = cssValue;
-  probe.style.display = "none";
-  $("#panel-traceability").appendChild(probe);
-  const resolved = getComputedStyle(probe).color;
-  probe.remove();
-  return resolved;
+function tdRequirementSegments(requirements) {
+  const counts = requirements?.by_status || {};
+  const rows = [
+    {key:'supported',label:'Source-supported',value:tdCount(counts.supported),color:'var(--ok)'},
+    {key:'contradicted',label:'Potential conflict',value:tdCount(counts.contradicted),color:'var(--danger)'},
+    {key:'needs_human_input',label:'Needs a human answer',value:tdCount(counts.needs_human_input),color:'var(--warn)'},
+    {key:'unknown',label:'Inconclusive',value:tdCount(counts.unknown),color:'var(--muted-2)'},
+    {key:'unavailable',label:'Assessment unavailable',value:tdCount(requirements?.ai_unavailable),color:'var(--td-unavailable)'},
+    {key:'stale',label:'Needs reassessment',value:tdCount(requirements?.evidence?.stale),color:'var(--td-stale)'},
+  ];
+  // Old/incomplete payloads must not become a blank chart or invented support.
+  const accounted=rows.reduce((sum,row)=>sum+row.value,0);
+  if (tdCount(requirements?.total)>accounted) rows[4].value+=tdCount(requirements.total)-accounted;
+  return rows;
 }
 
-const TD_CHART_FONT = { family: getComputedStyle(document.body).fontFamily, size: 12 };
-
-function tdDestroyChart(canvasId) {
-  const existing = Chart.getChart(canvasId);
-  if (existing) existing.destroy();
+function tdChartEmpty(message) {
+  return `<div class="td-chart-empty"><span class="td-empty-mark" aria-hidden="true">—</span><p>${escapeHtml(message)}</p></div>`;
 }
 
-function tdChartBaseOptions(indexAxis) {
-  const ink = tdCssVar("--muted");
-  const grid = tdCssVar("--border");
-  return {
-    indexAxis, responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { titleFont: TD_CHART_FONT, bodyFont: TD_CHART_FONT } },
-    scales: {
-      x: { beginAtZero: true, ticks: { color: ink, font: TD_CHART_FONT }, grid: { color: grid, display: indexAxis === "y" } },
-      y: { beginAtZero: true, ticks: { color: ink, font: TD_CHART_FONT }, grid: { color: grid, display: indexAxis !== "y" } },
-    },
-  };
+function tdChartLegend(rows) {
+  return `<ul class="td-chart-key">${rows.map(row=>`<li><span class="td-key-swatch td-key-${row.key || 'item'}" style="--swatch:${row.color}"></span><span>${escapeHtml(row.label)}</span><strong>${row.value}</strong></li>`).join('')}</ul>`;
 }
 
-// Every story's health bucket as an actual bar chart (not a hand-rolled CSS
-// div bar) -- following explicit feedback that the earlier flat bar didn't
-// read as "visual" enough. Horizontal, since health labels are long.
-function renderDashboardHealthChart() {
-  tdDestroyChart("tdHealthChart");
-  const canvas = $("#tdHealthChart");
-  if (!activeDashboard || !activeDashboard.documents.total) {
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No user stories yet — add one in the Docs tab.</p>`;
-    return;
-  }
-  const counts = activeDashboard.documents.by_health;
-  const present = TD_HEALTH_ORDER.filter((k) => counts[k] > 0);
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels: present.map((k) => TD_HEALTH_LABEL[k]),
-      datasets: [{ data: present.map((k) => counts[k]), backgroundColor: present.map((k) => tdResolveColor(TD_HEALTH_COLOR[k])), borderRadius: 4, maxBarThickness: 28 }],
-    },
-    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
-  });
-}
-
-// Zoomed-in view beneath the story-health chart: that one buckets whole
-// STORIES (one contradicted criterion marks the entire story "broken"), so
-// it hides scale -- a story with 1-of-10 criteria wrong looks the same as
-// one with 10-of-10 wrong. This counts individual acceptance CRITERIA, so a
-// large contradicted bar here (versus a small "broken" bucket above) is
-// itself a signal: a few stories are carrying a lot of the actual breakage.
 function renderDashboardRequirementStatusChart() {
-  tdDestroyChart("tdReqStatusChart");
-  const canvas = $("#tdReqStatusChart");
-  const total = activeDashboard?.requirements?.total || 0;
-  $("#tdReqTotal").textContent = total ? `— ${total} total` : "";
-  if (!total) {
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No acceptance criteria decomposed yet.</p>`;
+  const el=$('#tdReqStatusChart');
+  if (!el) return;
+  const requirements=activeDashboard?.requirements;
+  const total=tdCount(requirements?.total);
+  $('#tdReqTotal').textContent=`${total} total`;
+  if (!total) { el.innerHTML=tdChartEmpty('No acceptance criteria yet. Add a user story and run Story Coverage.'); return; }
+  const rows=tdRequirementSegments(requirements);
+  if(rows.reduce((sum,row)=>sum+row.value,0)!==total) {
+    el.innerHTML=tdChartEmpty('Criterion counts could not be reconciled. Refresh the dashboard before relying on this chart.');
     return;
   }
-  const counts = activeDashboard.requirements.by_status;
-  const present = TD_REQ_STATUS_ORDER.filter((k) => counts[k] > 0);
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels: present.map((k) => TD_REQ_STATUS_LABEL[k]),
-      datasets: [{ data: present.map((k) => counts[k]), backgroundColor: present.map((k) => tdCssVar(TD_REQ_STATUS_COLOR[k])), borderRadius: 4, maxBarThickness: 28 }],
-    },
-    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: Math.max(1, Math.ceil(total / 10)) } } } },
-  });
+  const C=2*Math.PI*86;
+  let offset=0;
+  const present=rows.filter(row=>row.value);
+  const arcs=present.map(row=>{
+    const full=C*row.value/total;
+    const length=Math.max(0,full-(present.length>1 ? 4 : 0));
+    const arc=`<circle class="td-ring-segment" cx="120" cy="120" r="86" fill="none" stroke="${row.key==='stale' ? 'url(#td-stale-pattern)' : row.color}" stroke-width="20" stroke-dasharray="${length.toFixed(3)} ${(C-length).toFixed(3)}" stroke-dashoffset="${(-offset).toFixed(3)}" data-status="${row.key}" data-count="${row.value}"><title>${escapeHtml(row.label)}: ${row.value}</title></circle>`;
+    offset+=full; return arc;
+  }).join('');
+  const stale=rows.find(row=>row.key==='stale').value;
+  const note=stale===total ? `All ${total} criteria need reassessment. There are no current source judgments to plot.` : `${total-stale} current criteria · ${stale} stale criteria shown separately`;
+  el.innerHTML=`<div class="td-criteria-composition"><svg class="td-evidence-ring" viewBox="0 0 240 240" role="img" aria-label="Acceptance criteria: ${escapeHtml(rows.filter(r=>r.value).map(r=>`${r.label} ${r.value}`).join(', '))}"><defs><pattern id="td-stale-pattern" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><rect width="6" height="6" fill="var(--td-stale)"></rect><path d="M0 0V6" stroke="var(--panel)" stroke-opacity=".32" stroke-width="2"></path></pattern></defs><circle class="td-ring-track" cx="120" cy="120" r="86"></circle><g transform="rotate(-90 120 120)">${arcs}</g><text class="td-ring-total" x="120" y="117" text-anchor="middle">${total}</text><text class="td-ring-caption" x="120" y="140" text-anchor="middle">acceptance criteria</text></svg>${tdChartLegend(rows)}</div><p class="td-criteria-note">${escapeHtml(note)}</p><p class="td-chart-caption">Fresh statuses use the saved automated assessment. Human confirmations do not change this chart.</p>`;
 }
 
-// Test-case stats, distinct from the already-rejected "origin" breakdown:
-// category (happy path / edge case / error handling) is a real quality
-// signal -- is testing well-rounded, or only covering the easy path.
-function renderDashboardCategoryChart() {
-  tdDestroyChart("tdCategoryChart");
-  const canvas = $("#tdCategoryChart");
-  const tc = activeDashboard?.test_cases;
-  $("#tdCaseTotal").textContent = tc?.total ? `— ${tc.total} total` : "";
-  const byCategory = tc?.by_category || {};
-  const labels = Object.keys(byCategory);
-  if (!labels.length) {
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No test cases yet.</p>`;
-    return;
-  }
-  // One hue (the brand accent), tinted lighter per bar at full opacity --
-  // category isn't a severity signal the way health/status are, so a
-  // traffic-light palette here would wrongly imply one category is "worse"
-  // than another. Tinting toward white (not fading toward transparent) keeps
-  // every bar fully legible against the dark glass backdrop.
-  const accent = tdCssVar("--accent");
-  const tints = [0, 30, 55, 75];
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels: labels.map(tdCategoryLabel),
-      datasets: [{ data: labels.map((k) => byCategory[k]), backgroundColor: labels.map((_, i) => tdResolveColor(`color-mix(in srgb, white ${tints[i % tints.length]}%, ${accent})`)), borderRadius: 4, maxBarThickness: 48 }],
-    },
-    options: tdChartBaseOptions("x"),
-  });
+function tdDistributionMarkup(rows,total,label) {
+  if (!total) return tdChartEmpty(`No ${label.toLowerCase()} recorded yet.`);
+  let offset=0;
+  const segments=rows.filter(row=>row.value).map(row=>{
+    const width=600*row.value/total;
+    const part=`<rect x="${offset}" y="4" width="${width}" height="24" fill="${row.color}"><title>${escapeHtml(row.label)}: ${row.value}</title></rect>`;
+    offset+=width;return part;
+  }).join('');
+  return `<svg class="td-distribution" viewBox="0 0 600 32" role="img" aria-label="${escapeHtml(label+': '+rows.map(r=>`${r.label} ${r.value}`).join(', '))}">${segments}</svg>${tdChartLegend(rows.filter(row=>row.value))}`;
+}
+
+function renderDashboardHealthChart() {
+  const el=$('#tdHealthChart'); if (!el) return;
+  const counts=activeDashboard?.documents?.by_health || {};
+  const colors={...TD_HEALTH_COLOR,ai_assessment_unavailable:'var(--td-unavailable)'};
+  const labels={...TD_HEALTH_LABEL,verified:'Supported (current view)',ai_assessment_unavailable:'Assessment unavailable'};
+  const keys=[...TD_HEALTH_ORDER,'ai_assessment_unavailable'];
+  const rows=keys.map(key=>({key,label:labels[key] || key,value:tdCount(counts[key]),color:colors[key]}));
+  el.innerHTML=tdDistributionMarkup(rows,tdCount(activeDashboard?.documents?.total),'User-story status');
+}
+
+function tdBarChartMarkup(rows,label) {
+  if (!rows.some(row=>row.value)) return tdChartEmpty(`No ${label.toLowerCase()} recorded yet.`);
+  const max=Math.max(1,...rows.map(row=>row.value));
+  const marks=rows.map(row=>{
+    const barWidth=280*row.value/max;
+    return `<div class="td-lollipop-row"><span>${escapeHtml(row.label)}</span><svg viewBox="0 0 320 28" aria-hidden="true"><line x1="8" y1="14" x2="310" y2="14" class="td-bar-track"></line><line x1="8" y1="14" x2="${8+barWidth}" y2="14" stroke="${row.color}" stroke-width="6" stroke-linecap="round"></line><circle cx="${8+barWidth}" cy="14" r="5" fill="${row.color}"></circle></svg><strong>${row.value}</strong></div>`;
+  }).join('');
+  return `<div class="td-lollipop-list" role="img" aria-label="${escapeHtml(label+': '+rows.map(r=>`${r.label} ${r.value}`).join(', '))}">${marks}</div>`;
 }
 
 function tdCategoryLabel(key) {
-  return { happy_path: "Happy path", edge_case: "Edge case", error_handling: "Error handling" }[key] || key;
+  return {happy_path:'Happy path',edge_case:'Edge case',error_handling:'Error handling',unclassified:'Unclassified'}[key] || key;
 }
-
 function tdPriorityLabel(key) {
-  return { 1: "P1 · critical path", 2: "P2 · important", 3: "P3 · less common", 4: "P4 · rare" }[key] || `P${key}`;
+  return {1:'P1',2:'P2',3:'P3',4:'P4',unspecified:'Unspecified'}[key] || `P${key}`;
 }
-
-// Priority mix -- a heavy skew toward low priority would mean testing effort
-// isn't going where it matters most.
+function renderDashboardCategoryChart() {
+  const tc=activeDashboard?.test_cases || {};
+  $('#tdCaseTotal').textContent=`${tdCount(tc.total)} cases`;
+  const rows=Object.entries(tc.by_category || {}).map(([key,value],i)=>({key,label:tdCategoryLabel(key),value:tdCount(value),color:i===0?'var(--accent)':'var(--td-chart-secondary)'}));
+  const omitted=tdCount(tc.total)-rows.reduce((n,row)=>n+row.value,0);
+  if (omitted>0) rows.push({key:'unclassified',label:'Unclassified',value:omitted,color:'var(--muted-2)'});
+  $('#tdCategoryChart').innerHTML=tdBarChartMarkup(rows,'Scenario categories');
+}
 function renderDashboardPriorityChart() {
-  tdDestroyChart("tdPriorityChart");
-  const canvas = $("#tdPriorityChart");
-  const byPriority = activeDashboard?.test_cases?.by_priority || {};
-  const labels = Object.keys(byPriority).sort((a, b) => Number(a) - Number(b));
-  if (!labels.length) {
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">No test cases yet.</p>`;
-    return;
-  }
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels: labels.map(tdPriorityLabel),
-      datasets: [{ data: labels.map((k) => byPriority[k]), backgroundColor: tdCssVar("--accent"), borderRadius: 4, maxBarThickness: 28 }],
-    },
-    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
-  });
+  const tc=activeDashboard?.test_cases || {};
+  const counts=tc.by_priority || {};
+  const rows=Object.keys(counts).sort((a,b)=>Number(a)-Number(b)).map(key=>({key,label:tdPriorityLabel(key),value:tdCount(counts[key]),color:key==='1'?'var(--accent)':'var(--td-chart-secondary)'}));
+  const omitted=tdCount(tc.total)-rows.reduce((n,row)=>n+row.value,0);
+  if (omitted>0) rows.push({key:'unspecified',label:'Unspecified',value:omitted,color:'var(--muted-2)'});
+  $('#tdPriorityChart').innerHTML=tdBarChartMarkup(rows,'Test-case priorities');
 }
-
-// Shared shape for all 4 "imported vs generated" / "linked vs not" charts --
-// each is just a two-bar split of the same metric, so one generic renderer
-// instead of four near-identical ones. Same one-hue-tinted-lighter palette as
-// renderDashboardCategoryChart, not a second arbitrary color: per explicit
-// feedback earlier in this project, a traffic-light palette here would wrongly
-// imply "imported" or "not yet linked" is a severity judgment, which it isn't.
-function tdRenderBinarySplitChart(canvasId, emptyMessage, labels, values) {
-  tdDestroyChart(canvasId);
-  const canvas = $(`#${canvasId}`);
-  if (!values.reduce((a, b) => a + b, 0)) {
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">${emptyMessage}</p>`;
-    return;
-  }
-  const accent = tdCssVar("--accent");
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        backgroundColor: [accent, tdResolveColor(`color-mix(in srgb, white 55%, ${accent})`)],
-        borderRadius: 4, maxBarThickness: 28,
-      }],
-    },
-    options: { ...tdChartBaseOptions("y"), scales: { ...tdChartBaseOptions("y").scales, x: { ...tdChartBaseOptions("y").scales.x, ticks: { ...tdChartBaseOptions("y").scales.x.ticks, stepSize: 1 } } } },
-  });
+function tdRenderBinarySplitChart(id,emptyMessage,labels,values) {
+  const total=values.reduce((sum,value)=>sum+tdCount(value),0);
+  const rows=labels.map((label,i)=>({key:i?'secondary':'primary',label,value:tdCount(values[i]),color:i?'var(--td-chart-secondary)':'var(--accent)'}));
+  const el=$('#'+id); if(el) el.innerHTML=total?tdDistributionMarkup(rows,total,labels.join(' / ')):tdChartEmpty(emptyMessage);
 }
-
 function renderDashboardCaseOriginChart() {
-  const tc = activeDashboard?.test_cases;
-  const byOrigin = tc?.by_origin || {};
-  tdRenderBinarySplitChart("tdCaseOriginChart", "No test cases yet.",
-    ["Generated", "Imported"], [byOrigin.generated || 0, byOrigin.imported || 0]);
+  const counts=activeDashboard?.test_cases?.by_origin || {};
+  tdRenderBinarySplitChart('tdCaseOriginChart','No test cases yet.',['Generated','Imported'],[counts.generated || 0,counts.imported || 0]);
 }
-
 function renderDashboardDocOriginChart() {
-  const byOrigin = activeDashboard?.documents?.by_origin || {};
-  tdRenderBinarySplitChart("tdDocOriginChart", "No user stories yet — add one in the Docs tab.",
-    ["Authored", "Imported"], [byOrigin.manual || 0, byOrigin.imported || 0]);
+  const counts=activeDashboard?.documents?.by_origin || {};
+  tdRenderBinarySplitChart('tdDocOriginChart','No user stories yet.',['Authored','Imported'],[counts.manual || 0,counts.imported || 0]);
 }
-
-// Grouped by origin (generated vs. imported), not just one blended split --
-// a legacy imported suite often has real coverage very different from
-// freshly generated cases, and a blended number can hide one dragging the
-// other down. Also what keeps this section meaningful for a repo with many
-// test cases but zero user stories tracked in TestAtlas at all. Same
-// accent-vs-lighter-tint palette used everywhere else for generated/imported,
-// just with Chart.js's own legend turned on since two series need a key.
-const TD_LINKAGE_ZERO = { total: 0, fresh: 0, stale: 0, fresh_linked: 0, fresh_unlinked: 0, pct: null };
-
-// `label`+`pct` text for one linkage breakdown (server/traceability_dashboard.py's
-// _linkage_breakdown shape) -- "No current assessments" when there's nothing
-// fresh to judge, never a misleading "0% linked", plus an explicit stale count
-// so a reader never has to guess why fresh+stale don't add up to what they expected.
+const TD_LINKAGE_ZERO={total:0,fresh:0,stale:0,fresh_linked:0,fresh_unlinked:0,pct:null};
 function tdLinkageSummaryText(linkage) {
-  if (!linkage || !linkage.total) return "";
-  const staleNote = linkage.stale ? ` · ${linkage.stale} stale case${linkage.stale === 1 ? "" : "s"} excluded` : "";
-  if (linkage.pct === null) return `— No current assessments${staleNote}`;
-  return `— ${linkage.fresh_linked}/${linkage.fresh} fresh cases linked (${linkage.pct}%)${staleNote}`;
+  if (!linkage?.total) return 'No cases recorded';
+  const stale=linkage.stale?` · ${linkage.stale} stale excluded`:'';
+  return linkage.pct==null?`No current assessments${stale}`:`${linkage.fresh_linked} of ${linkage.fresh} fresh cases · ${linkage.pct}%${stale}`;
 }
-
-function tdRenderOriginCoverageChart(canvasId, emptyMessage, byOrigin) {
-  tdDestroyChart(canvasId);
-  const canvas = $(`#${canvasId}`);
-  const generated = byOrigin?.generated || TD_LINKAGE_ZERO;
-  const imported = byOrigin?.imported || TD_LINKAGE_ZERO;
-  if (!(generated.fresh + imported.fresh)) {
-    const staleTotal = (generated.stale || 0) + (imported.stale || 0);
-    canvas.closest(".td-chart-box").innerHTML = `<p class="muted small">${staleTotal ? `No current assessments — ${staleTotal} stale case${staleTotal === 1 ? "" : "s"} excluded.` : emptyMessage}</p>`;
-    return;
-  }
-  const accent = tdCssVar("--accent");
-  const importedColor = tdResolveColor(`color-mix(in srgb, white 55%, ${accent})`);
-  const base = tdChartBaseOptions("y");
-  new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels: ["Fresh linked", "Fresh unlinked"],
-      datasets: [
-        { label: "Generated", data: [generated.fresh_linked, generated.fresh_unlinked], backgroundColor: accent, borderRadius: 4, maxBarThickness: 20 },
-        { label: "Imported", data: [imported.fresh_linked, imported.fresh_unlinked], backgroundColor: importedColor, borderRadius: 4, maxBarThickness: 20 },
-      ],
-    },
-    options: {
-      ...base,
-      plugins: { ...base.plugins, legend: { display: true, position: "top", align: "end", labels: { color: tdCssVar("--muted"), boxWidth: 10, font: TD_CHART_FONT } } },
-      scales: { ...base.scales, x: { ...base.scales.x, ticks: { ...base.scales.x.ticks, stepSize: 1 } } },
-    },
-  });
+function tdRenderOriginCoverageChart(id,emptyMessage,byOrigin) {
+  const generated=byOrigin?.generated || TD_LINKAGE_ZERO,imported=byOrigin?.imported || TD_LINKAGE_ZERO;
+  const fresh=generated.fresh+imported.fresh,linked=generated.fresh_linked+imported.fresh_linked;
+  const stale=generated.stale+imported.stale;
+  const el=$('#'+id); if(!el) return;
+  if(!fresh){el.innerHTML=tdChartEmpty(stale?`${stale} stale cases excluded. Reassess before relying on linkage.`:emptyMessage);return;}
+  const width=480*linked/fresh;
+  const records=[['Generated',generated],['Imported',imported]].filter(([,row])=>row.total);
+  el.innerHTML=`<svg class="td-linkage-track" viewBox="0 0 500 32" role="img" aria-label="${linked} linked and ${fresh-linked} unlinked among ${fresh} fresh cases"><line x1="10" y1="16" x2="490" y2="16" class="td-linkage-rail"></line><line x1="10" y1="16" x2="${10+width}" y2="16" stroke="var(--accent)" stroke-width="10" stroke-linecap="round"></line><circle cx="10" cy="16" r="4" class="td-linkage-endpoint"></circle><circle cx="490" cy="16" r="4" class="td-linkage-endpoint"></circle></svg><div class="td-linkage-origin">${records.map(([label,row])=>`<span>${label}<strong>${row.fresh_linked}/${row.fresh} linked</strong>${row.stale?`<small>${row.stale} stale excluded</small>`:''}</span>`).join('')}</div>`;
 }
-
 function renderDashboardStoryLinkChart() {
-  const tc = activeDashboard?.test_cases;
-  $("#tdStoryLinkPct").textContent = tdLinkageSummaryText(tc?.story_link);
-  tdRenderOriginCoverageChart("tdStoryLinkChart", "No test cases yet.", tc?.story_link_by_origin);
+  const tc=activeDashboard?.test_cases;
+  $('#tdStoryLinkPct').textContent=tdLinkageSummaryText(tc?.story_link);
+  tdRenderOriginCoverageChart('tdStoryLinkChart','No test cases yet.',tc?.story_link_by_origin);
 }
-
 function renderDashboardCodeLinkChart() {
-  const tc = activeDashboard?.test_cases;
-  $("#tdCodeLinkPct").textContent = tdLinkageSummaryText(tc?.code_coverage);
-  tdRenderOriginCoverageChart("tdCodeLinkChart", "No test cases yet.", tc?.code_coverage_by_origin);
+  const tc=activeDashboard?.test_cases;
+  $('#tdCodeLinkPct').textContent=tdLinkageSummaryText(tc?.code_coverage);
+  tdRenderOriginCoverageChart('tdCodeLinkChart','No test cases yet.',tc?.code_coverage_by_origin);
 }
 
 function renderDashboardTrend() {
@@ -2401,9 +2350,9 @@ function renderDashboardTrend() {
   }
   const series = [
     // Legacy snapshots mixed AI and human decisions; never relabel those as AI-only.
-    { label: "AI-supported", color: "var(--ok)", value: (s) => s.summary.documents.ai_verified_pct ?? null },
-    { label: "AI-supported rate", color: "var(--accent)", value: (s) => s.summary.evidence_schema_version >= 2 ? s.summary.requirements.correctness_rate : null },
-    { label: "Delivered (coded)", color: "var(--muted-2)", value: (s) => s.summary.documents.coded_pct },
+    { label: "Source-supported stories / all stories", color: "var(--ok)", value: (s) => s.summary.documents.by_ai_health && !s.summary.documents.by_ai_health.verified && s.summary.documents.by_ai_health.needs_reassessment === s.summary.documents.total ? null : (s.summary.documents.ai_verified_pct ?? null) },
+    { label: "Supported criteria / assessed criteria", color: "var(--accent)", value: (s) => s.summary.evidence_schema_version >= 2 && s.summary.requirements.correctness_rate_denominator !== 0 ? s.summary.requirements.correctness_rate : null },
+    { label: "Stories with saved code links / all stories", color: "var(--muted-2)", value: (s) => s.summary.documents.coded_pct },
   ];
   const W = 640, H = 180, PAD_L = 32, PAD = 12;
   const n = trend.length;
@@ -2447,27 +2396,28 @@ function renderDashboardGapList(selector, items, itemHtmlFn, emptyMsg) {
 // module" (highest PageRank -- most of the codebase structurally depends on
 // it), so the same visual means the same thing everywhere in this app.
 function tdCriticalBadgeHtml() {
-  return `<span class="td-critical-badge" title="Touches one of this repo's most structurally central modules (by PageRank) — most of the codebase depends on it">${ICON_CRITICAL}structurally central code</span>`;
+  return `<span class="td-critical-badge" title="Touches one of this repo's most structurally central modules (by PageRank) — ranked highly among modules with positive PageRank in this analyzed graph; this is not business priority">${ICON_CRITICAL}structurally central code</span>`;
 }
 
 function tdReqGapItemHtml(r) {
-  return `<li class="td-risk-item" data-jump-doc="${escapeHtml(r.doc_id || "")}">
+  return `<li class="td-risk-item"><button type="button" class="evidence-drilldown" data-jump-doc="${escapeHtml(r.doc_id || "")}">
+    ${r.is_stale ? `<strong class="stale-note">Needs reassessment · historical finding</strong>` : ""}
     <div class="td-gap-item-doc muted small">${escapeHtml(r.doc_name || "Unknown document")}${r.touches_critical_code ? tdCriticalBadgeHtml() : ""}</div>
     <div>${escapeHtml(r.text)}</div>
     ${r.rationale ? `<div class="muted small">${escapeHtml(r.rationale)}</div>` : ""}
-  </li>`;
+  </button></li>`;
 }
 
 function tdQuestionGapItemHtml(r) {
-  return `<li class="td-gap-item" data-jump-doc="${escapeHtml(r.doc_id || "")}">
+  return `<li class="td-gap-item" role="button" tabindex="0" data-jump-doc="${escapeHtml(r.doc_id || "")}">
     <div class="td-gap-item-doc muted small">${escapeHtml(r.doc_name || "Unknown document")}</div>
     <div>${escapeHtml(r.text)}</div>
-    ${r.question ? `<div class="muted small">${escapeHtml(r.question)}</div>` : ""}
+    ${r.is_stale ? `<strong class="stale-note">Needs reassessment · historical question</strong>` : ""}${r.question ? `<div class="muted small">${escapeHtml(r.question)}</div>` : ""}
   </li>`;
 }
 
 function tdModuleGapItemHtml(m) {
-  return `<li class="td-gap-item" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`;
+  return `<li class="td-gap-item" role="button" tabindex="0" data-jump-module-gen="${escapeHtml(m.module)}">${escapeHtml(m.display_name)}</li>`;
 }
 
 function tdHealthChipHtml(health) {
@@ -2489,13 +2439,13 @@ function renderDashboardStoryList() {
     const meta = d.requirement_count
       ? `${d.requirement_count} criteria · ${d.test_case_count} test case${d.test_case_count === 1 ? "" : "s"} · ${modulesText}`
       : "not analyzed yet";
-    return `<div class="td-story-row" data-jump-doc="${escapeHtml(d.id)}">
+    return `<button type="button" class="td-story-row" data-jump-doc="${escapeHtml(d.id)}">
       <div>
         <div class="td-story-name">${escapeHtml(d.name)}${d.touches_critical_code ? tdCriticalBadgeHtml() : ""}${d.has_human_confirmed ? `<span class="finding-cat cat-tested" title="At least one criterion's status was set by a human confirmation, not purely AI review">human-confirmed</span>` : ""}</div>
-        <div class="muted small">${meta}</div>
+        <div class="muted small">${meta}${d.has_stale ? ` · ${d.stale_count ?? "Some"} criteria need reassessment` : ""}</div>
       </div>
       ${tdHealthChipHtml(d.health)}
-    </div>`;
+    </button>`;
   }).join("")}</div>`;
 }
 
@@ -2516,18 +2466,11 @@ function jumpToModuleGeneration(moduleRaw) {
   input.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-// Hands stakeholders a shareable snapshot via the browser's own print dialog
-// ("Save as PDF") instead of a new export format -- no server route, no new
-// dependency. The glass look doesn't survive printing (most browsers strip
-// background graphics unless the user opts in, and Chart.js bakes its colors
-// into the canvas at draw time rather than reading the live CSS cascade), so
-// this swaps the dashboard to a plain light palette and repaints its charts
-// before printing, then restores the live theme afterwards.
+// Print the same SVG evidence and every detail section, then restore the view.
 function exportDashboardPdf() {
   const panel = $("#panel-traceability");
-  const moreDetails = $(".td-more", panel);
-  const wasOpen = moreDetails ? moreDetails.open : false;
-  if (moreDetails) moreDetails.open = true; // otherwise its contents are missing from the printout
+  const detailStates=$all('.td-more, .td-status-explanation',panel).map(element=>({element,open:element.open}));
+  detailStates.forEach(({element})=>{element.open=true;});
   panel.classList.add("td-printing");
   const repaint = () => {
     renderDashboardHealthChart();
@@ -2542,14 +2485,12 @@ function exportDashboardPdf() {
   repaint();
   const restore = () => {
     panel.classList.remove("td-printing");
-    if (moreDetails) moreDetails.open = wasOpen;
+    detailStates.forEach(({element,open})=>{element.open=open;});
     repaint();
     window.removeEventListener("afterprint", restore);
   };
   window.addEventListener("afterprint", restore);
-  // Two rAFs: one for the DOM/class change to apply, one for Chart.js's own
-  // redraw to actually finish painting the print-safe colors before the
-  // print snapshot is taken.
+  // Allow print styles and the expanded detail sections to settle.
   requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
 }
 
@@ -2574,11 +2515,8 @@ async function loadTestCasesPanel() {
     if (repoId !== activeRepoId) return;
     $("#testGenUnavailableHint").classList.toggle("is-hidden", testGenAvailable);
   }
-  $("#generateTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
-  $("#verifyTestCasesAllBtn").classList.toggle("is-hidden", !testGenAvailable);
-  // Import itself is free (local parsing, no API call) and always shown;
-  // only verifying an imported case against code needs the same paid gate.
-  $("#verifyImportedTestCasesBtn").classList.toggle("is-hidden", !testGenAvailable);
+  // Keep paid actions discoverable even when this deployment cannot run them.
+  $("#testGenUnavailableHint").classList.toggle("is-hidden", !!testGenAvailable);
   $("#reassessStaleCasesBtn").disabled = readOnly || !testGenAvailable;
   $("#reassessMatchingCasesBtn").disabled = readOnly || !testGenAvailable;
   $("#reassessmentUnavailableHint").hidden = !!testGenAvailable;
@@ -2593,6 +2531,21 @@ async function loadTestCasesPanel() {
   renderTestCaseSummary();
   renderTestCaseList();
   updateVerifyDocButtonState();
+  updateTestCaseToolAvailability();
+  await resumeActiveBulkJob(repoId);
+}
+
+function updateTestCaseToolAvailability() {
+  const tools = [
+    ['generateTestCasesAllBtn', activeDocuments.length > 0],
+    ['verifyTestCasesAllBtn', activeTestCases.some(c => c.source_doc_id)],
+    ['verifyImportedTestCasesBtn', activeTestCases.some(c => c.created_via === 'imported')],
+  ];
+  for (const [id, hasInput] of tools) {
+    const button = $("#" + id);
+    button.classList.remove('is-hidden');
+    button.disabled = readOnly || !testGenAvailable || !hasInput;
+  }
 }
 
 // Shown on the Test Cases tab while modules still carry raw folder names -- that's
@@ -2741,7 +2694,7 @@ async function clearModuleTestCases(mod) {
 function populateTestCaseStoryFilter() {
   const sel = $("#testCaseFilterStoryDocSelect");
   const prev = sel.value;
-  const docIds = [...new Set(activeTestCases.map((c) => c.source_doc_id).filter(Boolean))];
+  const docIds = [...new Set(activeTestCases.flatMap((c) => [c.source_doc_id,...(c.related_requirements || []).map((link) => link.doc_id)]).filter(Boolean))];
   sel.innerHTML = `<option value="">All stories</option>` + docIds.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(docNameById(id))}</option>`).join("");
   sel.value = docIds.includes(prev) ? prev : "";
 }
@@ -2756,6 +2709,7 @@ function testCaseViewFilters() {
 
 function testCaseAssessment(c) {
   if (c.is_stale) return "stale";
+  if (c.assessment) return c.assessment.state;
   if (c.reassessment) return c.reassessment.outcome === "aligned" ? "supported" : ["needs_clarification", "unvalidated_conflict_claims"].includes(c.reassessment.outcome) ? "inconclusive" : "conflict";
   if (!c.status) return "unassessed";
   if (!(c.covers || []).length) return "insufficient";
@@ -2763,6 +2717,7 @@ function testCaseAssessment(c) {
 }
 
 function testCaseAssessmentLabel(c) {
+  if (!c.is_stale && c.assessment) return c.assessment.label;
   if (!c.is_stale && c.reassessment) return c.reassessment.outcome_label || ({aligned:"AI alignment found", potential_regression:"Potential implementation regression", test_case_needs_update:"Test case needs updating", outdated_test_case:"Outdated test case", needs_clarification:"Insufficient evidence", implementation_and_test_conflict:"Code and test conflict with requirements", conflicts_found:"Conflicts found · review comparisons", unvalidated_conflict_claims:"Earlier conflict claims · reassess"})[c.reassessment.outcome] || "Needs clarification";
   const labels = { stale: "Needs reassessment", unassessed: "Not assessed", insufficient: "Insufficient evidence",
     supported: "AI-supported", conflict: "Potential conflict", inconclusive: "Inconclusive" };
@@ -2782,7 +2737,7 @@ function matchesTestCase(c, f) {
   const search = [c.title, c.description, c.target, c.module, ...(c.covers || [])].filter(Boolean).join(" ").toLowerCase();
   return (!f.module || c.module === f.module) && (!f.category || c.category === f.category) &&
     (!f.source || (f.source === "generated" ? !imported : source === f.source)) &&
-    (!f.story || c.source_doc_id === f.story) && (!f.q || search.includes(f.q)) &&
+    (!f.story || c.source_doc_id === f.story || (c.related_requirements || []).some((link) => link.doc_id === f.story)) && (!f.q || search.includes(f.q)) &&
     (!f.assessment || (f.assessment === "disputed" ? c.review_state?.state === "disputed" : f.assessment === "insufficient" ? ["insufficient", "inconclusive", "unassessed"].includes(testCaseAssessment(c)) : testCaseAssessment(c) === f.assessment));
 }
 
@@ -2891,14 +2846,14 @@ function renderTestCaseDetails(c) {
           ${c.status ? `<span class="finding-cat cat-${c.status}" title="${c.assessment_kind === "inferred_from_requirement" ? "Inferred from shared code citations; not an independent test assessment" : "Source assessment; no test execution implied"}">${c.assessment_kind === "inferred_from_requirement" ? "Inferred: " : c.reassessment ? "Overall: " : "Code: "}${c.reassessment ? escapeHtml(testCaseAssessmentLabel(c)) : c.status}</span>` : ""}
         </div>
       </div>
-      <div class="test-case-target">
-        ${c.module ? `<span class="test-case-module" title="${escapeHtml(c.module)}">${escapeHtml(moduleDisplayName(c.module))}</span>` : ""}${c.target ? escapeHtml(c.target) : ""}
-        <span class="tc-origin-tag ${testCaseOriginClass(c)}">${testCaseOriginLabel(c)}</span>
-      </div>
-      <div class="tc-assessment-context"><strong>${testCaseAssessmentLabel(c)}</strong><p>${c.is_stale ? "This judgment belongs to an older analysis. Reassess before relying on it." : c.assessment_kind === "inferred_from_requirement" ? `Inferred from a requirement sharing code citations. Underlying judgment: ${c.judgment_source === "human_confirmation" ? "human confirmation" : "source assessment"}. This is not an independent assessment of this case.` : "Source assessment only. No test execution result is recorded here."}</p>${c.assessed_at ? `<p>Assessed: ${escapeHtml(c.assessed_at)}${c.assessed_model ? ` · ${escapeHtml(c.assessed_model)}` : ""}</p>` : ""}</div>
-      ${c.generation_context ? `<div class="small muted">Generation evidence for this draft</div>${renderSourceContext(c.generation_context)}` : ""}
+      ${c.target ? `<div class="test-case-target">${escapeHtml(c.target)}</div>` : ""}
+      <div class="tc-assessment-context"><strong>${testCaseAssessmentLabel(c)}</strong><p>${c.is_stale ? "This assessment no longer matches the current context. Run analysis after code changes, then reassess." : c.assessment_kind === "inferred_from_requirement" ? `Inferred from a requirement sharing code citations. Underlying judgment: ${c.judgment_source === "human_confirmation" ? "human confirmation" : "source assessment"}. This is not an independent assessment of this case.` : "Source assessment only. No test execution result is recorded here."}</p>${c.assessed_at ? `<p>Assessed: ${escapeHtml(c.assessed_at)}${c.assessed_model ? ` · ${escapeHtml(c.assessed_model)}` : ""}</p>` : ""}</div>
+      <details class="tc-evidence-details"><summary>Evidence scope and provenance</summary>
+      ${c.source_freshness ? `<p>${escapeHtml(c.source_freshness.message)}</p>` : ""}
+      ${!c.reassessment?.source_context && c.status ? `<p>Source scope was not recorded for this earlier assessment. Reassess to use expanded source context.</p>` : ""}
+      ${c.generation_context ? renderSourceContext(c.generation_context) : ""}
+      </details>
       ${testCaseReviewLabel(c) ? `<div class="tc-review-notice" role="status"><strong>Human review: ${escapeHtml(testCaseReviewLabel(c))}</strong><p>The AI finding above is preserved separately. Disagreement does not establish a replacement assessment.</p>${c.human_review?.reviewed_at ? `<p class="small">Saved ${escapeHtml(c.human_review.reviewed_at)}${c.human_review.note ? ` · ${escapeHtml(c.human_review.note)}` : ""}</p>` : ""}</div>` : ""}
-      ${!c.reassessment?.source_context && c.status ? `<p class="small muted">Source scope was not recorded for this earlier assessment. Reassess to use expanded source context.</p>` : ""}
       ${c.reassessment ? renderCaseReassessment(c.reassessment) : ""}
       <div class="findings-toolbar"><button type="button" class="btn btn-sm tc-reassess-btn" data-case-id="${escapeHtml(c.id)}" ${readOnly || !testGenAvailable ? "disabled" : ""}>Reassess this case</button><button type="button" class="btn btn-sm tc-assessment-history-btn" data-case-id="${escapeHtml(c.id)}">Assessment history</button></div>
       <div class="tc-assessment-history" data-history-case="${escapeHtml(c.id)}" hidden></div>
@@ -2929,16 +2884,15 @@ function renderTestCaseDetails(c) {
             </div>`).join("")}
         </div>` : ""}
       ${(c.cited_paths || []).filter(Boolean).length ? `<div class="tc-section"><span class="tc-section-label">Cited files</span><div class="tc-covers">${c.cited_paths.filter(Boolean).map((p) => `<code>${escapeHtml(p)}</code>`).join("")}</div></div>` : ""}
-      ${c.human_review ? `<p class="tc-saved-review">Human review: ${escapeHtml(c.human_review.decision.replaceAll("_", " "))} · ${escapeHtml(c.human_review.reviewed_at)}${c.human_review.note ? ` · ${escapeHtml(c.human_review.note)}` : ""}</p>` : ""}
       <div class="tc-section tc-review-actions">
         <span class="tc-section-label">Record review</span>
         <label class="small">Reviewer comment (required for Disagree or Request more information)
           <textarea class="tc-review-note" rows="3" maxlength="10000" style="display:block;width:100%;box-sizing:border-box" placeholder="Explain the disputed finding or the information needed" ${readOnly ? "disabled" : ""}></textarea>
         </label>
-        ${!c.status || c.assessment_kind === "inferred_from_requirement" ? '<p class="small muted">Run an independent assessment before recording agreement.</p>' : ''}
-        <div class="tc-review-btns">
-          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="${c.status === "contradicted" ? "confirmed_contradicted" : c.status === "supported" ? "confirmed_supported" : "agreed_uncertain"}" ${readOnly || !c.status || c.assessment_kind === "inferred_from_requirement" ? "disabled" : ""}>Agree with assessment</button>
-          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="rejected_ai_judgment" ${readOnly ? "disabled" : ""}>Disagree</button>
+        ${!c.assessment?.reviewable ? '<p class="small muted">Run an independent assessment before recording agreement.</p>' : ''}
+        <div class="tc-review-btns" data-assessment-version="${escapeHtml(c.assessment?.version || "")}">
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="${c.assessment?.agreement_decision || "agreed_uncertain"}" ${readOnly || c.is_stale || !c.assessment?.reviewable ? "disabled" : ""}>Agree with assessment</button>
+          <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="rejected_ai_judgment" ${readOnly || c.assessment?.state === "unassessed" ? "disabled" : ""}>Disagree</button>
           <button type="button" class="btn btn-sm tc-review-btn" data-case-id="${escapeHtml(c.id)}" data-decision="needs_more_info" ${readOnly ? "disabled" : ""}>Request more information</button>
         </div>
       </div>
@@ -2947,13 +2901,16 @@ function renderTestCaseDetails(c) {
 
 function renderSourceContext(context) {
   if (!context) return "";
+  if (context.scope === 'document_generation') {
+    return `<details class="source-context"><summary>Draft source: user-story document</summary><p class="small muted">Generated from the recorded document revision. No code assessment or test execution is implied.</p><p class="small">Document revision: <code>${escapeHtml((context.document_fingerprint || '').slice(0,12))}</code></p></details>`;
+  }
   return `<details class="source-context"><summary>Source context: ${context.files.length} files · ${context.context_complete ? "no detected retrieval gaps" : "incomplete"}</summary><p class="small muted">Bounded static inspection. Runtime behaviour and deployment settings are not verified.</p>${context.bounds ? `<p class="small muted">Retrieval limits: ${context.bounds.max_files} files, ${context.bounds.max_source_characters} source characters, ${context.bounds.max_dependency_depth} dependency levels.</p>` : ""}${context.files.map((f) => `<p class="small"><code>${escapeHtml(f.path)}:${f.start_line}–${f.end_line}</code> · ${escapeHtml(f.reason)} · SHA ${escapeHtml(f.sha256.slice(0,12))}</p>`).join("")}${(context.limitations || []).map((l) => `<p class="small">${escapeHtml(l.kind.replaceAll("_"," "))}: ${escapeHtml(l.detail)}</p>`).join("")}</details>`;
 }
 
 function renderCaseReassessment(report) {
   const names = {requirement_alignment:"Test ↔ requirements", code_evidence:"Test ↔ code", implementation_alignment:"Code ↔ requirements"};
   const guidance = {potential_regression:"Keep the expected behaviour and investigate the implementation before changing this case.", test_case_needs_update:"Review a test-case update against the cited requirement. The existing expectation has been preserved.", outdated_test_case:"The cited requirement changed since the previous aligned assessment. Review an update to this case.", implementation_and_test_conflict:"The test matches the current implementation, but both conflict with the cited requirement. Review the implementation and test expectation together.", conflicts_found:"Conflicts were identified in the comparisons below. Review each independently; missing evidence in another comparison does not remove these conflicts.", unvalidated_conflict_claims:"This earlier assessment claimed conflicts without recording opposing expectations. Reassess to validate those claims; this is an assessment-quality issue, not a request for more business information.", needs_clarification:"Evidence is insufficient for an overall conclusion. See the specific unresolved comparisons below.", aligned:"Evidence supports alignment with the supplied requirements and code. Test execution is still required."};
-  return `${renderSourceContext(report.source_context)}${(report.missing_context || []).length ? `<p class="small">Additional evidence needed: ${report.missing_context.map(escapeHtml).join("; ")}</p>` : ""}<p class="tc-reassessment-guidance">${escapeHtml(report.recommended_action || guidance[report.outcome] || guidance.needs_clarification)}</p>${(report.clarification_reasons || []).length ? `<details><summary>Unresolved evidence or comparison scope</summary>${report.clarification_reasons.map((reason) => `<p>${escapeHtml(reason)}</p>`).join("")}</details>` : ""}<div class="tc-three-way">${Object.entries(names).map(([key,label]) => {
+  return `${renderSourceContext(report.source_context)}${(report.missing_context || []).length ? `<p class="small">Additional evidence needed: ${report.missing_context.map(escapeHtml).join("; ")}</p>` : ""}<p class="small muted">AI interpretation, not independently verified. Quotation checks establish provenance, not semantic correctness. Review opposing expectations before accepting a conflict.</p><p class="tc-reassessment-guidance">${escapeHtml(report.recommended_action || guidance[report.outcome] || guidance.needs_clarification)}</p>${(report.clarification_reasons || []).length ? `<details><summary>Unresolved evidence or comparison scope</summary>${report.clarification_reasons.map((reason) => `<p>${escapeHtml(reason)}</p>`).join("")}</details>` : ""}<div class="tc-three-way">${Object.entries(names).map(([key,label]) => {
     const finding = report[key] || {status:"unknown",citations:[]};
     const unexplained = finding.status === "contradicted" && !finding.conflict;
     const conflict = finding.conflict;
@@ -3006,10 +2963,15 @@ async function recordTestCaseReview(caseId, decision, btn) {
   const group = btn.closest(".tc-review-btns");
   group.querySelectorAll("button").forEach((b) => (b.disabled = true));
   try {
-    const review = await api(`/repos/${repoId}/test-cases/${caseId}/review`, { method: "POST", body: JSON.stringify({ decision, note }) });
+    const review = await api(`/repos/${repoId}/test-cases/${caseId}/review`, { method: "POST", body: JSON.stringify({ decision, note, assessment_version:group.dataset.assessmentVersion }) });
     if (repoId !== activeRepoId) return;
     const updated = activeTestCases.find((c) => c.id === caseId);
-    if (updated) { updated.human_review = review; updated.review_state = review.review_state; }
+    if (updated) {
+      if (!updated.human_review || (updated.human_review.reviewed_at || '') <= (review.reviewed_at || '')) {
+        updated.human_review=review;
+        updated.review_state=review.assessment_version===updated.assessment?.version ? review.review_state : {state:'previous_assessment',label:'Review belongs to an earlier assessment'};
+      }
+    }
     renderTestCaseList();
     toast(decision === "rejected_ai_judgment" ? "Disagreement saved — marked as disputed. AI assessment preserved." : "Human review saved", "ok");
   } catch (e) {
@@ -3017,7 +2979,7 @@ async function recordTestCaseReview(caseId, decision, btn) {
   } finally {
     caseReviewsInFlight.delete(caseId);
     const c = activeTestCases.find((item) => item.id === caseId);
-    group.querySelectorAll("button").forEach((b) => (b.disabled = readOnly || (["confirmed_supported", "confirmed_contradicted", "agreed_uncertain"].includes(b.dataset.decision) && (!c || !c.status || c.assessment_kind === "inferred_from_requirement"))));
+    group.querySelectorAll("button").forEach((b) => (b.disabled = readOnly || (b.dataset.decision === "rejected_ai_judgment" && c?.assessment?.state === "unassessed") || (["confirmed_supported", "confirmed_contradicted", "agreed_uncertain"].includes(b.dataset.decision) && (!c || c.is_stale || !c.assessment?.reviewable))));
   }
 }
 
@@ -3114,8 +3076,8 @@ function renderJourneyMemberRow(r) {
       ${askHuman ? `
         <div class="journey-question">
           <p><b>Question:</b> ${escapeHtml(r.question)}</p>
-          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-status="supported" ${readOnly ? "disabled" : ""}>Yes</button>
-          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-status="contradicted" ${readOnly ? "disabled" : ""}>No</button>
+          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-assessment-version="${escapeHtml(r.assessment_version || "")}" data-status="supported" ${readOnly || r.is_stale ? "disabled" : ""}>Yes</button>
+          <button type="button" class="btn btn-sm confirm-req-btn" data-req-id="${escapeHtml(r.id)}" data-assessment-version="${escapeHtml(r.assessment_version || "")}" data-status="contradicted" ${readOnly || r.is_stale ? "disabled" : ""}>No</button>
         </div>` : ""}
     </div>`;
 }
@@ -3138,7 +3100,7 @@ async function deriveJourneyRequirements(journeyId, btn) {
 async function confirmJourneyRequirement(reqId, status, btn) {
   btn.closest(".journey-question").querySelectorAll("button").forEach((b) => (b.disabled = true));
   try {
-    await api(`/repos/${activeRepoId}/story-requirements/${reqId}/confirm`, { method: "POST", body: JSON.stringify({ status }) });
+    await api(`/repos/${activeRepoId}/story-requirements/${reqId}/confirm`, { method: "POST", body: JSON.stringify({ status,assessment_version:btn.dataset.assessmentVersion }) });
     await loadJourneysPanel();
     toast("Answer saved", "ok");
   } catch (e) {
@@ -3172,8 +3134,16 @@ function renderDocsList() {
   el.innerHTML = activeDocuments.map(renderDocCard).join("");
 }
 
+function readableDocument(content) {
+  const parsed = new DOMParser().parseFromString(content || "", "text/html");
+  parsed.querySelectorAll("script,style,iframe,object").forEach(e => e.remove());
+  parsed.querySelectorAll("br,p,div,li,h1,h2,h3,tr").forEach(e => e.append("\n"));
+  return parsed.body.textContent.replace(/\n{3,}/g,"\n\n").trim();
+}
+
 function renderDocCard(doc) {
-  const preview = doc.content.length > 600 ? doc.content.slice(0, 600) + "…" : doc.content;
+  const text = readableDocument(doc.content);
+  const preview = text.length > 360 ? text.slice(0, 360) + "…" : text;
   return `
     <div class="doc-card" data-doc-id="${doc.id}">
       <div class="doc-card-head">
@@ -3183,7 +3153,8 @@ function renderDocCard(doc) {
           <button type="button" class="btn btn-danger" data-action="delete-doc" ${readOnly ? "disabled" : ""}>Delete</button>
         </div>
       </div>
-      <div class="doc-card-content">${escapeHtml(preview)}</div>
+      <div class="doc-preview">${escapeHtml(preview)}</div>
+      <details class="doc-reader"><summary>Read full document</summary><div class="doc-reader-content">${escapeHtml(text)}</div></details>
     </div>`;
 }
 
@@ -3499,5 +3470,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     const moduleGenEl = ev.target.closest("[data-jump-module-gen]");
     if (moduleGenEl) jumpToModuleGeneration(moduleGenEl.dataset.jumpModuleGen);
     if (ev.target.closest("[data-export-pdf]")) exportDashboardPdf();
+  });
+});
+
+
+// Accessible navigation and focus behavior shared by the review workflows.
+document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("click", event => {
+    const button = event.target.closest("[data-open-section]");
+    if (button) $all(".tab").find(t => t.dataset.tab === button.dataset.openSection)?.click();
+  });
+  const select = $("#sectionSelect");
+  if (select) select.addEventListener("change", () => {
+    const tab = $all(".tab").find(t => t.dataset.tab === select.value);
+    tab?.click();
+  });
+  document.addEventListener("keydown", event => {
+    const target = event.target.closest?.('[role="button"][tabindex="0"]');
+    if (target && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); target.click(); }
+    const modal = $("#repoModalBackdrop");
+    if (!modal || modal.hidden) return;
+    if (event.key === "Escape") { event.preventDefault(); closeRepoModal(); return; }
+    if (event.key === "Tab") {
+      const items = [...modal.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]')].filter(e => e.getClientRects().length);
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    }
   });
 });

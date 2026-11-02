@@ -194,7 +194,10 @@ class DecisionTests(unittest.TestCase):
 
 
 class ReassessmentApiTests(unittest.TestCase):
-    setUp = api_fixture.VerifyCasesForDocumentApiTests.setUp
+    def setUp(self):
+        api_fixture.VerifyCasesForDocumentApiTests.setUp(self)
+        from tests.review_fixtures import bind_review_versions
+        bind_review_versions(self.client)
     tearDown = api_fixture.VerifyCasesForDocumentApiTests.tearDown
 
     def create_case(self, **source):

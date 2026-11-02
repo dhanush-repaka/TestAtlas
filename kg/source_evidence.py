@@ -66,6 +66,44 @@ def enforce_context(status, raw, sources):
     return status
 
 
+def _js_local_members(text, suffix):
+    """Resolve literal function members; an object name alone proves nothing.
+
+    Any reassignment invalidates the receiver. Aliases and runtime-supplied
+    members deliberately stay unresolved rather than guessing their behavior.
+    """
+    from .ts_parser import _get_parsers, _walk, _t
+    tree=_get_parsers()['ts' if suffix in ('.ts','.mts','.cts') else 'tsx'].parse(text.encode())
+    members=set()
+    invalid=set()
+    seen=set()
+    for node in _walk(tree.root_node):
+        if node.type=='variable_declarator':
+            name=node.child_by_field_name('name')
+            value=node.child_by_field_name('value')
+            if name is None or name.type!='identifier':
+                continue
+            receiver=_t(name)
+            if receiver in seen:
+                invalid.add(receiver)
+            seen.add(receiver)
+            if value is not None and value.type=='object':
+                if any(child.type in ('spread_element','computed_property_name') for child in _walk(value)):
+                    invalid.add(receiver)
+                for child in value.named_children:
+                    key=child.child_by_field_name('name') if child.type=='method_definition' else child.child_by_field_name('key')
+                    val=child.child_by_field_name('value')
+                    if key is not None and key.type in ('property_identifier','identifier') and (child.type=='method_definition' or val is not None and val.type in ('arrow_function','function_expression')):
+                        members.add((receiver,_t(key)))
+        if node.type in ('assignment_expression','augmented_assignment_expression','update_expression'):
+            target=node.child_by_field_name('left') or node.child_by_field_name('argument')
+            while target is not None and target.type in ('member_expression','subscript_expression'):
+                target=target.child_by_field_name('object')
+            if target is not None and target.type=='identifier':
+                invalid.add(_t(target))
+    return {(receiver,method) for receiver,method in members if receiver not in invalid},seen
+
+
 def gather_source_evidence(g, root, *, modules=None, node_ids=None, query='', max_files=MAX_FILES,
                            max_chars=MAX_CHARS, max_file_chars=MAX_FILE_CHARS, max_depth=MAX_DEPTH):
     """Expand seed files through callers/callees and imports in both directions.
@@ -191,6 +229,10 @@ def gather_source_evidence(g, root, *, modules=None, node_ids=None, query='', ma
                                 if not matches: evidence.issue('unresolved_configuration',f'{path}:{node.lineno}: {literal}')
                         if name == 'open' and not literals:
                             evidence.issue('dynamic_io',f'{path}:{node.lineno}: computed file path')
+                    if isinstance(node.func,ast.Attribute) and node.func.attr in ('read_text','read_bytes'):
+                        literal_path=any(isinstance(part,ast.Constant) and isinstance(part.value,str) and Path(part.value).suffix in SOURCE_SUFFIXES for part in ast.walk(node.func.value))
+                        if not literal_path:
+                            evidence.issue('dynamic_io',f'{path}:{node.lineno}: contents of computed file path unavailable')
                     if name in ('getattr','setattr') or sum(isinstance(part,ast.Attribute) for part in ast.walk(node.func)) > 1 and not name.endswith(('.environ.get','.path.join')):
                         evidence.issue('dynamic_dispatch',f'{path}:{node.lineno}: {name}')
                     if name.endswith(('.getenv','.environ.get','.environ.__getitem__')) or name in ('eval','exec','__import__'):
@@ -199,11 +241,24 @@ def gather_source_evidence(g, root, *, modules=None, node_ids=None, query='', ma
                     evidence.issue('runtime_configuration',f'{path}:{node.lineno}: environment value is unavailable')
         elif candidate.suffix.lower() in {'.ts','.tsx','.js','.jsx','.mts','.cts','.mjs','.cjs'}:
             # Graph resolution handles aliases/barrels. Flag imports it could not connect.
-            for match in re.finditer(r'(?:from\s*|import\s*\(|require\s*\()\s*[\'\"]([^\'\"]+)[\'\"]',text):
+            for match in re.finditer(r'(?:from\s*|import\s*\(?|require\s*\()\s*[\'\"]([^\'\"]+)[\'\"]',text):
                 target = match.group(1)
                 if not any(target.strip('./').replace('/','.') in str(g.nodes[files[p]].get('label','')) for p in neighbours if p in files):
                     evidence.issue('unresolved_import',f'{path}: {target}')
-            if re.search(r'process\.env|import\.meta\.env|\bfetch\s*\(',text):
+            parameters=set()
+            for declaration in re.finditer(r'(?:function\s*[\w$]*\s*|[=,]\s*)\(([^)]*)\)',text):
+                for parameter in declaration.group(1).split(','):
+                    name=parameter.strip().split(':')[0].split('=')[0].strip()
+                    if re.fullmatch(r'[\w$]+',name): parameters.add(name)
+            local_members,declared_receivers=_js_local_members(text,candidate.suffix.lower())
+            local_methods=set(re.findall(r'\b([\w$]+)\s*\([^)]*\)\s*\{',text))
+            builtin_receivers={'Math','JSON','Object','Array','String','Number','Boolean','Date','RegExp','Promise','console'}
+            for call in re.finditer(r'\b([\w$]+)\.([\w$]+)\s*\(',text):
+                base,method=call.groups()
+                locally_resolved=(base in builtin_receivers and base not in declared_receivers) or (base,method) in local_members or (base=='this' and method in local_methods)
+                if base in parameters or not locally_resolved:
+                    evidence.issue('dynamic_dispatch',f'{path}: injected receiver {call.group(1)}.{call.group(2)} is unavailable')
+            if re.search(r'process\.env|import\.meta\.env|\bfetch\s*\(|\b(?:globalThis|window|global)\s*[.\[]',text):
                 evidence.issue('runtime_configuration',f'{path}: runtime settings or remote response unavailable')
         for neighbour in sorted(neighbours):
             if neighbour in visited:

@@ -2,6 +2,7 @@
 from collections import Counter
 import hashlib
 import json
+import re
 
 from kg.doc_gaps import known_code_names, canonical_cover
 from kg.source_evidence import SourceEvidence, enforce_context
@@ -44,6 +45,36 @@ def case_texts(case):
     return [text for text in texts if isinstance(text,str)]
 
 
+def same_direction_release_claim(left, right):
+    """Reject a narrow known false positive; never infer general semantic equivalence."""
+    def signature(text):
+        text=text.lower()
+        # Modifiers can change meaning. Leave them to explicit review instead of
+        # treating two matching verbs as a proof of equivalent behaviour.
+        if re.search(r"\b(not|no|never|without|only|unless|except|before|afterward|if|failed|invalid|negative|reject|rejected)\b",text):
+            return None
+        if not re.search(r"\breleas(?:e|ed|es|ing)\b",text) or not re.search(r"\b(stock|quantity|availability)\b",text):
+            return None
+        directions=set()
+        if re.search(r"\b(increas(?:e|ed|es|ing)|ris(?:e|es|ing)|rose)\b",text): directions.add('increase')
+        if re.search(r"\b(decreas(?:e|ed|es|ing)|fall(?:s|ing)?|fell)\b",text): directions.add('decrease')
+        if len(directions)!=1:
+            return None
+        words=set(re.findall(r"[a-z]+",text))
+        generic={'a','an','the','is','are','be','by','of','for','that','this','it','its','s','to','in','on','and',
+                 'after','when','given','then','accordingly','stock','quantity','availability','available','reserved',
+                 'release','released','releases','releasing','increase','increases','increased','increasing',
+                 'rise','rises','rising','rose','decrease','decreases','decreased','decreasing','fall','falls','falling','fell'}
+        # A named SKU, warehouse or condition must match too. A shared direction
+        # alone is insufficient to dismiss a conflict involving different scopes.
+        verb=re.search(r'\b(increas\w*|decreas\w*|ris\w*|rose|fall\w*|fell)\b',text)
+        subjects=re.findall(r'\b(?:(available|reserved|total)\s+)?(?:stock|quantity|availability)\b',text[:verb.start()] if verb else '')
+        role=subjects[-1] if subjects and subjects[-1] else 'available'
+        return (role,tuple(directions),tuple(re.findall(r'-?\d+(?:\.\d+)?',text)),tuple(sorted(words-generic)))
+    a,b=signature(left),signature(right)
+    return a is not None and a==b
+
+
 def validate_conflict(entry, dimension, case, citations):
     """Require an inspectable contrast; citation existence alone is not a conflict."""
     conflict = entry.get('conflict')
@@ -57,7 +88,7 @@ def validate_conflict(entry, dimension, case, citations):
     if not any(left in value for value in left_pool) or not any(right in value for value in right_pool):
         return None
     normalise = lambda text: ''.join(ch.lower() for ch in text if ch.isalnum())
-    if normalise(left)==normalise(right):
+    if normalise(left)==normalise(right) or (dimension == "requirement_alignment" and same_direction_release_claim(left,right)):
         return None
     return {'left_quote':left,'right_quote':right,'difference':difference.strip()}
 
@@ -112,7 +143,7 @@ def validate_report(raw, case, context, sources):
             status = 'unknown'
             validation_note = 'The proposed contradiction did not identify valid opposing expectations. Reassessment is required.'
         rationale = entry.get('rationale')
-        report[dimension] = {'status': status, 'rationale': ('Insufficient validated evidence. ' if missing_evidence else '') + (rationale.strip() if isinstance(rationale, str) else ''), 'citations': citations[:12], 'model_status':model_status, 'conflict':conflict, 'validation_note':validation_note}
+        report[dimension] = {'status': status, 'rationale': ('Insufficient validated evidence. ' if missing_evidence else '') + (rationale.strip() if isinstance(rationale, str) else ''), 'citations': citations[:12], 'model_status':model_status, 'conflict':conflict, 'validation_note':validation_note, 'claim_validation':'quotation_provenance_only', 'semantic_verification':'human_review_required'}
     if isinstance(sources, SourceEvidence):
         report['source_context'] = sources.manifest()
         report['context_sufficient'] = raw.get('context_sufficient') is True
@@ -127,7 +158,7 @@ def validate_report(raw, case, context, sources):
     prior_versions = previous.get('story_versions') or {}
     changed_story = any(doc_id in prior_versions and prior_versions[doc_id] != version
                         for doc_id, version in report['story_versions'].items())
-    report['validation_version'] = 4
+    report['validation_version'] = 5
     report.update(classify_report(report, changed_story=changed_story,
         previously_aligned=previous.get('requirement_alignment', {}).get('status') == 'supported'))
     return report
@@ -212,7 +243,15 @@ def classify_report(report, *, changed_story=False, previously_aligned=False):
 
 def display_report(report):
     """Reclassify saved evidence without rejudging it or rewriting assessment history."""
-    result = {**report, **classify_report(report)}
+    findings={key:{**(report.get(key) or {})} for key in DIMENSIONS}
+    for key,finding in findings.items():
+        finding['claim_validation']='quotation_provenance_only'
+        finding['semantic_verification']='human_review_required'
+        contrast=finding.get('conflict') or {}
+        if key=='requirement_alignment' and finding.get('status')=='contradicted' and same_direction_release_claim(contrast.get('left_quote',''),contrast.get('right_quote','')):
+            finding.update(status='unknown',model_status='contradicted',validation_note='The quoted release claims describe the same direction of stock change; they do not establish opposition. Reassess this finding.')
+    prepared={**report,**findings}
+    result = {**prepared, **classify_report(prepared)}
     if report.get('outcome') == 'outdated_test_case' and result['outcome'] == 'test_case_needs_update':
         result['outcome'] = 'outdated_test_case'
         result['outcome_label'] = 'Outdated test case'

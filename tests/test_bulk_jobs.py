@@ -61,6 +61,7 @@ class BulkJobCrudTests(unittest.TestCase):
     def test_finish_sets_status_and_finished_at(self):
         job = db.create_bulk_job(self.repo["id"], "test_generation", 1)
         self.assertIsNone(job["finished_at"])
+        db.update_bulk_job_progress(job["id"],"done",{"ok":True})
         db.finish_bulk_job(job["id"], "success")
         fetched = db.get_bulk_job(job["id"])
         self.assertEqual(fetched["status"], "success")
@@ -235,7 +236,7 @@ class BulkApiTests(unittest.TestCase):
             r = self.client.post(f"/api/repos/{self.repo_id}/test-cases/generate-all-documents")
             finished = self._wait_for_job(f"/api/repos/{self.repo_id}/test-cases/jobs/{r.json()['id']}")
 
-        self.assertEqual(finished["status"], "success")  # the JOB completed, even though one document failed
+        self.assertEqual(finished["status"], "failed")  # Partial completion is explicitly unsuccessful.
         by_id = {res["document_id"]: res for res in finished["results"]}
         self.assertFalse(by_id[empty_doc_id]["ok"])
         self.assertIn("nothing to generate from", by_id[empty_doc_id]["detail"])
@@ -365,7 +366,7 @@ class VerifyAllDocumentsBulkApiTests(unittest.TestCase):
             r = self.client.post(f"/api/repos/{self.repo_id}/test-cases/verify-all-documents")
             finished = self._wait_for_job(f"/api/repos/{self.repo_id}/test-cases/verify-jobs/{r.json()['id']}")
 
-        self.assertEqual(finished["status"], "success")
+        self.assertEqual(finished["status"], "failed")
         by_id = {res["document_id"]: res for res in finished["results"]}
         self.assertFalse(by_id[empty_doc_id]["ok"])
         self.assertIn("no generated test cases yet", by_id[empty_doc_id]["detail"])
