@@ -160,6 +160,37 @@ With Docker, pass the same file: `docker run --env-file .env -p 8000:8000 -v tes
   file/class/function counts, PageRank score — same data as Insights' module
   scores, surfaced here too so "Modules: 4" isn't just a bare number you have
   to go find the detail for elsewhere), and full run history.
+- **Dashboard** — a project-status rollup for a non-technical stakeholder:
+  user story → code, test case → user story, test case → code, and the gaps
+  in each direction, built fresh at read time from the same data the Story
+  Coverage/Journeys/Test Cases tabs already show one document/module at a
+  time (`server/traceability_dashboard.py` — pure computation, no LLM call,
+  free and instant). It separates three signals that earlier versions of this
+  dashboard conflated into one falsely confident score:
+  - **AI judgment vs. human review.** Everything here is labeled as an AI
+    assessment ("AI-supported", "Potential conflict" — never "verified" or
+    "passing"), with its own frozen evidence level immune to whatever a human
+    later does to the same row. A separate **human review** action (Agree /
+    Disagree / Needs more info, bound to the exact assessment version shown —
+    stale or already-changed assessments can't be agreed with) records a
+    real, timestamped, queryable fact distinct from the AI's own judgment,
+    never silently overwriting it.
+  - **Staleness.** An item whose own analysis run predates the repo's latest
+    run is flagged stale and excluded from headline percentages rather than
+    silently counted as either good or bad — a native evidence chart shows
+    exactly how many need reassessment.
+  - **Review accuracy** (`GET /repos/{id}/review-accuracy`) — once your team
+    has recorded real reviews, a panel reports reviewer agreement on
+    *definitive* AI judgments specifically (separating out "agreed but
+    uncertain" and "needs more info" responses rather than blending them into
+    one rate), with an honest empty state until any reviews exist. This is
+    infrastructure for measuring accuracy against your own team's review, not
+    a pre-computed accuracy claim.
+  Every case/requirement also exposes source-freshness: recorded evidence-file
+  hashes are compared against the current checkout at read time
+  (`server/source_freshness.py`), so a result is marked stale if the code it
+  cited has since changed — bounded to files actually cited, never a claim
+  about the rest of the repo.
 - **Findings** — functions no static call reaches, files with no import
   edges, empty classes, unparsed files — filterable by category.
 - **Graph** — an interactive, physics-based visualization for any past run.
@@ -204,6 +235,45 @@ With Docker, pass the same file: `docker run --env-file .env -p 8000:8000 -v tes
     planted false requirement in the test document. Treat its findings as a
     fast first pass to review, not a substitute for the manual flow's
     human-in-the-loop check.
+- **Story Coverage** — decomposes ONE user-story document into its atomic
+  acceptance criteria (one LLM call), then judges each criterion against real
+  retrieved source via a per-run module index (`kg/embeddings.py`) rather than
+  dumping every module's name into one prompt (`server/llm_story_coverage.py`).
+  Each criterion is quote-validated against the actual code; an uncited claim
+  is demoted to "unknown" rather than trusted as supported or contradicted.
+  A **Confirm** action lets a human resolve a `needs_human_input` criterion —
+  recorded as a real, timestamped human review, never silently merged into
+  the AI's own frozen judgment (see Dashboard above). Works per-document or
+  "Run all" across every document in the repo.
+- **Journeys** — for behavior that spans a user flow no single story document
+  covers (e.g. "cancellation after dispatch"), **Detect** finds candidate
+  journeys directly from the code and call graph, then **Derive requirements**
+  judges each step the same citation-validated way Story Coverage does
+  (`server/llm_journey_requirements.py`) — a pattern the model finds but can't
+  resolve intent on becomes `needs_human_input` with a concrete yes/no
+  question instead of a guessed verdict. **Generate test case** then writes
+  ONE multi-step end-to-end case spanning the whole journey's already-judged
+  members (login → cart → checkout → payment), tagging each step with the
+  requirement and status backing it — something neither per-module nor
+  per-requirement generation can structurally produce on their own.
+- **Test case verification & reassessment** — judges already-generated or
+  imported cases against current stories and source (`server/llm_test_verification.py`),
+  per document, across every document, or just the imported ones; a case
+  omitted from a later pass keeps its previous assessment rather than being
+  silently cleared. **Reassess** re-runs this against the current checkout
+  for cases flagged stale. All of it is read-only with respect to actual test
+  execution — this assesses source *evidence*, it never runs a test.
+- **Import / export test cases** — bring in an existing suite (a real Azure
+  DevOps Test Plans CSV/XLSX export, or TestAtlas's own export round-tripped
+  back in) via `server/test_case_import.py`, tagged as `imported` rather than
+  `generated` so provenance stays visible everywhere cases are shown.
+  **Import work items** (`server/work_item_import.py`) splits an ADO-style
+  work-item export into one document per row, so Story Coverage sees one
+  user story at a time instead of having to separate dozens of unrelated
+  stories out of a single blob. Export carries the full picture back out —
+  JSON keeps the canonical AI assessment, source freshness and human-review
+  state; CSV/Markdown describe the same in prose, alongside the original ADO
+  columns.
 - **Test Cases** — **functional** test cases in Azure DevOps shape, generated
   **per module** with one live OpenAI call each (also gated on
   `OPENAI_API_KEY`, `server/llm_test_generation.py`). Each case has a title,
@@ -381,11 +451,47 @@ server/
                           OpenAI API call (OPENAI_API_KEY, same key) -- the
                           cheapest of the three (one call per repo, not one
                           per module)
-  db.py                 SQLite: repos + runs
+  db.py                 SQLite: repos + runs + documents/story requirements +
+                          test cases + human_reviews + dashboard_snapshots
   crypto.py             Fernet encryption for stored PATs (data/secret.key, gitignored)
-  auth.py                optional single-password gate (TESTATLAS_PASSWORD)
+  auth.py                optional single-password gate (TESTATLAS_PASSWORD);
+                          TESTATLAS_PUBLIC_READ_ONLY permits anonymous reads
   runner.py              orchestrates one analysis run end-to-end
   diff.py                compares two runs of the same repo
+  doc_extract.py         extracts plain text from uploaded .docx/.pptx/.xlsx/.pdf/.md/.txt
+  llm_story_coverage.py  Story Coverage: atomic criteria extraction + per-criterion
+                          judgment against retrieved source (kg/embeddings.py)
+  llm_journey_requirements.py  derives candidate requirements from a journey's
+                          code when no user-story document exists for it
+  llm_journey_test_generation.py  one multi-step end-to-end test case spanning
+                          a whole journey's already-judged requirements
+  llm_requirement_test_generation.py  writes test cases directly from a story's
+                          own text, without showing the model any code
+  llm_test_verification.py  three-way assessment (supported/contradicted/unknown)
+                          of existing cases against current stories + source
+  test_case_reassessment.py  evidence validation + conservative triage for
+                          reassessment; never edits test content
+  test_case_view.py      shared view metadata (staleness, canonical assessment,
+                          source-freshness) consumed by case display, review,
+                          filters, exports and the dashboard alike
+  test_case_setup.py     shared "reproducible starting state" contract for
+                          generated test-case setup steps
+  test_case_import.py    parses an extracted CSV/XLSX test-suite export into
+                          test cases, tagged origin=imported
+  work_item_import.py    splits an ADO-style work-item export into one
+                          document per row for Story Coverage
+  assessment_projection.py  canonical, non-mutating case-assessment projection
+                          (state/label/evidence level/agreement decision/version)
+                          shared by every consumer so display, review and
+                          export can never disagree about what a case shows
+  source_freshness.py    compares recorded evidence-file hashes against the
+                          current checkout at read/review boundaries
+  evidence_rules.py      pure functions for how confident the dashboard is
+                          allowed to sound about an AI judgment -- evidence
+                          level, staleness, human-review decisions
+  traceability_dashboard.py  rolls up Story Coverage + test-case data into the
+                          project-status Dashboard tab (see server/app.py's
+                          GET /repos/{repo_id}/dashboard)
 ado/client.py            ADO REST (test-connection) + git clone/pull
 github/client.py         GitHub REST (test-connection) + git clone/pull (PAT optional)
 kg/
@@ -404,6 +510,17 @@ kg/
                           (and optionally a domain override), merged back onto the graph
   doc_gaps.py            LLM gap-analysis layer: bundles a doc + every
                           module's real contents for an agent to compare
+  journeys.py            detects end-to-end journeys from real HTTP entry
+                          points traced through the call graph, clustered by
+                          route prefix -- mechanical/deterministic; an LLM
+                          only refines the human-readable name afterward
+  embeddings.py          lightweight per-run retrieval index over a repo's
+                          modules, so Story Coverage's per-criterion judgment
+                          can narrow context to a short relevant shortlist
+  source_lookup.py       resolves a cited symbol name to its file + bounded
+                          full-file context, for exact-quote evidence validation
+  source_evidence.py     bounded, inspectable source context (whole files,
+                          callers/callees) -- static evidence, never runtime proof
   graph_io.py            shared load/save for a run's persisted graph.json
   visualize.py           pyvis interactive HTML (physics layout, domain-colored) + exports
   neo4j_sync.py          optional: syncs a run's graph into Neo4j, batched via UNWIND
