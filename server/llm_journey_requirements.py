@@ -18,6 +18,8 @@ text to check names against here, so there's nothing to judge without it.
 """
 from __future__ import annotations
 
+from kg.source_evidence import render_sources, SourceEvidence, enforce_context, validate_code_citations
+
 import json
 import os
 
@@ -34,7 +36,7 @@ def _text(value) -> str:
 
 
 def _build_prompt(journey_name: str, sources: dict[str, str]) -> str:
-    source_block = "\n\n".join(f"# {name}\n{src}" for name, src in sources.items())
+    source_block = render_sources(sources)
     return f"""You read the real source code of ONE user journey (a traced end-to-end flow through a codebase, not a single function) and find candidate business requirements implied by it -- validation checks, permission checks, and state transitions -- that a written user story usually covers but none exists here yet.
 
 JOURNEY: "{journey_name}"
@@ -55,7 +57,7 @@ For each validation check, permission check, or state transition you find:
 - Give a one-sentence "rationale" for every judgment (for needs_human_input, briefly explain what you found before asking).
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{{"requirements": [{{"text": "...", "type": "positive"|"negative", "status": "supported"|"contradicted"|"unknown"|"needs_human_input", "covers": ["Name"], "rationale": "...", "question": "..." }}]}}
+{{"requirements": [{{"text": "...", "type": "positive"|"negative", "status": "supported"|"contradicted"|"unknown"|"needs_human_input", "covers": ["Name"], "rationale": "...", "question": "...", "context_sufficient": true|false, "missing_context": [], "code_citations": [{{"name":"real source symbol", "quote":"exact source substring"}}] }}]}}
 Omit "question" entirely unless status is "needs_human_input". If nothing checkable is found, respond with {{"requirements": []}}."""
 
 
@@ -132,5 +134,10 @@ def generate_journey_requirements(journey_name: str, sources: dict[str, str], mo
     for r in requirements:
         checked, _why = _check_derived_requirement(r, canon)
         if checked is not None:
+            if isinstance(sources, SourceEvidence):
+                citations = validate_code_citations(r, sources)
+                checked['covers'] = [name for name in checked['covers'] if name in {c['name'] for c in citations}]
+                checked['status'] = enforce_context(checked['status'] if checked['covers'] else 'unknown', r, sources)
+                checked['source_context'] = {**sources.manifest(), 'citations':citations}
             out.append(checked)
     return out

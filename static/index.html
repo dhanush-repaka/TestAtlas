@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="static/styles.css?v=64" />
+<link rel="stylesheet" href="static/styles.css?v=67" />
 <script>
   // Applied before first paint to avoid a flash of the wrong theme.
   (function () {
@@ -346,7 +346,7 @@
           <label class="field-inline">Document<select id="storyCoverageDocSelect"></select></label>
           <button type="button" class="btn btn-primary is-hidden" id="runStoryCoverageBtn">Run automatic story coverage</button>
         </div>
-        <p class="muted small">Upload the user story in the Docs tab, then pick it here. Every judgment cites a real function/class name from the code, or says "unknown" rather than guess. Test case generation and verification have moved to the Test Cases tab — they no longer need a Story Coverage run first.</p>
+        <p class="muted small">Upload the user story in the Docs tab, then pick it here. AI source assessments disclose the evidence examined and retrieval limits. Unknown means insufficient evidence; case linkage does not establish test execution. Test case generation and verification have moved to the Test Cases tab — they no longer need a Story Coverage run first.</p>
         <p class="muted small is-hidden" id="storyCoverageHint">Calls OpenAI directly — a metered cost per click, same as Gap Analysis's automatic pass.</p>
 
         <div class="findings-toolbar" id="storyCoverageBulkToolbar">
@@ -389,13 +389,27 @@
       </section>
 
       <section class="tab-panel" id="panel-tests" hidden>
-        <div class="card-grid" id="testCaseSummaryCards"></div>
-
+        <div class="tc-page-heading">
+          <div><h2>Test cases</h2><p class="muted">Review your suite and the evidence behind each assessment.</p></div>
+          <div class="tc-page-actions">
+            <details class="tc-export-menu" id="testCaseExport"><summary class="btn">Export</summary><div class="tc-export-options" role="group" aria-label="Export matching test cases"><a data-format="csv" href="#">CSV (Azure DevOps)</a><a data-format="md" href="#">Markdown</a><a data-format="json" href="#">JSON</a></div></details>
+            <button type="button" class="btn btn-primary" id="testCaseToolsBtn" aria-expanded="false" aria-controls="testCaseTools">Add cases &amp; assess</button>
+          </div>
+        </div>
+        <div class="tc-suite-summary" id="testCaseSummaryCards" aria-live="polite"></div>
+        <div class="tc-reassessment-toolbar">
+          <div><strong>Reassess existing cases</strong><p class="muted small">After code changes, run analysis first. Compare expectations with current requirements and code. Preserves case content and review history. Uses metered AI calls; does not execute tests.</p></div>
+          <div class="findings-toolbar"><button type="button" class="btn" id="reassessStaleCasesBtn">Reassess stale cases</button><button type="button" class="btn" id="reassessMatchingCasesBtn">Reassess matching cases</button></div>
+          <p class="muted small" id="reassessmentUnavailableHint" hidden>AI assessment is unavailable. Configure an AI provider to reassess cases.</p>
+        </div>
+        <section class="tc-tools" id="testCaseTools" aria-label="Add and assess cases" hidden>
+          <div class="tc-tools-heading"><h3>Add and assess cases</h3><button class="btn btn-sm" id="closeTestCaseToolsBtn" type="button">Close</button></div>
+          <div class="result-block"><h3>Import an existing suite</h3><p class="muted small">Bring in CSV or Excel cases. Their Imported origin is preserved when you assess them.</p><div class="findings-toolbar"><button type="button" class="btn" id="importTestCasesBtn">Import CSV / Excel</button><input type="file" id="importTestCasesInput" accept=".csv,.xlsx" hidden /><button type="button" class="btn" id="verifyImportedTestCasesBtn" title="Assesses all imported cases in this repository; this does not execute tests">Assess all imported cases</button></div></div>
         <div class="result-block">
           <h3>Generate by module</h3>
-          <p class="muted small">Uses an LLM (OpenAI) to write <b>functional test cases</b> in Azure DevOps shape — a title, description, priority, preconditions, and steps that each pair an action with its expected result. They're user scenarios (or, for a library, how a consumer uses its public interface), not unit tests; for web UIs the model is given the real button labels, headings and messages found in the code so steps say what's actually on screen. Built from this repo's documents and one module at a time, as reviewable records — not runnable code — so treat them as a first draft. Each module you generate is its own metered OpenAI call, triggered individually — nothing runs in bulk.</p>
+          <p class="muted small">Draft functional scenarios from a module’s source and project documents. Each generation is a metered AI call. Cases require review and are not executable tests.</p>
           <p class="muted small" id="testCaseDocsIncluded"></p>
-          <p class="muted small is-hidden" id="testGenUnavailableHint">Not configured on this deployment (no <code>OPENAI_API_KEY</code>) — there's no free manual fallback for this feature yet.</p>
+          <p class="muted small is-hidden" id="testGenUnavailableHint">AI generation and source assessment are not configured. You can still import and browse cases.</p>
           <div id="moduleNamesBanner" class="module-names-banner is-hidden"></div>
           <input type="search" id="moduleGenSearch" class="module-gen-search" placeholder="Filter modules by name or description…" />
           <div id="moduleGenList" class="module-gen-list-scroll"></div>
@@ -403,55 +417,45 @@
 
         <div class="result-block">
           <h3>Generate from user story</h3>
-          <p class="muted small">Writes the full realistic set of test cases directly from a document's own story text — no code shown, no Story Coverage run required first. "Verify against code" then judges the generated cases against the real codebase, resolving status, citations and module.</p>
+          <p class="muted small">Writes the full realistic set of test cases directly from a document's own story text — no code shown, no Story Coverage run required first. Assess the generated cases against source code afterward to resolve their status and code citations.</p>
           <div class="findings-toolbar">
             <label class="field-inline">Document<select id="testCaseGenDocSelect"></select></label>
             <label class="checkbox-inline"><input type="checkbox" id="testCaseGenReplaceCheckbox" />Replace existing test cases for this document</label>
           </div>
           <div class="findings-toolbar">
-            <button type="button" class="btn btn-primary" id="generateDocTestCasesBtn">Generate test cases for this document</button>
-            <button type="button" class="btn" id="verifyDocTestCasesBtn" title="Judges every test case generated from this document against the real codebase — resolves status, citations and module for the first time">Verify against code</button>
+            <button type="button" class="btn btn-primary" id="generateDocTestCasesBtn">Generate for this document</button>
+            <button type="button" class="btn" id="verifyDocTestCasesBtn" title="Judges every test case generated from this document against the real codebase — resolves status, citations and module for the first time">Assess this document’s cases</button>
           </div>
           <div class="findings-toolbar">
-            <button type="button" class="btn is-hidden" id="generateTestCasesAllBtn" title="Generates test cases for every document in this repo, straight from each document's own story text">Generate test cases for all documents</button>
-            <button type="button" class="btn is-hidden" id="verifyTestCasesAllBtn" title="Verifies every document's generated test cases against the real codebase, one document at a time">Verify all documents</button>
+            <button type="button" class="btn is-hidden" id="generateTestCasesAllBtn" title="Generates test cases for every document in this repo, straight from each document's own story text">Generate for all documents</button>
+            <button type="button" class="btn is-hidden" id="verifyTestCasesAllBtn" title="Verifies every document's generated test cases against the real codebase, one document at a time">Assess all documents</button>
           </div>
-          <div class="bulk-job-progress is-hidden" id="bulkJobProgressTests"></div>
+
         </div>
 
-        <h3 class="section-title">Test cases</h3>
-        <div class="segmented" id="testCaseSourceSegmented" role="group" aria-label="Filter by source">
-          <button type="button" class="seg-btn active" data-value="">All</button>
-          <button type="button" class="seg-btn" data-value="code">From code</button>
-          <button type="button" class="seg-btn" data-value="story">From user story</button>
-          <button type="button" class="seg-btn" data-value="journey">From journey</button>
-          <button type="button" class="seg-btn" data-value="imported" title="Brought in from an existing suite, not AI-generated -- never counted under From code, even once Verify resolves its code citations">Imported</button>
+        </section>
+        <div class="bulk-job-progress is-hidden" id="bulkJobProgressTests"></div>
+        <div class="tc-attention-filters" role="group" aria-label="Filter by assessment">
+          <button class="tc-attention active" type="button" data-assessment="" aria-pressed="true">All cases</button>
+          <button class="tc-attention" type="button" data-assessment="conflict" aria-pressed="false">Potential conflicts</button>
+          <button class="tc-attention" type="button" data-assessment="insufficient" aria-pressed="false">Needs evidence</button>
+          <button class="tc-attention" type="button" data-assessment="stale" aria-pressed="false">Stale assessments</button>
         </div>
-        <div class="findings-toolbar">
+        <div class="tc-list-toolbar">
+          <label class="tc-search-label"><span class="sr-only">Search test cases</span><input type="search" id="testCaseSearch" placeholder="Search test cases…" /></label>
+          <label class="field-inline">Origin<select id="testCaseOriginSelect"><option value="">All origins</option><option value="imported">Imported</option><option value="generated">Generated</option></select></label>
           <label class="field-inline">Module<select id="testCaseFilterModuleSelect"><option value="">All modules</option></select></label>
-          <button type="button" class="btn btn-sm is-hidden" id="clearModuleTestCasesBtn" title="Deletes every test case stored under the selected module — including one left orphaned by a since-renamed or restructured module">Clear this module's test cases</button>
-          <label class="field-inline">Category
-            <select id="testCaseFilterCategorySelect">
-              <option value="">All categories</option>
-              <option value="happy_path">Happy path</option>
-              <option value="edge_case">Edge case</option>
-              <option value="error_handling">Error handling</option>
-            </select>
-          </label>
-          <label class="field-inline is-hidden" id="testCaseStoryDocFilterRow">User story<select id="testCaseFilterStoryDocSelect"><option value="">All stories</option></select></label>
-          <span class="export-group" role="group" aria-label="Import an already-existing test suite">
-            <button type="button" class="btn btn-sm" id="importTestCasesBtn" title="Brings in test cases from a CSV/Excel file -- TestAtlas's own export, or a similar Azure DevOps Test Plans export">Import test cases (CSV/Excel)</button>
-            <input type="file" id="importTestCasesInput" accept=".csv,.xlsx" hidden />
-            <button type="button" class="btn btn-sm" id="verifyImportedTestCasesBtn" title="Judges every imported test case against the real codebase -- resolves its module and code citations, the same way generated cases get verified">Verify imported test cases</button>
-          </span>
-          <span class="export-group" id="testCaseExport" role="group" aria-label="Export the test cases shown">
-            <span class="small muted">Export</span>
-            <a class="btn btn-sm" data-format="csv" href="#" title="Azure DevOps Test Plans import format — also opens in Excel">CSV (Azure DevOps)</a>
-            <a class="btn btn-sm" data-format="md" href="#" title="A readable document">Markdown</a>
-            <a class="btn btn-sm" data-format="json" href="#" title="Everything, for scripts and other tools">JSON</a>
-          </span>
+          <details class="tc-more-filters"><summary class="btn">More filters</summary><div class="findings-toolbar">
+            <label class="field-inline">Generation method<select id="testCaseMethodSelect"><option value="">Any method</option><option value="code">From code</option><option value="story">From user story</option><option value="journey">From journey</option></select></label>
+            <label class="field-inline">Category<select id="testCaseFilterCategorySelect"><option value="">All categories</option><option value="happy_path">Happy path</option><option value="edge_case">Edge case</option><option value="error_handling">Error handling</option></select></label>
+            <label class="field-inline" id="testCaseStoryDocFilterRow">User story<select id="testCaseFilterStoryDocSelect"><option value="">All stories</option></select></label>
+            <button type="button" class="btn btn-sm is-hidden" id="clearModuleTestCasesBtn">Delete all cases in this module</button>
+          </div></details>
         </div>
+        <p class="tc-evidence-note muted small">AI-supported means source evidence matches an expectation. It does not mean a test ran or passed. Inferred judgments are labeled separately.</p>
+        <div class="tc-list-head" aria-hidden="true"><span>Test case</span><span>Origin</span><span>Assessment</span><span>Priority</span></div>
         <div id="testCaseListAll"></div>
+        <div class="tc-list-footer"><span id="testCaseResultCount" aria-live="polite"></span><span class="muted small">Select a case to inspect steps and evidence.</span></div>
       </section>
 
       <section class="tab-panel" id="panel-compare" hidden>
@@ -574,6 +578,6 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-  <script src="static/app.js?v=83"></script>
+  <script src="static/app.js?v=88"></script>
 </body>
 </html>

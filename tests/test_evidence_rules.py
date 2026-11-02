@@ -24,6 +24,39 @@ class EvidenceLevelTests(unittest.TestCase):
         self.assertEqual(er.evidence_level({"covers": ["foo"], "status": "contradicted"}), "ai_conflict")
 
 
+class AiEvidenceLevelTests(unittest.TestCase):
+    def test_item_with_no_ai_status_key_falls_back_to_evidence_level(self):
+        # A test case: never carries ai_status at all, since its status is
+        # never overwritten by human review in the first place.
+        item = {"covers": ["foo"], "status": "supported"}
+        self.assertEqual(er.ai_evidence_level(item), "ai_supported")
+
+    def test_item_with_ai_status_reads_the_frozen_fields_not_the_live_ones(self):
+        # Even though live status/covers say something else entirely, the
+        # frozen ai_status/ai_covers are what must win.
+        item = {"status": "supported", "covers": ["live"], "ai_status": "contradicted", "ai_covers": ["frozen"]}
+        self.assertEqual(er.ai_evidence_level(item), "ai_conflict")
+
+    def test_legacy_row_with_no_ai_snapshot_is_unavailable_not_guessed(self):
+        item = {"status": "supported", "covers": ["x"], "ai_status": None, "ai_covers": None}
+        self.assertEqual(er.ai_evidence_level(item), er.AI_ASSESSMENT_UNAVAILABLE)
+
+    def test_frozen_ai_status_with_no_citations_is_insufficient_evidence(self):
+        item = {"status": "supported", "covers": ["live"], "ai_status": "supported", "ai_covers": []}
+        self.assertEqual(er.ai_evidence_level(item), "insufficient_evidence")
+
+
+class EffectiveAiStatusTests(unittest.TestCase):
+    def test_falls_back_to_status_when_no_ai_status_key(self):
+        self.assertEqual(er.effective_ai_status({"status": "supported"}), "supported")
+
+    def test_reads_ai_status_when_present(self):
+        self.assertEqual(er.effective_ai_status({"status": "supported", "ai_status": "contradicted"}), "contradicted")
+
+    def test_none_for_a_legacy_row(self):
+        self.assertIsNone(er.effective_ai_status({"status": "supported", "ai_status": None}))
+
+
 class StalenessTests(unittest.TestCase):
     def test_no_latest_run_means_nothing_is_stale(self):
         self.assertFalse(er.is_stale({"run_id": "old"}, None))

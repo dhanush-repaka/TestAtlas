@@ -129,7 +129,8 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body, {
-            "total_reviews": 0, "agreed_with_ai": 0, "false_support_count": 0,
+            "total_reviews": 0, "excluded_no_ai_judgment": 0, "comparable_reviews": 0,
+            "agreed_with_ai": 0, "false_support_count": 0,
             "false_conflict_count": 0, "needs_more_info_count": 0, "agreement_rate_pct": None,
         })
 
@@ -159,6 +160,123 @@ class ReviewAccuracyEndpointTests(HumanReviewsApiTestCase):
         self.assertEqual(body["false_conflict_count"], 1)
         self.assertEqual(body["needs_more_info_count"], 1)
         self.assertEqual(body["agreement_rate_pct"], 25.0)
+
+    def test_an_explicit_opposite_verdict_counts_as_false_support_or_false_conflict(self):
+        # A human can actively say "no, it's the OTHER verdict" rather than just
+        # rejecting the AI outright -- that disagreement must be counted too.
+        ai_said_supported = self._make_case(status="supported", covers=["Cart.add"])
+        ai_said_conflict = self._make_case(status="contradicted", covers=["Cart.add"])
+
+        self.client.post(f"/api/repos/{self.repo_id}/test-cases/{ai_said_supported['id']}/review",
+                          json={"decision": "confirmed_contradicted"})  # human: actually contradicted
+        self.client.post(f"/api/repos/{self.repo_id}/test-cases/{ai_said_conflict['id']}/review",
+                          json={"decision": "confirmed_supported"})  # human: actually supported
+
+        body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
+        self.assertEqual(body["total_reviews"], 2)
+        self.assertEqual(body["agreed_with_ai"], 0)
+        self.assertEqual(body["false_support_count"], 1)   # AI said supported, human says contradicted
+        self.assertEqual(body["false_conflict_count"], 1)  # AI said conflict, human says supported
+
+    def test_repeated_reviews_of_the_same_target_count_once_using_the_latest(self):
+        case = self._make_case(status="supported", covers=["Cart.add"])
+        self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",
+                          json={"decision": "rejected_ai_judgment"})
+        self.client.post(f"/api/repos/{self.repo_id}/test-cases/{case['id']}/review",
+                          json={"decision": "confirmed_supported"})  # re-reviewed after a fix, say
+
+        body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
+        self.assertEqual(body["total_reviews"], 1)
+        self.assertEqual(body["agreed_with_ai"], 1)
+        self.assertEqual(body["false_support_count"], 0)
+
+    def test_confirming_a_requirement_does_not_contaminate_its_own_accuracy_snapshot(self):
+        # The AI never claimed "supported" here -- it left the requirement at
+        # needs_human_input. Confirming it as "supported" must NOT retroactively
+        # look like the AI called it right: confirm_story_requirement overwrites
+        # the row's status to "supported" immediately after the review is
+        # recorded, so re-deriving evidence_level from the (now-overwritten) row
+        # would wrongly show "agreed" -- the snapshot must come from BEFORE that.
+        req = self._make_requirement(status="needs_human_input", covers=["Cart.add"])
+        r = self.client.post(
+            f"/api/repos/{self.repo_id}/story-requirements/{req['id']}/confirm",
+            json={"status": "supported"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+        reviews = db.list_human_reviews(self.repo_id)
+        self.assertEqual(reviews[0]["ai_level_at_review"], "inconclusive")  # NOT "ai_supported"
+
+        body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
+        self.assertEqual(body["total_reviews"], 1)
+        self.assertEqual(body["agreed_with_ai"], 0)  # the AI made no supported/conflict claim to agree with
+        self.assertEqual(body["false_support_count"], 0)
+        self.assertEqual(body["false_conflict_count"], 0)
+
+    def test_a_second_confirmation_does_not_launder_the_first_humans_answer_as_ai(self):
+        # The exact bug: a requirement starts at needs_human_input (inconclusive).
+        # A first human confirms "supported" -- fine, matches the test above. A
+        # SECOND human then reconfirms the SAME requirement as "contradicted" (a
+        # correction). Without a frozen ai_status/ai_covers, this second
+        # confirmation would read the FIRST human's "supported" answer back out
+        # of the row's live status/covers and mistake it for the AI's original
+        # judgment -- making the correction look like a disagreement with the AI
+        # (false_support) when the AI never actually said "supported" at all.
+        req = self._make_requirement(status="needs_human_input", covers=["Cart.add"])
+        self.client.post(f"/api/repos/{self.repo_id}/story-requirements/{req['id']}/confirm",
+                          json={"status": "supported"})
+        r = self.client.post(f"/api/repos/{self.repo_id}/story-requirements/{req['id']}/confirm",
+                              json={"status": "contradicted"})
+        self.assertEqual(r.status_code, 200)
+
+        reviews = db.list_human_reviews(self.repo_id)
+        self.assertEqual(len(reviews), 2)
+        # Both reviews' snapshots must read the AI's ORIGINAL (frozen) judgment --
+        # "inconclusive" both times, never the other human's confirmed answer.
+        for review in reviews:
+            self.assertEqual(review["ai_level_at_review"], "inconclusive")
+
+        body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
+        # Only the latest review (the correction) counts, and it's correctly
+        # uncounted -- the AI never claimed "supported" or "contradicted" here.
+        self.assertEqual(body["total_reviews"], 1)
+        self.assertEqual(body["agreed_with_ai"], 0)
+        self.assertEqual(body["false_support_count"], 0)
+        self.assertEqual(body["false_conflict_count"], 0)
+
+    def test_ai_status_and_covers_stay_frozen_through_confirmation(self):
+        req = self._make_requirement(status="needs_human_input", covers=["Cart.add"])
+        self.assertEqual(req["ai_status"], "needs_human_input")
+        self.assertEqual(req["ai_covers"], ["Cart.add"])
+        self.client.post(f"/api/repos/{self.repo_id}/story-requirements/{req['id']}/confirm",
+                          json={"status": "supported"})
+        reloaded = db.get_story_requirement(req["id"])
+        self.assertEqual(reloaded["status"], "supported")             # the live field changed
+        self.assertEqual(reloaded["ai_status"], "needs_human_input")  # the frozen one didn't
+        self.assertEqual(reloaded["ai_covers"], ["Cart.add"])
+
+    def test_confirming_a_legacy_row_with_no_ai_snapshot_is_excluded_and_reported(self):
+        # Simulates a story_requirement written before ai_status/ai_covers
+        # existed -- the migration adds the columns as NULL, it never backfills
+        # them. Confirming such a row must not reconstruct a fake AI judgment
+        # from its current status; it must be excluded from the comparable set.
+        req = self._make_requirement(status="supported", covers=["Cart.add"])
+        with db.get_conn() as conn:
+            conn.execute("UPDATE story_requirements SET ai_status = NULL, ai_covers = NULL WHERE id = ?", (req["id"],))
+
+        r = self.client.post(f"/api/repos/{self.repo_id}/story-requirements/{req['id']}/confirm",
+                              json={"status": "supported"})
+        self.assertEqual(r.status_code, 200)
+
+        reviews = db.list_human_reviews(self.repo_id)
+        self.assertEqual(reviews[0]["ai_level_at_review"], "ai_assessment_unavailable")
+
+        body = self.client.get(f"/api/repos/{self.repo_id}/review-accuracy").json()
+        self.assertEqual(body["total_reviews"], 1)
+        self.assertEqual(body["excluded_no_ai_judgment"], 1)
+        self.assertEqual(body["comparable_reviews"], 0)
+        self.assertEqual(body["agreed_with_ai"], 0)  # NOT counted as agreement just because status matched
+        self.assertIsNone(body["agreement_rate_pct"])  # no comparable reviews -- None, not 0% or 100%
 
 
 if __name__ == "__main__":

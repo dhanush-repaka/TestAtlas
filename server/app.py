@@ -37,7 +37,7 @@ from . import (
     auth, db, doc_extract, evidence_rules, folder_picker, llm_gap_analysis, llm_journey_requirements,
     llm_journey_test_generation, llm_module_naming, llm_requirement_test_generation,
     llm_story_coverage, llm_test_generation, llm_test_verification, test_case_import,
-    test_export, traceability_dashboard, uploads, work_item_import,
+    test_export, test_case_view, test_case_reassessment, traceability_dashboard, uploads, work_item_import,
 )
 from .diff import diff_runs
 from .runner import resolve_source_dir, run_analysis
@@ -662,6 +662,9 @@ def api_gap_analysis_context(repo_id: str):
     context = gap_analysis_context(g, docs)
     if not context["ok"]:
         raise HTTPException(400, context["message"])
+    evidence = gather_module_sources(g, resolve_source_dir(db.get_repo(repo_id)), [m['module'] for m in context['modules']])
+    context['source_evidence'] = evidence.render() if hasattr(evidence,'render') else evidence
+    context['source_context'] = evidence.manifest() if hasattr(evidence,'manifest') else None
     context["run_id"] = run["id"]
     return context
 
@@ -689,10 +692,15 @@ def api_run_gap_analysis(repo_id: str):
     context = gap_analysis_context(g, docs)
     if not context["ok"]:
         raise HTTPException(400, context["message"])
+    context["source_evidence"] = gather_module_sources(
+        g, resolve_source_dir(db.get_repo(repo_id)), [m['module'] for m in context['modules']])
     try:
         findings = llm_gap_analysis.run_gap_analysis(context)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    source_context = context["source_evidence"].manifest() if hasattr(context["source_evidence"], "manifest") else None
+    for finding in findings:
+        finding["source_context"] = source_context
     db.replace_repo_gap_findings(repo_id, run["id"], [d["name"] for d in docs], findings)
     return {"applied": len(findings), "findings": findings}
 
@@ -768,6 +776,9 @@ def api_story_coverage_context(repo_id: str, doc_id: str):
         raise HTTPException(404, "repo not found")
     doc = _get_doc_in_repo(repo_id, doc_id)
     context, run, _g = _story_coverage_context(repo_id, doc)
+    evidence = gather_module_sources(_g, resolve_source_dir(db.get_repo(repo_id)), [m['module'] for m in context['modules']], query=doc.get('content',''))
+    context['source_evidence'] = evidence.render() if hasattr(evidence,'render') else evidence
+    context['source_context'] = evidence.manifest() if hasattr(evidence,'manifest') else None
     context["run_id"] = run["id"]
     return context
 
@@ -1081,7 +1092,7 @@ def _load_verification_run_state(repo_id: str) -> tuple:
             embeddings.save_index(index, index_path)
     except RuntimeError:
         index = []  # retrieval is an optimization, not a hard dependency -- same fallback discipline as Story Coverage
-    return g, docs, source_root, full_context, index
+    return g, docs, source_root, full_context, index, run["id"]
 
 
 def _candidate_modules_for_cases(index: list[dict], all_modules: list[str], cases: list[dict]) -> set[str]:
@@ -1103,17 +1114,20 @@ def _candidate_modules_for_cases(index: list[dict], all_modules: list[str], case
     return out
 
 
-def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: Path, full_context: dict, index: list[dict], cases: list[dict]):
-    """One document's (or one bulk-job document's) full Verify step: narrow
-    candidates, gather real source for just that narrowed set, call
-    llm_test_verification.generate_test_case_verifications ONCE, then patch
-    each judged case's status/rationale/covers AND resolve+set its module
-    for the first time (find_citation_domain_and_path, same helper used
-    elsewhere) since it started with module=NULL."""
+def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: Path, full_context: dict, index: list[dict], cases: list[dict], run_id: str | None = None):
+    """Assess existing cases against current documents and retrieved source bodies.
+    All origins use the same three independent checks and conservative triage.
+    Resolve code linkage and save the result plus prior state without editing cases.
+    """
+    requirement_docs = {r["id"]: r.get("doc_id") for r in db.list_story_requirements(repo_id) if not r.get("journey_id")}
+    cases = [{**c, "assessment_source_doc_id": requirement_docs.get(c.get("source_requirement_id"))} for c in cases]
     all_modules = [m["module"] for m in full_context.get("modules") or []]
-    candidate_modules = sorted(_candidate_modules_for_cases(index, all_modules, cases))
-    sources = gather_module_sources(g, source_root, candidate_modules)
-    context = candidate_modules_context(g, docs, candidate_modules)
+    candidate_modules = sorted(_candidate_modules_for_cases(index, all_modules, cases) | {c["module"] for c in cases if c.get("module") in all_modules})
+    sources = gather_module_sources(g, source_root, candidate_modules, query=" ".join(_case_embedding_text(c) for c in cases))
+    ambiguous = test_case_reassessment.ambiguous_code_names(full_context)
+    for name in ambiguous:
+        sources.pop(name, None)
+    context = candidate_modules_context(g, docs, all_modules)
     if not context["ok"]:
         raise RuntimeError(context["message"])
     result = llm_test_verification.generate_test_case_verifications(cases, context, sources)
@@ -1127,7 +1141,9 @@ def _verify_cases_for_document(repo_id: str, g, docs: list[dict], source_root: P
         cited_paths = resolve_cited_paths(g, v.get("covers") or [])
         db.update_test_case_verification(
             v["id"], v["status"], v.get("rationale"), v.get("covers") or [], module,
-            assessed_model=result.model, cited_paths=cited_paths,
+            assessed_model=result.model, cited_paths=cited_paths, run_id=run_id,
+            reassessment=v.get("reassessment"),
+            expected_case_fingerprint=test_case_reassessment.case_fingerprint(next(c for c in cases if c["id"] == v["id"])),
         )
     return result
 
@@ -1148,11 +1164,11 @@ def api_verify_test_cases_for_document(repo_id: str, doc_id: str):
     if not cases:
         raise HTTPException(400, "this document has no generated test cases yet -- generate some first")
     try:
-        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+        g, docs, source_root, full_context, index, run_id = _load_verification_run_state(repo_id)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     try:
-        result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases)
+        result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases, run_id)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
     return {"applied": len(result.results), "dropped": result.dropped, "test_cases": db.list_test_cases(repo_id)}
@@ -1164,7 +1180,7 @@ def _document_verification_bulk_worker(job_id: str, repo_id: str, doc_ids: list[
     as _story_coverage_bulk_worker: concurrency, if any, belongs inside the
     per-batch call, not across documents)."""
     try:
-        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+        g, docs, source_root, full_context, index, run_id = _load_verification_run_state(repo_id)
     except RuntimeError as e:
         db.finish_bulk_job(job_id, "failed", str(e))
         return
@@ -1180,7 +1196,7 @@ def _document_verification_bulk_worker(job_id: str, repo_id: str, doc_ids: list[
             cases = [c for c in db.list_test_cases(repo_id) if c.get("source_doc_id") == doc_id]
             if not cases:
                 raise RuntimeError("this document has no generated test cases yet")
-            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases)
+            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, cases, run_id)
             detail = f"{len(result.results)} case(s) verified"
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
@@ -1227,14 +1243,14 @@ def _imported_verification_bulk_worker(job_id: str, repo_id: str, batches: list[
     pressure document-scoped generation already avoids by going per-document.
     Loads the run/graph/index ONCE, same as the per-document worker."""
     try:
-        g, docs, source_root, full_context, index = _load_verification_run_state(repo_id)
+        g, docs, source_root, full_context, index, run_id = _load_verification_run_state(repo_id)
     except RuntimeError as e:
         db.finish_bulk_job(job_id, "failed", str(e))
         return
     for i, batch in enumerate(batches, 1):
         label = f"Imported batch {i} of {len(batches)}"
         try:
-            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, batch)
+            result = _verify_cases_for_document(repo_id, g, docs, source_root, full_context, index, batch, run_id)
             detail = f"{len(result.results)} case(s) verified"
             if result.dropped:
                 detail += f", {len(result.dropped)} dropped"
@@ -1272,6 +1288,72 @@ def api_verify_imported_test_cases(repo_id: str):
     job = db.create_bulk_job(repo_id, "imported_test_verification", len(batches))
     threading.Thread(target=_imported_verification_bulk_worker, args=(job["id"], repo_id, batches), daemon=True).start()
     return job
+
+
+class ReassessCasesRequest(BaseModel):
+    case_ids: list[str] = []
+    stale_only: bool = False
+
+
+def _reassessment_worker(job_id: str, repo_id: str, case_ids: list[str]):
+    try:
+        g, docs, root, context, index, run_id = _load_verification_run_state(repo_id)
+        failed = False
+        for offset in range(0, len(case_ids), _IMPORTED_VERIFY_BATCH_SIZE):
+            ids = set(case_ids[offset:offset + _IMPORTED_VERIFY_BATCH_SIZE])
+            cases = [c for c in db.list_test_cases(repo_id) if c["id"] in ids]
+            label = f"Case batch {offset // _IMPORTED_VERIFY_BATCH_SIZE + 1}"
+            try:
+                if len(cases) != len(ids):
+                    raise RuntimeError("One or more selected cases were deleted; refresh and reassess")
+                result = _verify_cases_for_document(repo_id, g, docs, root, context, index, cases, run_id)
+                missing = ids - {r["id"] for r in result.results}
+                ok = not missing and not result.dropped
+                failed = failed or not ok
+                detail = f"{len(result.results)} assessed; {len(missing)} not assessed; {len(result.dropped)} invalid responses"
+                db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": ok, "detail": detail})
+            except RuntimeError as e:
+                failed = True
+                db.update_bulk_job_progress(job_id, label, {"document_name": label, "ok": False, "detail": str(e)})
+        db.finish_bulk_job(job_id, "failed" if failed else "success", "Some cases were not assessed; review batch results" if failed else None)
+    except Exception as e:
+        db.finish_bulk_job(job_id, "failed", str(e))
+
+
+@api.post("/repos/{repo_id}/test-cases/reassess")
+def api_reassess_test_cases(repo_id: str, body: ReassessCasesRequest):
+    if not db.get_repo(repo_id):
+        raise HTTPException(404, "repo not found")
+    if not llm_test_generation.is_configured():
+        raise HTTPException(400, "AI assessment isn't configured on this deployment")
+    if body.stale_only and body.case_ids:
+        raise HTTPException(400, "Choose case_ids or stale_only, not both")
+    cases = api_list_test_cases(repo_id)
+    if body.stale_only:
+        selected = [c for c in cases if c.get("is_stale")]
+    else:
+        ids = set(body.case_ids)
+        if len(ids) > 1000:
+            raise HTTPException(400, "Select at most 1000 cases per job")
+        selected = [c for c in cases if c["id"] in ids]
+        if len(selected) != len(ids):
+            raise HTTPException(404, "Selected test case not found in this repository")
+    if not selected:
+        raise HTTPException(400, "No test cases selected for reassessment")
+    run = db.get_latest_successful_run(repo_id)
+    if not run or not run.get("graph_path"):
+        raise HTTPException(400, "Run analysis before reassessing test cases")
+    total = (len(selected) + _IMPORTED_VERIFY_BATCH_SIZE - 1) // _IMPORTED_VERIFY_BATCH_SIZE
+    job = db.create_bulk_job(repo_id, "test_reassessment", total)
+    threading.Thread(target=_reassessment_worker, args=(job["id"], repo_id, [c["id"] for c in selected]), daemon=True).start()
+    return job
+
+
+@api.get("/repos/{repo_id}/test-cases/{case_id}/assessments")
+def api_test_case_assessments(repo_id: str, case_id: str):
+    if not any(c["id"] == case_id for c in db.list_test_cases(repo_id)):
+        raise HTTPException(404, "Test case not found in this repository")
+    return db.list_test_case_assessments(repo_id, case_id)
 
 
 @api.get("/repos/{repo_id}/test-cases/verify-jobs/{job_id}")
@@ -1400,7 +1482,15 @@ def api_confirm_story_requirement(repo_id: str, requirement_id: str, payload: Co
     if not requirement or requirement["repo_id"] != repo_id:
         raise HTTPException(404, "requirement not found")
     decision = "confirmed_supported" if payload.status == "supported" else "confirmed_contradicted"
-    db.record_human_review(repo_id, "story_requirement", requirement_id, decision, payload.rationale)
+    # ai_evidence_level reads ai_status/ai_covers -- the AI's judgment FROZEN at its
+    # last write, never confirm_story_requirement's live status/covers below. Those
+    # get overwritten by every confirmation, so on a SECOND confirmation of the same
+    # row they'd hold the FIRST human's answer, not the AI's -- which would get
+    # mistaken for a fresh AI judgment and silently inflate review-accuracy's
+    # agreement rate. A legacy row with no ai_status snapshot at all correctly comes
+    # back AI_ASSESSMENT_UNAVAILABLE, never guessed at.
+    ai_level = evidence_rules.ai_evidence_level(requirement)
+    db.record_human_review(repo_id, "story_requirement", requirement_id, decision, payload.rationale, ai_level_at_review=ai_level)
     return db.confirm_story_requirement(requirement_id, payload.status, payload.rationale)
 
 
@@ -1418,7 +1508,8 @@ def api_review_test_case(repo_id: str, case_id: str, payload: HumanReviewIn):
     cases = [c for c in db.list_test_cases(repo_id) if c["id"] == case_id]
     if not cases:
         raise HTTPException(404, "test case not found")
-    return db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note)
+    ai_level = evidence_rules.evidence_level(cases[0])
+    return db.record_human_review(repo_id, "test_case", case_id, payload.decision, payload.note, ai_level_at_review=ai_level)
 
 
 @api.get("/repos/{repo_id}/review-accuracy")
@@ -1427,18 +1518,32 @@ def api_review_accuracy(repo_id: str):
     review, computed purely from whatever human_reviews rows exist for this
     repo -- an honest empty state with zero rows, never a fabricated number.
     This is Stage 5 infrastructure, not a validation study: it measures
-    whatever reviews your own team has actually recorded, nothing more."""
+    whatever reviews your own team has actually recorded, nothing more.
+
+    Two things this deliberately gets right that an earlier version didn't:
+    - Uses each target's MOST RECENT review only (evidence_rules.latest_review_by_target)
+      -- a case re-reviewed after a fix shouldn't count twice toward the total.
+    - Reads `ai_level_at_review` (a snapshot taken the instant before the
+      review was recorded), never the target's CURRENT evidence_level -- a
+      story requirement's status is overwritten the moment it's confirmed, so
+      re-deriving the AI level afterward would compare the human's decision
+      against their own answer, turning every correction into apparent
+      agreement."""
     if not db.get_repo(repo_id):
         raise HTTPException(404, "repo not found")
-    reviews = db.list_human_reviews(repo_id)
-    cases_by_id = {c["id"]: c for c in db.list_test_cases(repo_id)}
-    requirements_by_id = {r["id"]: r for r in db.list_story_requirements(repo_id)}
+    latest_reviews = evidence_rules.latest_review_by_target(db.list_human_reviews(repo_id))
 
-    false_support = false_conflict = needs_more_info = agreed = 0
-    for review in reviews:
-        target = (cases_by_id if review["target_type"] == "test_case" else requirements_by_id).get(review["target_id"])
-        ai_level = evidence_rules.evidence_level(target) if target else None
+    false_support = false_conflict = needs_more_info = agreed = excluded_no_ai_judgment = 0
+    for review in latest_reviews.values():
+        ai_level = review.get("ai_level_at_review")
         decision = review["decision"]
+        # A legacy row reviewed before ai_status existed has no comparable
+        # original AI judgment at all -- there is nothing to measure this
+        # decision against, so it's excluded rather than silently dropped or
+        # (worse) compared against the row's current, possibly human-written state.
+        if ai_level == evidence_rules.AI_ASSESSMENT_UNAVAILABLE:
+            excluded_no_ai_judgment += 1
+            continue
         if decision == "needs_more_info":
             needs_more_info += 1
         elif decision == "rejected_ai_judgment":
@@ -1446,18 +1551,28 @@ def api_review_accuracy(repo_id: str):
                 false_support += 1
             elif ai_level == "ai_conflict":
                 false_conflict += 1
-        elif (decision == "confirmed_supported" and ai_level == "ai_supported") or \
-             (decision == "confirmed_contradicted" and ai_level == "ai_conflict"):
-            agreed += 1
+        elif decision == "confirmed_supported":
+            if ai_level == "ai_supported":
+                agreed += 1
+            elif ai_level == "ai_conflict":
+                false_conflict += 1  # AI called it a conflict; the human says it's actually supported
+        elif decision == "confirmed_contradicted":
+            if ai_level == "ai_conflict":
+                agreed += 1
+            elif ai_level == "ai_supported":
+                false_support += 1  # AI called it supported; the human says it's actually contradicted
 
-    total = len(reviews)
+    total = len(latest_reviews)
+    comparable = total - excluded_no_ai_judgment
     return {
         "total_reviews": total,
+        "excluded_no_ai_judgment": excluded_no_ai_judgment,
+        "comparable_reviews": comparable,
         "agreed_with_ai": agreed,
         "false_support_count": false_support,
         "false_conflict_count": false_conflict,
         "needs_more_info_count": needs_more_info,
-        "agreement_rate_pct": round((agreed / total) * 100, 1) if total else None,
+        "agreement_rate_pct": round((agreed / comparable) * 100, 1) if comparable else None,
     }
 
 
@@ -1547,6 +1662,9 @@ def api_run_test_generation(repo_id: str, module: str):
         result = llm_test_generation.generate_test_cases(context, sources=sources)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    if hasattr(sources, "manifest"):
+        for case in result.cases:
+            case["generation_context"] = sources.manifest()
     db.replace_test_cases(repo_id, module, run["id"], result.cases)
     return {
         "applied": len(result.cases), "test_cases": result.cases, "module": module,
@@ -1562,7 +1680,11 @@ def api_list_test_cases(repo_id: str):
         raise HTTPException(404, "repo not found")
     cases = db.list_test_cases(repo_id)
     requirements = db.list_story_requirements(repo_id)  # every document's requirements, not just one
-    return llm_story_coverage.link_requirements_to_cases(cases, requirements)
+    linked = llm_story_coverage.link_requirements_to_cases(cases, requirements)
+    run = db.get_latest_successful_run(repo_id)
+    reviews = evidence_rules.latest_review_by_target(db.list_human_reviews(repo_id))
+    return [{**case, "human_review": reviews.get(case["id"])}
+            for case in test_case_view.enrich_cases(linked, run["id"] if run else None, db.list_documents(repo_id))]
 
 
 @api.delete("/repos/{repo_id}/test-cases")
@@ -1582,7 +1704,8 @@ def api_delete_test_cases_by_module(repo_id: str, module: str):
 
 
 @api.get("/repos/{repo_id}/test-cases/export")
-def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", category: str = ""):
+def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", category: str = "",
+                          source: str = "", story: str = "", q: str = "", assessment: str = ""):
     """Downloads the repo's generated test cases as a file -- `csv` (Azure DevOps Test
     Plans import shape, opens in Excel), `md` (readable document) or `json`. `module`
     and `category` narrow it the same way the Test Cases tab's filters do. Every case
@@ -1597,12 +1720,11 @@ def api_export_test_cases(repo_id: str, format: str = "csv", module: str = "", c
         raise HTTPException(404, "repo not found")
     if format not in test_export.FORMATS:
         raise HTTPException(400, f"format must be one of: {', '.join(test_export.FORMATS)}")
-    cases = [c for c in db.list_test_cases(repo_id)
-             if (not module or c.get("module") == module) and (not category or c.get("category") == category)]
+    cases = api_list_test_cases(repo_id)
+    cases = test_case_view.filter_cases(cases, module=module, category=category, source=source,
+                                       story=story, q=q, assessment=assessment)
     if not cases:
-        raise HTTPException(404, "no test cases to export -- generate some first")
-    requirements = db.list_story_requirements(repo_id)
-    cases = llm_story_coverage.link_requirements_to_cases(cases, requirements)
+        raise HTTPException(404, "no test cases match the export filters")
     labels = db.get_module_label_details(repo_id)
     documents = {d["id"]: d["name"] for d in db.list_documents(repo_id)}
     journeys = {j["id"]: j["name"] for j in db.list_journeys(repo_id)}

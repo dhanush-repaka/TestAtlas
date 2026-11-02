@@ -11,6 +11,8 @@ flow (kg/doc_gaps.py) still works exactly as before, for free.
 """
 from __future__ import annotations
 
+from kg.source_evidence import render_sources
+
 import json
 import os
 
@@ -25,6 +27,7 @@ def is_configured() -> bool:
 
 
 def _build_prompt(context: dict) -> str:
+    source_block = render_sources({} if context.get("source_evidence") is None else context["source_evidence"])
     modules_json = json.dumps(context["modules"], indent=2)
     docs_block = "\n\n".join(
         f'DOCUMENT ("{d["name"]}"):\n---\n{d["content"]}\n---' for d in context["documents"]
@@ -37,6 +40,10 @@ ACTUAL CODEBASE CONTENTS -- every module, its files, each file's real top-level 
 ---
 {modules_json}
 ---
+
+SOURCE EVIDENCE (when available):
+{source_block or '(structure only; no behaviour can be established from names)'}
+These are advisory candidate gaps, never proof of missing implementation. A retrieval miss is not evidence that a feature is unbuilt. State unresolved context and qualify behavioural findings. Do not claim runtime or integration verification.
 
 Compare the documents' claims -- taken together, since one document may cover what another leaves out -- against what the codebase actually contains. Only report a finding when you have concrete evidence for it in the data above -- do not speculate or invent function/class/method names that aren't listed. A capability documented in ANY one of the documents above counts as documented; only flag it "undocumented_capability" if it appears in none of them. For each real gap, classify it as exactly one of:
 - "missing_implementation": the documents claim a capability (including a specific method a class is claimed to have) that does not appear anywhere in the listed code

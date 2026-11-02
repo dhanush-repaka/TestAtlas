@@ -1,11 +1,6 @@
-"""Reads a specific function or method's real source code off disk, for the
-test-case verification pass (server/llm_test_verification.py). The knowledge
-graph itself never stores function bodies or line numbers -- kept lightweight
-for clustering/naming/generation, none of which need to read behavior, only
-structure -- so this re-parses the one file a citation points to and extracts
-just that function, not the whole file or repo. Python only for now: a TS/JS
-citation falls back to None (judged on names alone), not an error -- that
-would need kg/ts_parser.py's tree-sitter parse instead of the `ast` module.
+"""Source symbol lookup plus bounded full-file context retrieval.
+Python and TypeScript/JavaScript function bodies support exact-quote validation.
+Module/journey gathering expands related files and reports omissions explicitly.
 """
 from __future__ import annotations
 
@@ -25,7 +20,7 @@ def find_citation_path(g, module: str, qualified_name: str) -> str | None:
     for _node_id, data in g.nodes(data=True):
         if data.get("domain") != module:
             continue
-        if data.get("type") == "Function" and data.get("label") == target_label:
+        if data.get("type") == "Function" and _qualname_from_node_id(_node_id) == qualified_name:
             return data.get("path")
         if not dot and data.get("type") == "Class" and data.get("label") == target_label:
             return data.get("path")
@@ -39,7 +34,7 @@ def extract_function_source(file_path: Path, qualified_name: str) -> str | None:
     -- never raises, since a verification pass should degrade to judging on
     names alone rather than fail outright."""
     if file_path.suffix != ".py":
-        return None
+        return _extract_ts_source(file_path, qualified_name)
     try:
         source = file_path.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source)
@@ -62,6 +57,40 @@ def extract_function_source(file_path: Path, qualified_name: str) -> str | None:
     return None
 
 
+def _extract_ts_source(file_path: Path, qualified_name: str) -> str | None:
+    from .ts_parser import TS_SUFFIXES, _TS_GRAMMAR_SUFFIXES, _get_parsers, _function_like
+    if file_path.suffix.lower() not in TS_SUFFIXES:
+        return None
+    try:
+        from tree_sitter import Parser
+        parser = Parser(_get_parsers()['ts' if file_path.suffix in _TS_GRAMMAR_SUFFIXES else 'tsx'].language)
+        raw = file_path.read_bytes()
+        tree = parser.parse(raw)
+        if tree.root_node.has_error:
+            return None
+        matches = []
+        def visit(node, owner=''):
+            if node.type in ('class_declaration','abstract_class_declaration','class'):
+                name = node.child_by_field_name('name')
+                owner = name.text.decode() if name else 'default'
+            name = node.child_by_field_name('name')
+            label = name.text.decode() if name else ''
+            if node.type in ('function_declaration','generator_function_declaration'):
+                if label == qualified_name: matches.append(node)
+            elif node.type == 'variable_declarator' and _function_like(node.child_by_field_name('value')) is not None:
+                if label == qualified_name: matches.append(node)
+            elif node.type in ('method_definition','public_field_definition','field_definition'):
+                if owner + '.' + label == qualified_name: matches.append(node)
+            for child in node.named_children:
+                visit(child, owner)
+        visit(tree.root_node)
+        if len(matches) == 1:
+            return raw[matches[0].start_byte:matches[0].end_byte].decode('utf-8')
+    except (OSError, UnicodeError, RuntimeError, ImportError):
+        return None
+    return None
+
+
 def find_citation_domain_and_path(g, qualified_name: str) -> tuple[str, str] | None:
     """Like find_citation_path, but for a citation that isn't pre-scoped to
     one module -- a Story Coverage requirement's `covers`, unlike a
@@ -69,14 +98,10 @@ def find_citation_domain_and_path(g, qualified_name: str) -> tuple[str, str] | N
     (kg.doc_gaps.gap_analysis_context never scopes to one module), so there's
     no module to filter by yet. Searches every domain, returns (domain, path)
     for the first match."""
-    owner, dot, method = qualified_name.partition(".")
-    target_label = method if dot else owner
-    for _node_id, data in g.nodes(data=True):
-        if data.get("type") == "Function" and data.get("label") == target_label:
-            return data.get("domain"), data.get("path")
-        if not dot and data.get("type") == "Class" and data.get("label") == target_label:
-            return data.get("domain"), data.get("path")
-    return None
+    matches = [(data.get("domain"), data.get("path")) for node_id,data in g.nodes(data=True)
+               if (data.get("type") == "Function" and _qualname_from_node_id(node_id) == qualified_name)
+               or (data.get("type") == "Class" and "." not in qualified_name and data.get("label") == qualified_name)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def gather_requirement_sources(g, source_root: Path, requirement: dict) -> dict[str, str]:
@@ -103,7 +128,7 @@ def resolve_citation_node_id(g, qualified_name: str) -> str | None:
     owner, dot, method = qualified_name.partition(".")
     target_label = method if dot else owner
     for node_id, data in g.nodes(data=True):
-        if data.get("type") == "Function" and data.get("label") == target_label:
+        if data.get("type") == "Function" and _qualname_from_node_id(node_id) == qualified_name:
             return node_id
         if not dot and data.get("type") == "Class" and data.get("label") == target_label:
             return node_id
@@ -123,38 +148,18 @@ def gather_journey_sources(g, source_root: Path, journey: dict, max_functions: i
     needs to discover NEW patterns in code nobody has cited yet. Capped: a
     large journey can reach hundreds of functions, and the prompt needs to
     stay a reasonable size."""
-    sources: dict[str, str] = {}
-    for node_id in journey.get("node_ids") or []:
-        if len(sources) >= max_functions:
-            break
-        data = g.nodes.get(node_id)
-        if not data or data.get("type") != "Function" or not data.get("path"):
-            continue
-        qualified_name = _qualname_from_node_id(node_id)
-        src = extract_function_source(source_root / data["path"], qualified_name)
-        if src:
-            sources[qualified_name] = src
-    return sources
+    from .source_evidence import gather_source_evidence
+    return gather_source_evidence(g, source_root, node_ids=journey.get("node_ids") or [], max_files=min(max_functions, 24))
 
 
-def gather_module_sources(g, source_root: Path, modules: list[str], max_functions: int = 40) -> dict[str, str]:
+def gather_module_sources(g, source_root: Path, modules: list[str], max_functions: int = 40, query: str = "") -> dict[str, str]:
     """Real source for every Function node whose `domain` is one of `modules`
     -- used by the retrieval-narrowed Story Coverage judgment pass
     (server/llm_story_coverage.py), which only shows the model source for the
     handful of modules retrieval already picked as relevant, not the whole
     codebase. Capped, same reasoning as gather_journey_sources."""
-    wanted = set(modules)
-    sources: dict[str, str] = {}
-    for node_id, data in g.nodes(data=True):
-        if len(sources) >= max_functions:
-            break
-        if data.get("type") != "Function" or data.get("domain") not in wanted or not data.get("path"):
-            continue
-        qualified_name = _qualname_from_node_id(node_id)
-        src = extract_function_source(source_root / data["path"], qualified_name)
-        if src:
-            sources[qualified_name] = src
-    return sources
+    from .source_evidence import gather_source_evidence
+    return gather_source_evidence(g, source_root, modules=modules, query=query, max_files=min(max_functions, 24))
 
 
 def resolve_cited_paths(g, names: list[str], module: str | None = None) -> list[str | None]:

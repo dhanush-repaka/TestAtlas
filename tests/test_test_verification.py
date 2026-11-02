@@ -103,12 +103,13 @@ class GenerateTestCaseVerificationsTests(unittest.TestCase):
 
     def test_a_real_citation_survives_and_a_fake_one_is_demoted(self):
         result, client = self._run({"verifications": [
-            {"id": "case-1", "status": "supported", "covers": ["Cart.add"], "rationale": "Cart.add appends an item"},
+            {"id": "case-1", "status": "supported", "covers": ["Cart.add"], "rationale": "Cart.add appends an item", "code_evidence": {"status": "supported", "rationale": "appends", "citations": [{"kind": "code", "id": "Cart.add", "quote": "items.append(item)"}]}},
             {"id": "case-2", "status": "supported", "covers": ["NotReal.fake"], "rationale": "invented"},
-        ]}, cases=[case(id="case-1"), case(id="case-2", title="Apply a discount code", covers=["DiscountEngine.apply"])])
+        ]}, cases=[case(id="case-1"), case(id="case-2", title="Apply a discount code", covers=["DiscountEngine.apply"])], sources={"Cart.add": "items.append(item)"})
         self.assertEqual(client.chat.completions.create.call_count, 1)
         by_id = {r["id"]: r for r in result.results}
-        self.assertEqual(by_id["case-1"]["status"], "supported")
+        self.assertEqual(by_id["case-1"]["status"], "unknown")  # code evidence alone cannot establish requirement alignment
+        self.assertEqual(by_id["case-1"]["reassessment"]["code_evidence"]["status"], "supported")
         self.assertEqual(by_id["case-2"]["status"], "unknown")
         self.assertEqual(by_id["case-2"]["covers"], [])
         self.assertEqual(result.dropped, [])

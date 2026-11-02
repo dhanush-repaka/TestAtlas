@@ -50,6 +50,7 @@ from pathlib import Path
 from kg import embeddings
 from kg.doc_gaps import known_code_names, canonical_cover
 from kg.source_lookup import gather_module_sources
+from kg.source_evidence import SourceEvidence, render_sources, enforce_context, validate_code_citations
 from llm_logging import call_and_log
 from server.llm_gap_analysis import is_configured  # same OPENAI_API_KEY gates all the LLM features
 from server.llm_journey_test_generation import _STATUS_SEVERITY
@@ -89,7 +90,7 @@ If the document has no checkable acceptance criteria, respond with {{"requiremen
 
 
 def _judge_prompt(text: str, rtype: str, sources: dict[str, str]) -> str:
-    source_block = "\n\n".join(f"# {name}\n{src}" for name, src in sources.items()) or "(no closely-matching code was retrieved)"
+    source_block = render_sources(sources) or "(no closely-matching code was retrieved)"
     return f"""Judge ONE acceptance criterion from a user story against real source code retrieved as the closest match for it.
 
 CRITERION ({rtype}): {text}
@@ -107,7 +108,7 @@ Answer:
 "covers" must list ONLY real function/class/method names from the code above that support your judgment -- never invent one. If you can't point to a real name, the status must be "unknown". Give a one-sentence "rationale".
 
 Respond with ONLY a JSON object of this exact shape, no other text:
-{{"status": "supported"|"contradicted"|"unknown", "covers": ["Name"], "rationale": "..."}}"""
+{{"status": "supported"|"contradicted"|"unknown", "covers": ["Name"], "rationale": "...", "context_sufficient": true|false, "missing_context": ["unresolved dependency, configuration, or runtime evidence"], "code_citations": [{{"name": "real source symbol", "quote": "exact source-body substring"}}]}}"""
 
 
 def _check_requirement(r, canon: dict[str, str]) -> tuple[dict | None, str | None]:
@@ -256,12 +257,23 @@ def generate_story_requirements(
         vanish until .result() is called) -- any failure becomes a drop
         reason instead."""
         candidate_modules = embeddings.retrieve_candidate_modules(index, q_emb, k=10) if q_emb is not None else all_modules
-        sources = gather_module_sources(g, source_root, candidate_modules)
+        sources = gather_module_sources(g, source_root, candidate_modules, query=atom["text"])
         try:
             judged = _call_json(client, model, _judge_prompt(atom["text"], atom["type"], sources), site="story_coverage.judge")
         except RuntimeError as e:
             return None, f"judgment call failed for {atom['text']!r}: {e}"
-        return _check_requirement({**atom, **judged}, canon)
+        checked, why = _check_requirement({**atom, **judged}, canon)
+        if checked is not None and isinstance(sources, SourceEvidence):
+            citations = validate_code_citations(judged, sources)
+            real_covers = [name for name in checked['covers'] if name in {c['name'] for c in citations}]
+            checked['code_citations'] = citations
+            checked['covers'] = real_covers
+            checked['status'] = enforce_context(checked['status'] if real_covers else 'unknown', judged, sources)
+            checked['source_context'] = {**sources.manifest(), 'citations':citations, 'model_missing_context':judged.get('missing_context') if isinstance(judged.get('missing_context'),list) else ['Context sufficiency was not reported']}
+            checked['context_sufficient'] = judged.get('context_sufficient') is True
+            if checked['status'] == 'unknown':
+                checked['rationale'] = 'Source context is incomplete or inconclusive. ' + (checked.get('rationale') or '')
+        return checked, why
 
     # Concurrent, not sequential -- a story with 15-20 requirements used to
     # mean 15-20 judge calls back to back (5-12s each, measured this
@@ -330,7 +342,7 @@ def link_requirements_to_cases(cases: list[dict], requirements: list[dict]) -> l
             for r in requirements_by_name.get(name, []):
                 if r["id"] not in seen_ids:
                     seen_ids.add(r["id"])
-                    matches.append({"doc_id": r["doc_id"], "text": r["text"], "status": r["status"]})
+                    matches.append({"doc_id": r["doc_id"], "text": r["text"], "status": r["status"], "judgment_source": "human_confirmation" if r.get("source") == "human_confirmed" else "ai_assessment", "link_kind": "inferred_shared_citation"})
                     matched_requirements.append(r)
         # The AUTHORITATIVE source document -- already stored directly on the
         # row for an ungrounded, story-driven case (server/llm_requirement_test_generation.py),
@@ -348,5 +360,9 @@ def link_requirements_to_cases(cases: list[dict], requirements: list[dict]) -> l
             worst = max(matched_requirements, key=lambda r: _STATUS_SEVERITY.get(r["status"], 0))
             case_out["status"] = worst["status"]
             case_out["rationale"] = worst.get("rationale")
+            case_out["assessment_kind"] = "inferred_from_requirement"
+            case_out["judgment_source"] = "human_confirmation" if worst.get("source") == "human_confirmed" else "ai_assessment"
+            case_out["inferred_requirement_id"] = worst["id"]
+            case_out["inferred_run_id"] = worst.get("run_id")
         out.append(case_out)
     return out

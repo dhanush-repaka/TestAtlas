@@ -132,6 +132,8 @@ def _story_traceability(case: dict, documents: dict, journeys: dict) -> str:
         '"{}"{}'.format(e["name"], "" if e["kind"].endswith("_direct") else " (inferred from a shared code citation, not a confirmed link)")
         for e in entries
     ]
+    if case.get("assessment_kind") == "inferred_from_requirement":
+        parts.append("Assessment inferred from shared citations; underlying judgment: " + str(case.get("judgment_source") or "unavailable") + "; no test execution implied")
     return f"User story traceability: {', '.join(parts)}"
 
 
@@ -142,6 +144,7 @@ def _description(case: dict, labels: dict, documents: dict, journeys: dict) -> s
     parts = [str(case.get("description") or "").strip()]
     if (case.get("preconditions") or "").strip():
         parts.append(f"Preconditions: {case['preconditions'].strip()}")
+    parts.append("Origin: " + ("Imported" if case.get("created_via") == "imported" else "Generated"))
     parts.append(_code_traceability(case, labels))
     parts.append(_story_traceability(case, documents, journeys))
     return "\n".join(p for p in parts if p)
@@ -189,6 +192,7 @@ def to_markdown(cases: list[dict], labels: dict, repo_name: str, documents: dict
                 lines += [c["description"].strip(), ""]
             if (c.get("preconditions") or "").strip():
                 lines += [f"**Preconditions:** {c['preconditions'].strip()}", ""]
+            lines += ["Origin: " + ("Imported" if c.get("created_via") == "imported" else "Generated"), ""]
             lines += [f"_{_code_traceability(c, labels)}_", ""]
             lines += [f"_{_story_traceability(c, documents, journeys)}_", ""]
             lines += ["| # | Action | Expected result |", "|---|--------|-----------------|"]
@@ -207,10 +211,14 @@ def to_json(cases: list[dict], labels: dict, documents: dict | None = None, jour
         module_name = _module_name(c, labels)
         story_entries = _story_entries(c, documents, journeys)
         out.append({
+            "generation_context": c.get("generation_context"), "reassessment": c.get("reassessment"), "is_stale": bool(c.get("is_stale")),
+            "id": c.get("id"), "created_via": c.get("created_via") or "generated",
             "title": c.get("title"), "description": c.get("description"), "priority": c.get("priority"),
             "category": c.get("category"), "feature": c.get("feature"), "preconditions": c.get("preconditions"),
             "module": module, "module_name": module_name,
             "steps": _steps(c), "covers": covers,
+            "assessment_kind": c.get("assessment_kind"), "judgment_source": c.get("judgment_source"),
+            "inferred_requirement_id": c.get("inferred_requirement_id"), "inferred_run_id": c.get("inferred_run_id"),
             "code_traceability": {"linked": bool(module or covers), "module": module, "module_name": module_name, "covers": covers},
             "user_story_traceability": {"linked": bool(story_entries), "stories": story_entries},
         })

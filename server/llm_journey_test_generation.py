@@ -17,6 +17,8 @@ single fake "mostly fine" verdict that would hide the one bad step.
 """
 from __future__ import annotations
 
+from kg.source_evidence import render_sources
+
 import json
 import os
 
@@ -35,8 +37,8 @@ def _build_prompt(journey_name: str, requirements: list[dict], sources: dict[str
         for i, r in enumerate(requirements, 1)
     ]
     sources_block = ""
-    if sources:
-        snippets = "\n\n".join(f"# {name}\n{src}" for name, src in sources.items())
+    if sources or hasattr(sources, "manifest"):
+        snippets = render_sources(sources)
         sources_block = f"\n\nREAL SOURCE CODE for the names these requirements cite:\n---\n{snippets}\n---"
     return f"""You write ONE Azure DevOps-style functional test case narrating an end-to-end USER JOURNEY -- a real multi-step flow, not one isolated check. Each numbered requirement below is ALREADY judged -- do not re-judge any of them. Write exactly ONE test step per requirement, IN THE SAME ORDER given, so step N narrates requirement N.
 

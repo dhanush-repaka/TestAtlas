@@ -177,7 +177,8 @@ class ComputeSummaryStoryHealthTests(unittest.TestCase):
         self.assertEqual(sum(out["documents"]["by_health"].values()), 3)
         self.assertEqual(out["documents"]["by_health"], {
             "not_analyzed": 1, "broken": 1, "needs_clarification": 0,
-            "not_started": 0, "partially_built": 0, "verified": 1,
+            "not_started": 0, "partially_built": 0, "needs_reassessment": 0,
+            "ai_assessment_unavailable": 0, "verified": 1,
         })
         self.assertEqual(out["documents"]["verified_pct"], round(1 / 3 * 100, 1))
 
@@ -322,11 +323,10 @@ class ComputeSummaryTestCaseStatsTests(unittest.TestCase):
             "by_category": {"happy_path": 2, "edge_case": 1},
             "by_priority": {1: 1, 2: 2},
             "by_origin": {},
-            "with_story_link": 0, "without_story_link": 3,
-            "with_code_coverage": 0, "without_code_coverage": 3,
-            "story_link_pct": 0.0, "code_coverage_pct": 0.0,
-            "story_link_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
-            "code_coverage_by_origin": {"generated": {"linked": 0, "not_linked": 3}},
+            "story_link": {"total": 3, "fresh": 3, "stale": 0, "fresh_linked": 0, "fresh_unlinked": 3, "pct": 0.0},
+            "code_coverage": {"total": 3, "fresh": 3, "stale": 0, "fresh_linked": 0, "fresh_unlinked": 3, "pct": 0.0},
+            "story_link_by_origin": {"generated": {"total": 3, "fresh": 3, "stale": 0, "fresh_linked": 0, "fresh_unlinked": 3, "pct": 0.0}},
+            "code_coverage_by_origin": {"generated": {"total": 3, "fresh": 3, "stale": 0, "fresh_linked": 0, "fresh_unlinked": 3, "pct": 0.0}},
             "evidence": {
                 "insufficient_evidence": 3, "inconclusive": 0, "ai_supported": 0, "ai_conflict": 0,
                 "stale": 0, "human_reviewed": 0,
@@ -367,15 +367,15 @@ class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
     def test_a_case_with_real_code_citations_counts_as_code_covered(self):
         cases = [case("c1", covers=["Inventory.reserve"]), case("c2", covers=[])]
         out = td.compute_summary([], [], cases, [], {})
-        self.assertEqual(out["test_cases"]["with_code_coverage"], 1)
-        self.assertEqual(out["test_cases"]["without_code_coverage"], 1)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_linked"], 1)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_unlinked"], 1)
 
     def test_a_directly_sourced_case_counts_as_story_linked_even_with_no_citation_overlap(self):
         # source_doc_id set, but covers=[] and no requirement shares a citation --
         # the direct generation-time link alone must still count.
         cases = [case("c1", source_doc_id="doc-a", covers=[])]
         out = td.compute_summary([DOC_A], [], cases, [], {})
-        self.assertEqual(out["test_cases"]["with_story_link"], 1)
+        self.assertEqual(out["test_cases"]["story_link"]["fresh_linked"], 1)
 
     def test_a_pure_code_driven_case_becomes_story_linked_purely_via_citation_overlap(self):
         # No source_* columns at all (imported OR ordinary code-driven) -- only
@@ -384,16 +384,16 @@ class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
         cases = [case("c1", created_via="imported", covers=["Inventory.reserve"])]
         reqs = [req("r1", "doc-a", "supported", covers=["Inventory.reserve"])]
         out = td.compute_summary([DOC_A], reqs, cases, [], {})
-        self.assertEqual(out["test_cases"]["with_story_link"], 1)
-        self.assertEqual(out["test_cases"]["without_story_link"], 0)
+        self.assertEqual(out["test_cases"]["story_link"]["fresh_linked"], 1)
+        self.assertEqual(out["test_cases"]["story_link"]["fresh_unlinked"], 0)
 
     def test_an_imported_case_with_no_link_at_all_counts_as_unlinked(self):
         cases = [case("c1", created_via="imported", covers=[])]
         out = td.compute_summary([], [], cases, [], {})
-        self.assertEqual(out["test_cases"]["with_story_link"], 0)
-        self.assertEqual(out["test_cases"]["without_story_link"], 1)
-        self.assertEqual(out["test_cases"]["with_code_coverage"], 0)
-        self.assertEqual(out["test_cases"]["without_code_coverage"], 1)
+        self.assertEqual(out["test_cases"]["story_link"]["fresh_linked"], 0)
+        self.assertEqual(out["test_cases"]["story_link"]["fresh_unlinked"], 1)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_linked"], 0)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_unlinked"], 1)
 
     def test_story_link_and_code_coverage_percentages(self):
         cases = [
@@ -403,13 +403,19 @@ class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
             case("c4", covers=[]),
         ]
         out = td.compute_summary([DOC_A], [], cases, [], {})
-        self.assertEqual(out["test_cases"]["story_link_pct"], 25.0)
-        self.assertEqual(out["test_cases"]["code_coverage_pct"], 25.0)
+        self.assertEqual(out["test_cases"]["story_link"]["pct"], 25.0)
+        self.assertEqual(out["test_cases"]["code_coverage"]["pct"], 25.0)
 
-    def test_percentages_are_zero_not_an_error_with_no_test_cases_at_all(self):
+    def test_pct_is_none_not_zero_with_no_test_cases_at_all(self):
+        # "No current assessments" is a different fact from "0% linked" --
+        # collapsing the two would be exactly the false-confidence risk this
+        # plan exists to avoid.
         out = td.compute_summary([], [], [], [], {})
-        self.assertEqual(out["test_cases"]["story_link_pct"], 0.0)
-        self.assertEqual(out["test_cases"]["code_coverage_pct"], 0.0)
+        self.assertIsNone(out["test_cases"]["story_link"]["pct"])
+        self.assertIsNone(out["test_cases"]["code_coverage"]["pct"])
+        self.assertEqual(out["test_cases"]["story_link"], {
+            "total": 0, "fresh": 0, "stale": 0, "fresh_linked": 0, "fresh_unlinked": 0, "pct": None,
+        })
 
     def test_coverage_by_origin_keeps_generated_and_imported_separate(self):
         # A blended percentage could hide one origin dragging the other down --
@@ -421,10 +427,10 @@ class ComputeSummaryOriginAndCoverageTests(unittest.TestCase):
             case("c4", created_via="imported", covers=[]),
         ]
         out = td.compute_summary([], [], cases, [], {})
-        self.assertEqual(out["test_cases"]["code_coverage_by_origin"], {
-            "generated": {"linked": 2, "not_linked": 0},
-            "imported": {"linked": 0, "not_linked": 2},
-        })
+        self.assertEqual(out["test_cases"]["code_coverage_by_origin"]["generated"]["fresh_linked"], 2)
+        self.assertEqual(out["test_cases"]["code_coverage_by_origin"]["generated"]["fresh_unlinked"], 0)
+        self.assertEqual(out["test_cases"]["code_coverage_by_origin"]["imported"]["fresh_linked"], 0)
+        self.assertEqual(out["test_cases"]["code_coverage_by_origin"]["imported"]["fresh_unlinked"], 2)
 
 
 class DashboardSnapshotStorageTests(unittest.TestCase):
@@ -630,6 +636,157 @@ class ComputeSummaryEvidenceAndStalenessTests(unittest.TestCase):
         ]
         out = td.compute_summary([DOC_A], requirements, [], [], {})
         self.assertEqual(out["requirements"]["correctness_rate_denominator"], 2)  # supported + contradicted, not unknown
+
+    def test_a_story_whose_only_supported_requirement_is_stale_is_never_verified(self):
+        # The exact false-confidence gap: a story with one supported requirement
+        # whose run_id predates the latest run must NOT count as "verified" --
+        # trusting a stale judgment without saying so is the risk this whole
+        # label set exists to avoid.
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], run_id="old-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        self.assertEqual(out["document_rollup"][0]["health"], "needs_reassessment")
+        self.assertEqual(out["documents"]["by_health"]["verified"], 0)
+        self.assertEqual(out["documents"]["by_health"]["needs_reassessment"], 1)
+        self.assertEqual(out["documents"]["verified_pct"], 0.0)
+        self.assertTrue(out["document_rollup"][0]["has_stale"])
+
+    def test_a_story_whose_supported_requirement_matches_the_latest_run_is_verified(self):
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], run_id="new-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        self.assertEqual(out["document_rollup"][0]["health"], "verified")
+        self.assertEqual(out["documents"]["verified_pct"], 100.0)
+        self.assertFalse(out["document_rollup"][0]["has_stale"])
+
+    def test_green_status_requires_every_verified_story_to_be_fresh(self):
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], run_id="old-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        self.assertNotEqual(out["overall"]["status"], "green")
+
+    def test_a_broken_story_with_a_stale_requirement_stays_broken_not_reassessment(self):
+        # Staleness only ever demotes "verified" -- a story that's already
+        # broken/needs-clarification/etc. is already flagged as not-done, so
+        # there's no false-confidence risk to guard against there.
+        requirements = [req("r1", "doc-a", "contradicted", covers=["x"], run_id="old-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        self.assertEqual(out["document_rollup"][0]["health"], "broken")
+
+    def test_a_stale_supported_requirement_is_excluded_from_the_correctness_rate(self):
+        # A stale "supported" criterion must not keep propping up the
+        # AI-supported rate any more than it props up a story's own health --
+        # same false-confidence risk, different aggregate.
+        requirements = [
+            req("r1", "doc-a", "supported", covers=["x"], run_id="old-run"),   # stale -- excluded
+            req("r2", "doc-a", "supported", covers=["y"], run_id="new-run"),   # fresh
+            req("r3", "doc-a", "contradicted", covers=["z"], run_id="new-run"),  # fresh
+        ]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        # Of the 2 FRESH coded requirements, 1 is supported -- 50%, not 66.7%.
+        self.assertEqual(out["requirements"]["correctness_rate"], 50.0)
+        self.assertEqual(out["requirements"]["correctness_rate_denominator"], 2)
+        # The raw total and by_status breakdown are unaffected -- still the full picture.
+        self.assertEqual(out["requirements"]["total"], 3)
+
+    def test_a_stale_test_case_is_excluded_from_story_link_and_code_coverage_pct(self):
+        cases = [
+            case("c1", covers=["x"], run_id="old-run"),   # stale -- excluded from both pct and denominator
+            case("c2", covers=["y"], run_id="new-run"),    # fresh, linked to real code
+            case("c3", covers=[], run_id="new-run"),       # fresh, not linked
+        ]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="new-run")
+        # Of the 2 FRESH cases, 1 has code coverage -- 50%, not 33.3%.
+        self.assertEqual(out["test_cases"]["code_coverage"]["pct"], 50.0)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh"], 2)
+        self.assertEqual(out["test_cases"]["code_coverage"]["stale"], 1)
+        self.assertEqual(out["test_cases"]["total"], 3)  # raw total stays the full count
+
+    def test_with_no_latest_run_id_nothing_is_excluded_from_any_percentage(self):
+        # Matches every pre-staleness test in this file: no latest_run_id means
+        # nothing is stale, so every percentage is computed exactly as before.
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], run_id="some-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["requirements"]["correctness_rate"], 100.0)
+
+    def test_all_test_cases_stale_gives_no_current_assessments_not_zero_percent(self):
+        cases = [
+            case("c1", covers=["x"], run_id="old-run"),
+            case("c2", covers=[], run_id="old-run"),
+        ]
+        out = td.compute_summary([], [], cases, [], {}, latest_run_id="new-run")
+        self.assertIsNone(out["test_cases"]["code_coverage"]["pct"])
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh"], 0)
+        self.assertEqual(out["test_cases"]["code_coverage"]["stale"], 2)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_linked"], 0)
+        self.assertEqual(out["test_cases"]["code_coverage"]["fresh_unlinked"], 0)  # never fresh_unlinked just because stale
+
+    def test_all_requirements_stale_gives_zero_correctness_rate_not_an_error(self):
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], run_id="old-run")]
+        out = td.compute_summary([DOC_A], requirements, [], [], {}, latest_run_id="new-run")
+        self.assertEqual(out["requirements"]["correctness_rate_denominator"], 0)
+        self.assertEqual(out["requirements"]["correctness_rate"], 0.0)
+
+    def test_confirming_an_ai_conflict_as_supported_does_not_move_the_ai_supported_count(self):
+        # The core Section-2 criterion: the AI originally said "contradicted"
+        # (frozen in ai_status). A human later confirmed "supported" -- the
+        # LIVE status/covers now say supported (confirm_story_requirement
+        # overwrote them), but ai_status/ai_covers never moved.
+        requirements = [req(
+            "r1", "doc-a", "supported", covers=["x"],
+            source="human_confirmed", ai_status="contradicted", ai_covers=["x"],
+        )]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+
+        # Current/combined view: the human's confirmation really did fix it --
+        # this is what the headline and gap lists should reflect.
+        self.assertEqual(out["document_rollup"][0]["health"], "verified")
+        self.assertEqual(out["documents"]["verified_pct"], 100.0)
+        self.assertTrue(out["document_rollup"][0]["has_human_confirmed"])
+
+        # Strictly-AI view: the AI itself said "contradicted" and still does --
+        # confirming it as supported must not move this number at all.
+        self.assertEqual(out["document_rollup"][0]["ai_health"], "broken")
+        self.assertEqual(out["documents"]["ai_verified_pct"], 0.0)
+        self.assertEqual(out["documents"]["by_ai_health"]["verified"], 0)
+        self.assertEqual(out["documents"]["by_ai_health"]["broken"], 1)
+
+        # Same split for the requirement-level "AI-supported rate".
+        self.assertEqual(out["requirements"]["correctness_rate"], 0.0)  # AI said contradicted, not supported
+        self.assertEqual(out["requirements"]["by_status"]["contradicted"], 1)  # AI-only tally, not the live one
+
+    def test_the_headline_names_how_many_verified_stories_include_a_human_confirmation(self):
+        requirements = [req(
+            "r1", "doc-a", "supported", covers=["x"],
+            source="human_confirmed", ai_status="needs_human_input", ai_covers=["x"],
+        )]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["overall"]["status"], "green")
+        self.assertIn("human-confirmed", out["overall"]["headline"])
+
+    def test_a_pure_ai_verified_story_with_no_confirmation_is_not_flagged(self):
+        requirements = [req("r1", "doc-a", "supported", covers=["x"])]  # ai_status defaults to "supported" too
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["documents"]["ai_verified_pct"], 100.0)
+        self.assertFalse(out["document_rollup"][0]["has_human_confirmed"])
+        self.assertNotIn("human-confirmed", out["overall"]["headline"])
+
+    def test_requirement_evidence_uses_the_frozen_ai_snapshot_not_the_live_status(self):
+        requirements = [req(
+            "r1", "doc-a", "supported", covers=["x"],
+            source="human_confirmed", ai_status="contradicted", ai_covers=["x"],
+        )]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["requirements"]["evidence"]["ai_conflict"], 1)
+        self.assertEqual(out["requirements"]["evidence"]["ai_supported"], 0)
+        self.assertEqual(out["requirements"]["evidence"]["human_confirmed"], 1)
+
+    def test_a_legacy_requirement_with_no_ai_snapshot_is_unavailable_not_verified(self):
+        # Simulates a row written before ai_status/ai_covers existed.
+        requirements = [req("r1", "doc-a", "supported", covers=["x"], ai_status=None, ai_covers=None)]
+        out = td.compute_summary([DOC_A], requirements, [], [], {})
+        self.assertEqual(out["document_rollup"][0]["ai_health"], "ai_assessment_unavailable")
+        self.assertEqual(out["documents"]["by_ai_health"]["ai_assessment_unavailable"], 1)
+        self.assertEqual(out["documents"]["by_ai_health"]["verified"], 0)
+        self.assertEqual(out["requirements"]["ai_unavailable"], 1)
+        self.assertEqual(out["requirements"]["evidence"]["ai_assessment_unavailable"], 1)
 
 
 if __name__ == "__main__":

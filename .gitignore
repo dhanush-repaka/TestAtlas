@@ -9,3 +9,4 @@ secret.key
 .env.*
 !.env.example
 .gstack/
+.DS_Store

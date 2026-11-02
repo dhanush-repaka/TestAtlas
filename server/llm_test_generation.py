@@ -34,6 +34,8 @@ checked: names that aren't in the module are dropped rather than trusted.
 """
 from __future__ import annotations
 
+from kg.source_evidence import render_sources
+
 import json
 import os
 import re
@@ -153,8 +155,8 @@ def _build_prompt(context: dict, must_trigger: list[str] | None = None, sources:
     about = f'\nWhat this module is for, in the words of the product team: {context["description"]}' if context.get("description") else ""
     modules_json = json.dumps(context["modules"], indent=2)
     sources_block = ""
-    if sources:
-        snippets = "\n\n".join(f"# {name}\n{src}" for name, src in sources.items())
+    if sources or hasattr(sources, "manifest"):
+        snippets = render_sources(sources)
         sources_block = f"""
 REAL SOURCE CODE for the functions/methods above -- this is what they actually DO, not just their names. Base every case's expected result on this, not on what the name or a document implies the code should do. If the real behavior here contradicts what a document describes, write the case's expected result to match what the code ACTUALLY does -- a separate pass compares this case against the project's documents and flags the mismatch; your job here is accuracy to the code, not to the spec:
 ---

@@ -1,6 +1,5 @@
 """Tests for kg/source_lookup.py -- reading a cited function/method's real
-source off disk for the test-case verification pass. Python-only for now;
-a non-Python file or an unresolvable name degrades to None, never raises.
+source off disk for the test-case verification pass. Python and TypeScript/JavaScript are supported; unresolvable symbols degrade to None.
 Run with:  python -m unittest discover -s tests -t .
 """
 from __future__ import annotations
@@ -45,9 +44,9 @@ class ExtractFunctionSourceTests(unittest.TestCase):
     def test_missing_file_returns_none_not_an_error(self):
         self.assertIsNone(sl.extract_function_source(self.tmp / "nope.py", "checkout"))
 
-    def test_non_python_file_returns_none(self):
+    def test_typescript_function_body_is_available(self):
         (self.tmp / "cart.ts").write_text("function checkout() { return true; }")
-        self.assertIsNone(sl.extract_function_source(self.tmp / "cart.ts", "checkout"))
+        self.assertIn("return true", sl.extract_function_source(self.tmp / "cart.ts", "checkout"))
 
     def test_unparseable_python_returns_none_not_an_error(self):
         (self.tmp / "broken.py").write_text("def this is not valid python(((")
@@ -91,8 +90,8 @@ class GatherCitedSourcesTests(unittest.TestCase):
         (tmp / "cart.py").write_text(SOURCE)
         g = nx.MultiDiGraph()
         g.add_node("c1", type="Class", domain="cart", path="cart.py", label="Cart")
-        g.add_node("f1", type="Function", domain="cart", path="cart.py", label="add")
-        g.add_node("f2", type="Function", domain="cart", path="cart.py", label="checkout")
+        g.add_node("function:cart:Cart.add", type="Function", domain="cart", path="cart.py", label="add")
+        g.add_node("function:cart:checkout", type="Function", domain="cart", path="cart.py", label="checkout")
 
         cases = [
             {"covers": ["Cart.add"]},
@@ -111,9 +110,9 @@ class FindCitationDomainAndPathTests(unittest.TestCase):
     def _graph(self):
         import networkx as nx
         g = nx.MultiDiGraph()
-        g.add_node("f1", type="Function", domain="cart", path="cart.py", label="add")
+        g.add_node("function:cart:Cart.add", type="Function", domain="cart", path="cart.py", label="add")
         g.add_node("c1", type="Class", domain="cart", path="cart.py", label="Cart")
-        g.add_node("f2", type="Function", domain="notifications", path="notifications.py", label="checkout")
+        g.add_node("function:notifications:checkout", type="Function", domain="notifications", path="notifications.py", label="checkout")
         return g
 
     def test_finds_a_method_without_knowing_its_domain_in_advance(self):
@@ -136,7 +135,7 @@ class GatherRequirementSourcesTests(unittest.TestCase):
         (tmp / "cart.py").write_text(SOURCE)
         g = nx.MultiDiGraph()
         g.add_node("c1", type="Class", domain="cart", path="cart.py", label="Cart")
-        g.add_node("f1", type="Function", domain="cart", path="cart.py", label="add")
+        g.add_node("function:cart:Cart.add", type="Function", domain="cart", path="cart.py", label="add")
 
         requirement = {"covers": ["Cart.add", "NotReal.fake"]}
         sources = sl.gather_requirement_sources(g, tmp, requirement)

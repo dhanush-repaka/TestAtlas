@@ -117,6 +117,21 @@ class LinkRequirementsToCasesTests(unittest.TestCase):
     case's point of view, which story requirements (across every document)
     does it relate to."""
 
+    def test_inferred_status_identifies_the_underlying_human_judgment(self):
+        requirements = [{"id": "r1", "doc_id": "d1", "text": "Add item", "status": "supported",
+                         "covers": ["Cart.add"], "source": "human_confirmed", "run_id": "old-run"}]
+        linked = sc.link_requirements_to_cases([{"id": "c1", "covers": ["Cart.add"]}], requirements)[0]
+        self.assertEqual(linked["assessment_kind"], "inferred_from_requirement")
+        self.assertEqual(linked["judgment_source"], "human_confirmation")
+        self.assertEqual(linked["inferred_run_id"], "old-run")
+        self.assertEqual(linked["related_requirements"][0]["link_kind"], "inferred_shared_citation")
+        from server import test_export
+        import json
+        exported = json.loads(test_export.to_json([linked], {}, {"d1": "Story"}))["test_cases"][0]
+        self.assertEqual(exported["judgment_source"], "human_confirmation")
+        self.assertIn("no test execution implied", test_export.to_markdown([linked], {}, "Pilot", {"d1": "Story"}))
+        self.assertIn("human_confirmation", test_export.to_csv([linked], {}, {"d1": "Story"}))
+
     def test_a_case_links_to_every_requirement_sharing_a_citation(self):
         cases = [{"id": "c1", "covers": ["Cart.add"]}]
         requirements = [

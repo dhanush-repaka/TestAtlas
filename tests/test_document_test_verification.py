@@ -189,6 +189,10 @@ class VerifyCasesForDocumentApiTests(unittest.TestCase):
         self.assertEqual(row["status"], "supported")
         self.assertEqual(row["covers"], ["Cart.add"])
         self.assertEqual(row["module"], "cart")  # resolved for the first time
+        # A fresh verification is itself fresh evidence -- the case's run_id must
+        # now match the run Verify actually used, so it isn't left comparing
+        # against a stale run_id (server/evidence_rules.py's is_stale).
+        self.assertEqual(row["run_id"], db.get_latest_successful_run(self.repo_id)["id"])
 
     def test_a_case_the_model_never_addresses_stays_unverified(self):
         addressed = db.create_test_case(self.repo_id, None, None, {

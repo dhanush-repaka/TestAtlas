@@ -1,0 +1,1 @@
+case_id,repository,commit_sha,requirement_id,requirement_version,criterion,type,expected_judgment,expected_source_evidence,reviewer_id,reviewer_disagreement_resolution,tool_judgment,retrieved_citations,tool_model_prompt_version,tool_run_id,classification,review_minutes,notes
